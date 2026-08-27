@@ -16,6 +16,7 @@
  * ใน JSON mode: bundle จะเล็ก เพราะ @supabase/supabase-js ถูก mark เป็น external
  * ใน vite.config.ts และไม่ถูก load
  */
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createJsonSupabaseClient, type JsonSupabaseClient } from './jsonDb';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() || '';
@@ -34,31 +35,19 @@ export const dbMode: DBMode = detectMode();
 export const isJsonMode = dbMode === 'json';
 export const isSupabaseMode = dbMode === 'supabase';
 
-/**
- * Type ของ Supabase client — ใช้ any เพื่อไม่ต้อง import type จาก SDK
- * เพราะ mock client มี API เหมือน Supabase client พอดี
- */
-type SupabaseClientLike = any;
+type SupabaseClientLike = SupabaseClient | JsonSupabaseClient;
 
-/**
- * สร้าง Supabase client จริง — ฟังก์ชันนี้ถูกเรียกเฉพาะเมื่อ dbMode === 'supabase'
- * ณ runtime เท่านั้น (JSON mode ไม่เคยเรียก)
- *
- * หมายเหตุ: ตอน build Vite จะ mark @supabase/supabase-js เป็น external
- * ถ้า user ใช้ JSON mode จริงๆ ฟังก์ชันนี้ก็ไม่ถูกเรียก runtime
- * ถ้า user ต้องการ Supabase จริง ต้อง pnpm add @supabase/supabase-js ก่อน
- */
-function createRealSupabaseClient(): SupabaseClientLike {
-  // ใช้ eval หรือ indirect call เพื่อให้ Vite/Rollup ไม่ resolve ตอน build
-  // (Vite mark เป็น external แล้ว แต่เรา guard ไว้อีกชั้นเพื่อความปลอดภัย)
-  throw new Error(
-    '[supabase] @supabase/supabase-js is not available. ' +
-    'กรุณาติดตั้งด้วยคำสั่ง: pnpm add @supabase/supabase-js ' +
-    'จากนั้นแก้ไข supabase.ts เพื่อ uncomment createClient() call'
-  );
+function createRealSupabaseClient(): SupabaseClient {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  });
 }
 
-export const supabase: SupabaseClientLike | JsonSupabaseClient = isJsonMode
+export const supabase: SupabaseClientLike = isJsonMode
   ? createJsonSupabaseClient()
   : createRealSupabaseClient();
 
