@@ -96,13 +96,16 @@ export function HomePage({ onNavigate }: Props) {
             ระบบบริหารจัดการและให้บริการกรมขนส่ง Bit Cities
           </p>
 
-          {/* Quick Action Buttons — 2 items ชิดกันตรงกลาง (vehicle รวมอยู่ในระบบประชาชนแล้ว) */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 max-w-2xl mx-auto">
+          {/* Quick Action Buttons — 3 items ชิดกันตรงกลาง */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 max-w-3xl mx-auto">
             <div className="anim-fadeInUp anim-delay-4 w-full sm:w-auto">
               <QuickBtn icon={<LogIn size={22} />} label="เข้าสู่ระบบเจ้าหน้าที่" sublabel="สำหรับเจ้าหน้าที่ DOT" color="amber" onClick={() => onNavigate('login')} />
             </div>
             <div className="anim-fadeInUp anim-delay-5 w-full sm:w-auto">
               <QuickBtn icon={<User size={22} />} label="ระบบประชาชน" sublabel="ค้นหาข้อมูล / ตรวจสอบรถ" color="blue" onClick={() => onNavigate('citizen')} />
+            </div>
+            <div className="anim-fadeInUp anim-delay-6 w-full sm:w-auto">
+              <QuickBtn icon={<MessageSquare size={22} />} label="ร้องเรียน" sublabel="แจ้งเจ้าหน้าที่ / ทุจริต" color="red" onClick={() => onNavigate('complaint')} />
             </div>
           </div>
         </div>
@@ -291,6 +294,13 @@ function QuickBtn({ icon, label, sublabel, color, onClick }: { icon: ReactNode; 
       subtext: 'text-blue-100',
       shadow: 'shadow-lg shadow-blue-600/20 hover:shadow-blue-500/40',
       ring: 'hover:ring-2 hover:ring-blue-300/50',
+    },
+    red: {
+      bg: 'bg-red-600 hover:bg-red-500',
+      text: 'text-white',
+      subtext: 'text-red-100',
+      shadow: 'shadow-lg shadow-red-600/20 hover:shadow-red-500/40',
+      ring: 'hover:ring-2 hover:ring-red-300/50',
     },
   };
   const c = colors[color] ?? colors.blue;
