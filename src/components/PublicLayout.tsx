@@ -1,5 +1,5 @@
 import { ReactNode, useState } from 'react';
-import { Truck, Users, LogIn, Tag, MessageSquare, Siren, Menu, X, IdCard } from 'lucide-react';
+import { Truck, Users, LogIn, Tag, MessageSquareWarning, Siren, Menu, X, IdCard } from 'lucide-react';
 
 export type PublicPage =
   | 'home'
@@ -21,7 +21,6 @@ const navLinks: { id: PublicPage; label: string; icon: ReactNode }[] = [
   { id: 'citizen', label: 'ระบบประชาชน', icon: <Users size={15} /> },
   { id: 'personnel', label: 'ทำเนียบบุคลากร', icon: <IdCard size={15} /> },
   { id: 'rates', label: 'อัตราค่าบริการ', icon: <Tag size={15} /> },
-  { id: 'complaint', label: 'ร้องเรียน', icon: <MessageSquare size={15} /> },
   { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: <Siren size={15} /> },
 ];
 
@@ -45,7 +44,7 @@ export function PublicLayout({ children, currentPage, onNavigate }: Props) {
               </div>
             </button>
 
-            {/* Center: Nav Links + Login ติดกัน */}
+            {/* Center: Nav Links + Actions ติดกัน */}
             <div className="hidden lg:flex items-center gap-1 flex-1 justify-center">
               {navLinks.map((link) => (
                 <NavLink key={link.id} active={currentPage === link.id} onClick={() => onNavigate(link.id)} icon={link.icon}>
@@ -53,6 +52,17 @@ export function PublicLayout({ children, currentPage, onNavigate }: Props) {
                 </NavLink>
               ))}
               <div className="w-px h-6 bg-blue-900/60 mx-2" />
+              <button
+                onClick={() => onNavigate('complaint')}
+                className={`flex items-center gap-1.5 font-semibold px-3.5 py-2 rounded-lg text-sm transition-all flex-shrink-0 btn-ripple ${
+                  currentPage === 'complaint'
+                    ? 'bg-red-500 text-white shadow-md shadow-red-500/30'
+                    : 'bg-red-600/80 hover:bg-red-500 text-white border border-red-500/40'
+                }`}
+              >
+                <MessageSquareWarning size={14} />
+                <span>ร้องเรียน</span>
+              </button>
               <button
                 onClick={() => onNavigate('login')}
                 className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-navy-900 font-semibold px-3.5 py-2 rounded-lg text-sm transition-all flex-shrink-0 btn-ripple"
@@ -62,8 +72,16 @@ export function PublicLayout({ children, currentPage, onNavigate }: Props) {
               </button>
             </div>
 
-            {/* Mobile: Login + menu */}
+            {/* Mobile: Complaint + Login + menu */}
             <div className="flex items-center gap-2 lg:hidden ml-auto">
+              <button
+                onClick={() => onNavigate('complaint')}
+                className="flex items-center gap-1 bg-red-600/80 hover:bg-red-500 text-white font-semibold px-2.5 py-2 rounded-lg text-sm transition-all flex-shrink-0 btn-ripple"
+                aria-label="ร้องเรียน"
+              >
+                <MessageSquareWarning size={14} />
+                <span className="hidden sm:inline">ร้องเรียน</span>
+              </button>
               <button
                 onClick={() => onNavigate('login')}
                 className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-navy-900 font-semibold px-3 py-2 rounded-lg text-sm transition-all flex-shrink-0 btn-ripple"
