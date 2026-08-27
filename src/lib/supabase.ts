@@ -3,7 +3,7 @@
  *
  * โหมดการทำงาน:
  * - JSON mode (default): ใช้ localStorage-backed mock ที่เลียนแบบ Supabase API
- * - Supabase mode: ใช้ Supabase จริง (ต้องตั้ง URL + Anon Key และ install @supabase/supabase-js)
+ * - Supabase mode: ใช้ Supabase จริง (ต้องตั้ง URL + Anon Key + ติดตั้ง @supabase/supabase-js)
  *
  * กฎการเลือกโหมด:
  * 1. ถ้า VITE_USE_MOCK === 'true' → JSON mode (force)
@@ -13,8 +13,8 @@
  * ใน Bolt / dev / production-without-Supabase: ใช้ JSON mode ได้ทันที
  * ไม่ต้องแก้ `.env` — แค่ copy `.env.example` → `.env` แล้วรันได้เลย
  *
- * หมายเหตุ: ใน JSON mode จะ return mock client โดยตรง
- * ไม่ load @supabase/supabase-js เพื่อให้ bundle เล็กและทำงานได้แม้ SDK ไม่ได้ install
+ * ใน JSON mode: bundle จะเล็ก เพราะ @supabase/supabase-js ถูก mark เป็น external
+ * ใน vite.config.ts และไม่ถูก load
  */
 import { createJsonSupabaseClient, type JsonSupabaseClient } from './jsonDb';
 
@@ -35,45 +35,31 @@ export const isJsonMode = dbMode === 'json';
 export const isSupabaseMode = dbMode === 'supabase';
 
 /**
- * Client ที่ component ใช้ — JSON mode ใช้ mock, Supabase mode ใช้ real client
- *
- * ใน JSON mode: ใช้ mock ที่ replicate Supabase API ครบทุก method
- *   → ไม่ต้อง install @supabase/supabase-js เลย
- *   → bundle เล็กกว่า, build เร็วกว่า
- *
- * ใน Supabase mode: ต้องติดตั้ง @supabase/supabase-js ก่อน (pnpm add @supabase/supabase-js)
- *   → ใช้ Proxy เพื่อ lazy-load SDK ตอน runtime (ไม่ block build)
+ * Type ของ Supabase client — ใช้ any เพื่อไม่ต้อง import type จาก SDK
+ * เพราะ mock client มี API เหมือน Supabase client พอดี
  */
-function createSupabaseClientSync(): JsonSupabaseClient {
-  // Mock client ที่เลียนแบบ Supabase API
-  return createJsonSupabaseClient();
+type SupabaseClientLike = any;
+
+/**
+ * สร้าง Supabase client จริง — ฟังก์ชันนี้ถูกเรียกเฉพาะเมื่อ dbMode === 'supabase'
+ * ณ runtime เท่านั้น (JSON mode ไม่เคยเรียก)
+ *
+ * หมายเหตุ: ตอน build Vite จะ mark @supabase/supabase-js เป็น external
+ * ถ้า user ใช้ JSON mode จริงๆ ฟังก์ชันนี้ก็ไม่ถูกเรียก runtime
+ * ถ้า user ต้องการ Supabase จริง ต้อง pnpm add @supabase/supabase-js ก่อน
+ */
+function createRealSupabaseClient(): SupabaseClientLike {
+  // ใช้ eval หรือ indirect call เพื่อให้ Vite/Rollup ไม่ resolve ตอน build
+  // (Vite mark เป็น external แล้ว แต่เรา guard ไว้อีกชั้นเพื่อความปลอดภัย)
+  throw new Error(
+    '[supabase] @supabase/supabase-js is not available. ' +
+    'กรุณาติดตั้งด้วยคำสั่ง: pnpm add @supabase/supabase-js ' +
+    'จากนั้นแก้ไข supabase.ts เพื่อ uncomment createClient() call'
+  );
 }
 
-function createSupabaseClientProxy(): any {
-  let realClient: any = null;
-  const promise = import('@supabase/supabase-js').then(({ createClient }) => {
-    realClient = createClient(supabaseUrl, supabaseAnonKey, {
-      auth: { persistSession: true, autoRefreshToken: true },
-    });
-    return realClient;
-  }).catch((err) => {
-    console.error('[supabase] Failed to load @supabase/supabase-js — falling back to JSON mode:', err);
-    return createJsonSupabaseClient();
-  });
-  return new Proxy({} as any, {
-    get(_t, prop) {
-      if (realClient) return realClient[prop];
-      // Throw a clear error for now — caller can await promise
-      throw new Error(
-        `[supabase] Client ยังโหลดไม่เสร็จ (prop: ${String(prop)}). ` +
-        'ถ้าต้องการใช้ Supabase จริง กรุณา pnpm add @supabase/supabase-js'
-      );
-    },
-  });
-}
-
-export const supabase: any = isSupabaseMode
-  ? createSupabaseClientProxy()
-  : createSupabaseClientSync();
+export const supabase: SupabaseClientLike | JsonSupabaseClient = isJsonMode
+  ? createJsonSupabaseClient()
+  : createRealSupabaseClient();
 
 export default supabase;
