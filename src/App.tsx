@@ -8,6 +8,7 @@ import { PublicLayout, PublicPage } from './components/PublicLayout';
 import { HomePage } from './pages/public/HomePage';
 import { CitizenPage } from './pages/public/CitizenPage';
 import { PersonnelPage } from './pages/public/PersonnelPage';
+import { StatsPage } from './pages/public/StatsPage';
 import { ServiceRatesPublicPage } from './pages/public/ServiceRatesPublicPage';
 import { ComplaintPage } from './pages/public/ComplaintPage';
 import { EmergencyReportPage } from './pages/public/EmergencyReportPage';
@@ -102,6 +103,7 @@ function PublicApp() {
       {route === 'home' && <HomePage onNavigate={setRoute} />}
       {route === 'citizen' && <CitizenPage />}
       {route === 'personnel' && <PersonnelPage />}
+      {route === 'stats' && <StatsPage />}
       {route === 'rates' && <ServiceRatesPublicPage />}
       {route === 'complaint' && <ComplaintPage />}
       {route === 'emergency' && <EmergencyReportPage />}

@@ -1,10 +1,11 @@
 import { ReactNode, useState } from 'react';
-import { Truck, Users, LogIn, Tag, MessageSquare, Siren, Menu, X, IdCard } from 'lucide-react';
+import { Truck, Users, LogIn, Tag, MessageSquare, Siren, Menu, X, IdCard, BarChart3 } from 'lucide-react';
 
 export type PublicPage =
   | 'home'
   | 'citizen'
   | 'personnel'
+  | 'stats'
   | 'rates'
   | 'complaint'
   | 'emergency'
@@ -20,6 +21,7 @@ const navLinks: { id: PublicPage; label: string; icon: ReactNode }[] = [
   { id: 'home', label: 'หน้าแรก', icon: <Truck size={15} /> },
   { id: 'citizen', label: 'ระบบประชาชน', icon: <Users size={15} /> },
   { id: 'personnel', label: 'ทำเนียบบุคลากร', icon: <IdCard size={15} /> },
+  { id: 'stats', label: 'สถิติหน่วยงาน', icon: <BarChart3 size={15} /> },
   { id: 'rates', label: 'อัตราค่าบริการ', icon: <Tag size={15} /> },
   { id: 'complaint', label: 'ร้องเรียน', icon: <MessageSquare size={15} /> },
   { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: <Siren size={15} /> },
