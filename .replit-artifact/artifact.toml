@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "DOT System"
+description = "A Thai Department of Transport (DOT) management system for officers and the public. Officers can manage service records, complaints, vehicles, citizens, announcements, and staff. The public can check citizen records, vehicles, service rates, file complaints, and report emergencies."
+version = "1.0.0"
+id = "artifacts/dot-system"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23230
+
+[services.development]
+run = "pnpm --filter @workspace/dot-system run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/dot-system", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/dot-system/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23230"
+BASE_PATH = "/"
