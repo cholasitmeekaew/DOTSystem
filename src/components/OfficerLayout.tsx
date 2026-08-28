@@ -3,6 +3,7 @@ import {
   Truck, LayoutDashboard, Shield, DollarSign, Megaphone,
   Users, LogOut, Menu, X, ChevronRight, Tag, MessageSquare, Siren, Car, UserCog, CalendarDays,
 } from 'lucide-react';
+import { LOGO_URL } from './PublicLayout';
 import { useAuth } from '../lib/AuthContext';
 import { RANK_LABELS, DEPARTMENT_LABELS } from '../lib/types';
 
@@ -70,9 +71,11 @@ export function OfficerLayout({ children, currentPage, onNavigate, onLogout }: P
       >
         {/* Logo */}
         <div className="flex items-center gap-3 px-5 py-5 border-b border-blue-900/40">
-          <div className="w-9 h-9 bg-amber-500 rounded-lg flex items-center justify-center shadow-lg flex-shrink-0">
-            <Truck size={18} className="text-navy-900" />
-          </div>
+          <img
+            src={LOGO_URL}
+            alt="Bit Cities DOT"
+            className="h-9 w-auto rounded-lg shadow-lg flex-shrink-0"
+          />
           <div>
             <div className="text-[10px] text-amber-500 font-semibold tracking-widest">BIT CITIES</div>
             <div className="text-sm font-bold text-white leading-tight">DOT System</div>

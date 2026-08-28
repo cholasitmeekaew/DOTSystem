@@ -35,6 +35,7 @@ export function StatsPage() {
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [emergencyReports, setEmergencyReports] = useState<EmergencyReport[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [ranks, setRanks] = useState<Array<{ rank_key: string | null; label: string; sort_order: number }>>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -46,7 +47,8 @@ export function StatsPage() {
       supabase.from('complaints').select('*'),
       supabase.from('emergency_reports').select('*'),
       supabase.from('announcements').select('*').order('created_at', { ascending: false }).limit(5),
-    ]).then(([o, v, s, l, c, e, a]) => {
+      supabase.from('officer_ranks').select('rank_key, label, sort_order').order('sort_order'),
+    ]).then(([o, v, s, l, c, e, a, r]) => {
       setOfficers((o.data as unknown as Officer[]) ?? []);
       setVehicles((v.data as unknown as Vehicle[]) ?? []);
       setServiceRecords((s.data as unknown as ServiceRecord[]) ?? []);
@@ -54,6 +56,7 @@ export function StatsPage() {
       setComplaints((c.data as unknown as Complaint[]) ?? []);
       setEmergencyReports((e.data as unknown as EmergencyReport[]) ?? []);
       setAnnouncements((a.data as unknown as Announcement[]) ?? []);
+      setRanks((r.data as Array<{ rank_key: string | null; label: string; sort_order: number }>) ?? []);
       setLoading(false);
     });
   }, []);
@@ -283,9 +286,26 @@ export function StatsPage() {
             <Skeleton variant="card" height={180} />
           ) : (
             <div className="card p-5 space-y-3">
-              <RankRow label="หัวหน้ากรม" count={activeOfficers.filter((o) => o.rank === 'commissioner').length} color="amber" icon="👑" />
-              <RankRow label="ผู้คุมสอบ" count={activeOfficers.filter((o) => o.rank === 'inspector').length} color="blue" icon="🛡️" />
-              <RankRow label="พนักงาน" count={activeOfficers.filter((o) => o.rank === 'officer').length} color="emerald" icon="👤" />
+              {ranks.length > 0 ? (
+                ranks.map((r) => {
+                  const key = r.rank_key ?? r.label;
+                  return (
+                    <RankRow
+                      key={key}
+                      label={r.label}
+                      count={activeOfficers.filter((o) => o.rank === key).length}
+                      color="emerald"
+                      icon="👤"
+                    />
+                  );
+                })
+              ) : (
+                <>
+                  <RankRow label="หัวหน้ากรม" count={activeOfficers.filter((o) => o.rank === 'commissioner').length} color="amber" icon="👑" />
+                  <RankRow label="ผู้คุมสอบ" count={activeOfficers.filter((o) => o.rank === 'inspector').length} color="blue" icon="🛡️" />
+                  <RankRow label="พนักงาน" count={activeOfficers.filter((o) => o.rank === 'officer').length} color="emerald" icon="👤" />
+                </>
+              )}
               <div className="pt-3 border-t border-blue-900/30 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
                   <span className="text-gray-400 flex items-center gap-1.5">

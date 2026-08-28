@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
-    "html2canvas": "^1.4.1"
+    "html2canvas": "^1.4.1",
+    "leaflet": "^1.9.4"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Users, Search, Shield, Briefcase, Car, Wrench, Zap, TrafficCone, AlertCircle } from 'lucide-react';
+import { Users, Search, Shield, Briefcase, Wrench, Zap, TrafficCone, AlertCircle, X, Clock, DollarSign, Calendar } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { Officer, OfficerRank, Department, DEPARTMENT_LABELS, RANK_LABELS } from '../../lib/types';
+import { Officer, Department, DEPARTMENT_LABELS, RANK_LABELS, DutyLog, ServiceRecord } from '../../lib/types';
 import { FadeIn, Stagger, StaggerItem, Skeleton } from '../../components/animations';
-
-type Filter = 'all' | Department;
+import { Modal } from '../../components/Modal';
 
 const RANK_ORDER: Record<string, number> = {
   commissioner: 1,
@@ -35,26 +34,25 @@ const RANK_COLORS: Record<string, { text: string; bg: string; border: string; gl
 
 const DEPARTMENT_ICONS: Record<Department, React.ReactNode> = {
   civil_maintenance: <Wrench size={14} />,
-  vehicle_rescue: <Car size={14} />,
+  vehicle_rescue: <Wrench size={14} />,
   electrical: <Zap size={14} />,
   traffic_management: <TrafficCone size={14} />,
   emergency_assistance: <AlertCircle size={14} />,
 };
 
-const DEPARTMENT_FILTERS: { id: Filter; label: string; icon: React.ReactNode }[] = [
-  { id: 'all', label: 'ทั้งหมด', icon: <Users size={14} /> },
-  { id: 'civil_maintenance', label: 'โยธา', icon: <Wrench size={14} /> },
-  { id: 'vehicle_rescue', label: 'กู้ภัย', icon: <Car size={14} /> },
-  { id: 'electrical', label: 'ไฟฟ้า', icon: <Zap size={14} /> },
-  { id: 'traffic_management', label: 'จราจร', icon: <TrafficCone size={14} /> },
-  { id: 'emergency_assistance', label: 'ฉุกเฉิน', icon: <AlertCircle size={14} /> },
+const DEPARTMENT_ORDER: Department[] = [
+  'civil_maintenance',
+  'vehicle_rescue',
+  'electrical',
+  'traffic_management',
+  'emergency_assistance',
 ];
 
 export function PersonnelPage() {
   const [officers, setOfficers] = useState<Officer[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<Filter>('all');
+  const [selectedOfficer, setSelectedOfficer] = useState<Officer | null>(null);
 
   useEffect(() => {
     supabase
@@ -71,7 +69,6 @@ export function PersonnelPage() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return officers
-      .filter((o) => filter === 'all' || o.department === filter)
       .filter((o) => {
         if (!q) return true;
         return (
@@ -81,18 +78,21 @@ export function PersonnelPage() {
         );
       })
       .sort((a, b) => (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99) || a.name.localeCompare(b.name, 'th'));
-  }, [officers, search, filter]);
+  }, [officers, search]);
 
-  const countByDept = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const o of officers) {
-      map[o.department] = (map[o.department] ?? 0) + 1;
+  const groupedByDept = useMemo(() => {
+    const map: Record<string, Officer[]> = {};
+    for (const o of filtered) {
+      if (!map[o.department]) map[o.department] = [];
+      map[o.department].push(o);
     }
     return map;
-  }, [officers]);
+  }, [filtered]);
+
+  const onDutyCount = officers.filter((o) => o.is_on_duty).length;
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10">
       {/* Header */}
       <FadeIn className="text-center mb-8">
         <div className="inline-flex w-16 h-16 bg-amber-500/10 border-2 border-amber-500/30 rounded-2xl items-center justify-center mb-4 anim-float">
@@ -108,14 +108,14 @@ export function PersonnelPage() {
           <div className="inline-flex items-center gap-3 mt-4 text-xs text-gray-500">
             <span>ทั้งหมด <span className="text-amber-400 font-bold">{officers.length}</span> คน</span>
             <span className="text-blue-900">•</span>
-            <span className="text-emerald-400">กำลังปฏิบัติหน้าที่ {officers.filter((o) => o.is_on_duty).length} คน</span>
+            <span className="text-emerald-400">กำลังปฏิบัติหน้าที่ {onDutyCount} คน</span>
           </div>
         )}
       </FadeIn>
 
-      {/* Search + Filter */}
-      <FadeIn delay={0.05} className="mb-6 space-y-3">
-        <div className="card p-4 flex items-center gap-3 hover-lift">
+      {/* Search */}
+      <FadeIn delay={0.05} className="mb-8">
+        <div className="card p-4 flex items-center gap-3 hover-lift max-w-2xl mx-auto">
           <Search size={18} className="text-gray-500 flex-shrink-0" />
           <input
             type="text"
@@ -132,30 +132,6 @@ export function PersonnelPage() {
               ล้าง
             </button>
           )}
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {DEPARTMENT_FILTERS.map((d) => {
-            const active = filter === d.id;
-            const count = d.id === 'all' ? officers.length : (countByDept[d.id] ?? 0);
-            return (
-              <button
-                key={d.id}
-                onClick={() => setFilter(d.id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all btn-ripple ${
-                  active
-                    ? 'bg-amber-500 text-navy-900 shadow-md shadow-amber-500/30'
-                    : 'bg-navy-800 text-gray-400 hover:text-white border border-blue-900/40 hover:border-amber-500/40'
-                }`}
-              >
-                {d.icon}
-                {d.label}
-                <span className={`text-[10px] font-bold px-1.5 rounded-full ${active ? 'bg-navy-900/20' : 'bg-navy-700'}`}>
-                  {count}
-                </span>
-              </button>
-            );
-          })}
         </div>
       </FadeIn>
 
@@ -179,21 +155,28 @@ export function PersonnelPage() {
               <Search size={26} className="text-gray-500" />
             </div>
             <p className="text-white font-semibold mb-1">
-              {search || filter !== 'all' ? 'ไม่พบบุคลากรที่ค้นหา' : 'ยังไม่มีข้อมูลบุคลากร'}
+              {search ? 'ไม่พบบุคลากรที่ค้นหา' : 'ยังไม่มีข้อมูลบุคลากร'}
             </p>
             <p className="text-gray-400 text-sm">
-              {search || filter !== 'all' ? 'ลองเปลี่ยนคำค้นหรือเลือกแผนกอื่น' : 'หัวหน้ากรมสามารถเพิ่มเจ้าหน้าที่ได้ที่เมนู "จัดการเจ้าหน้าที่"'}
+              {search ? 'ลองเปลี่ยนคำค้นหา' : 'หัวหน้ากรมสามารถเพิ่มเจ้าหน้าที่ได้ที่เมนู "จัดการเจ้าหน้าที่"'}
             </p>
           </div>
         </FadeIn>
       ) : (
-        <Stagger className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-          {filtered.map((o) => (
-            <StaggerItem key={o.id}>
-              <PersonnelCard officer={o} />
-            </StaggerItem>
-          ))}
-        </Stagger>
+        <div className="space-y-10">
+          {DEPARTMENT_ORDER.map((dept) => {
+            const list = groupedByDept[dept];
+            if (!list || list.length === 0) return null;
+            return (
+              <DepartmentSection
+                key={dept}
+                dept={dept}
+                officers={list}
+                onSelect={setSelectedOfficer}
+              />
+            );
+          })}
+        </div>
       )}
 
       {!loading && officers.length > 0 && (
@@ -201,72 +184,273 @@ export function PersonnelPage() {
           <p>ข้อมูลอัปเดตจากระบบ — กรมขนส่ง Bit Cities</p>
         </FadeIn>
       )}
+
+      {selectedOfficer && (
+        <OfficerDetailModal
+          officer={selectedOfficer}
+          onClose={() => setSelectedOfficer(null)}
+        />
+      )}
     </div>
   );
 }
 
-function PersonnelCard({ officer }: { officer: Officer }) {
+function DepartmentSection({
+  dept,
+  officers,
+  onSelect,
+}: {
+  dept: Department;
+  officers: Officer[];
+  onSelect: (o: Officer) => void;
+}) {
+  const color = RANK_COLORS[officers[0].rank] ?? RANK_COLORS.officer;
+  return (
+    <section>
+      <FadeIn className="flex items-center gap-3 mb-4">
+        <div className={`w-10 h-10 rounded-xl ${color.bg} border ${color.border} flex items-center justify-center ${color.text}`}>
+          {DEPARTMENT_ICONS[dept]}
+        </div>
+        <div>
+          <h2 className={`text-lg font-bold ${color.text}`}>
+            {DEPARTMENT_LABELS[dept] ?? dept}
+          </h2>
+          <p className="text-xs text-gray-500">{officers.length} คน</p>
+        </div>
+        <div className="flex-1 h-px bg-gradient-to-r from-blue-900/50 to-transparent ml-2" />
+      </FadeIn>
+      <Stagger className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        {officers.map((o) => (
+          <StaggerItem key={o.id}>
+            <PersonnelCard officer={o} onClick={() => onSelect(o)} />
+          </StaggerItem>
+        ))}
+      </Stagger>
+    </section>
+  );
+}
+
+function PersonnelCard({ officer, onClick }: { officer: Officer; onClick: () => void }) {
   const color = RANK_COLORS[officer.rank] ?? RANK_COLORS.officer;
   const isCommissioner = officer.rank === 'commissioner';
-  const isInspector = officer.rank === 'inspector';
-  const RankIcon = isCommissioner ? Shield : isInspector ? Briefcase : Users;
 
   return (
-    <div
-      className={`card p-4 text-center relative overflow-hidden hover-lift transition-all ${
-        isCommissioner ? `border-amber-500/40 shadow-lg ${color.glow}` : 'hover:border-amber-500/30'
+    <button
+      onClick={onClick}
+      className={`relative w-full rounded-2xl overflow-hidden border-2 text-left group transition-all hover-lift ${
+        isCommissioner ? `border-amber-500/40 shadow-lg ${color.glow}` : 'border-blue-900/40 hover:border-amber-500/30'
       }`}
+      style={{ aspectRatio: '3 / 4.5' }}
     >
-      {isCommissioner && (
-        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-amber-500 to-transparent" />
-      )}
-
-      <div className="relative mx-auto mb-3">
-        <div
-          className={`w-20 h-20 rounded-2xl overflow-hidden border-2 ${
-            isCommissioner ? 'border-amber-500/60' : 'border-blue-900/40'
-          } bg-navy-700 flex items-center justify-center group-hover:scale-105 transition-transform`}
-        >
-          {officer.photo_url ? (
-            <img src={officer.photo_url} alt={officer.name} className="w-full h-full object-cover" />
-          ) : (
-            <span className={`text-2xl font-bold ${color.text}`}>
+      {/* Background image */}
+      <div className="absolute inset-0 bg-navy-800">
+        {officer.photo_url ? (
+          <img
+            src={officer.photo_url}
+            alt={officer.name}
+            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-navy-700 to-navy-900">
+            <span className={`text-6xl font-black opacity-30 ${color.text}`}>
               {officer.name.charAt(0).toUpperCase()}
             </span>
-          )}
-        </div>
-        {officer.is_on_duty && (
-          <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-emerald-500 rounded-full border-2 border-navy-800 flex items-center justify-center">
-            <div className="w-1.5 h-1.5 bg-white rounded-full anim-pulse" />
           </div>
         )}
       </div>
 
-      <h3 className="text-white text-sm font-bold truncate mb-0.5">{officer.name}</h3>
+      {/* Top gradient (subtle) */}
+      <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/40 to-transparent pointer-events-none" />
 
-      <div className={`inline-flex items-center gap-1 ${color.bg} ${color.text} border ${color.border} px-2 py-0.5 rounded-full text-[10px] font-semibold mb-1.5`}>
-        <RankIcon size={10} />
-        {RANK_LABELS[officer.rank] ?? officer.rank}
+      {/* Bottom gradient (info area) */}
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-navy-900 via-navy-900/95 to-transparent pt-12 pb-3 px-3">
+        <div className="flex items-center gap-1.5 mb-1">
+          <div className={`w-1.5 h-1.5 rounded-full ${officer.is_on_duty ? 'bg-emerald-400 anim-pulse' : 'bg-gray-500'}`} />
+          <span className={`text-[10px] font-semibold ${officer.is_on_duty ? 'text-emerald-400' : 'text-gray-500'}`}>
+            {officer.is_on_duty ? 'กำลังปฏิบัติหน้าที่' : 'ว่าง'}
+          </span>
+        </div>
+        <h3 className="text-white text-sm font-bold truncate mb-0.5 drop-shadow-lg">{officer.name}</h3>
+        <div className={`inline-flex items-center gap-1 ${color.text} text-[10px] font-semibold`}>
+          {RANK_LABELS[officer.rank] ?? officer.rank}
+        </div>
+        <p className="text-gray-300 text-[10px] truncate mt-0.5 drop-shadow">
+          {DEPARTMENT_LABELS[officer.department] ?? officer.department}
+        </p>
       </div>
 
-      <div className="flex items-center justify-center gap-1 text-gray-400 text-[11px]">
-        {DEPARTMENT_ICONS[officer.department]}
-        <span className="truncate">{DEPARTMENT_LABELS[officer.department] ?? officer.department}</span>
-      </div>
+      {/* Commissioner crown bar */}
+      {isCommissioner && (
+        <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-transparent via-amber-500 to-transparent" />
+      )}
+    </button>
+  );
+}
 
-      <div className="mt-2.5 pt-2 border-t border-blue-900/30 flex items-center justify-center gap-1 text-[10px]">
-        {officer.is_on_duty ? (
-          <>
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 anim-pulse" />
-            <span className="text-emerald-400 font-medium">กำลังปฏิบัติหน้าที่</span>
-          </>
-        ) : (
-          <>
-            <div className="w-1.5 h-1.5 rounded-full bg-gray-500" />
-            <span className="text-gray-500 font-medium">ไม่ได้ปฏิบัติหน้าที่</span>
-          </>
-        )}
+function OfficerDetailModal({ officer, onClose }: { officer: Officer; onClose: () => void }) {
+  const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
+  const [services, setServices] = useState<ServiceRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const color = RANK_COLORS[officer.rank] ?? RANK_COLORS.officer;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      const [dutyRes, serviceRes] = await Promise.all([
+        supabase
+          .from('duty_logs')
+          .select('*')
+          .eq('officer_id', officer.id)
+          .is('deleted_at', null)
+          .order('clock_in', { ascending: false })
+          .limit(5),
+        supabase
+          .from('service_records')
+          .select('*')
+          .eq('officer_id', officer.id)
+          .order('created_at', { ascending: false })
+          .limit(5),
+      ]);
+      if (cancelled) return;
+      setDutyLogs((dutyRes.data as unknown as DutyLog[]) ?? []);
+      setServices((serviceRes.data as unknown as ServiceRecord[]) ?? []);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [officer.id]);
+
+  const totalDutyMinutes = dutyLogs.reduce((sum, d) => sum + (d.duration_minutes ?? 0), 0);
+  const totalDutyHours = (totalDutyMinutes / 60).toFixed(1);
+  const totalServiceAmount = services.reduce((sum, s) => sum + (s.amount ?? 0), 0);
+
+  const formatDate = (iso: string) =>
+    new Date(iso).toLocaleString('th-TH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  return (
+    <Modal title="" onClose={onClose} size="lg">
+      <div className="space-y-4">
+        {/* Hero */}
+        <div className="relative -mt-6 -mx-6 h-48 overflow-hidden">
+          {officer.photo_url ? (
+            <img src={officer.photo_url} alt={officer.name} className="w-full h-full object-cover" />
+          ) : (
+            <div className={`w-full h-full bg-gradient-to-br from-navy-700 to-navy-900 flex items-center justify-center`}>
+              <span className={`text-8xl font-black opacity-20 ${color.text}`}>
+                {officer.name.charAt(0).toUpperCase()}
+              </span>
+            </div>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-navy-900 via-navy-900/60 to-transparent" />
+          <button
+            onClick={onClose}
+            className="absolute top-3 right-3 w-8 h-8 bg-navy-900/70 hover:bg-navy-800 border border-blue-900/50 rounded-lg flex items-center justify-center text-white transition-colors"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-1">
+          <div className="flex items-center gap-2 mb-1">
+            <div className={`w-2 h-2 rounded-full ${officer.is_on_duty ? 'bg-emerald-400 anim-pulse' : 'bg-gray-500'}`} />
+            <span className={`text-xs font-semibold ${officer.is_on_duty ? 'text-emerald-400' : 'text-gray-500'}`}>
+              {officer.is_on_duty ? 'กำลังปฏิบัติหน้าที่' : 'ว่าง'}
+            </span>
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-1">{officer.name}</h2>
+          <div className={`inline-flex items-center gap-1.5 ${color.bg} ${color.text} border ${color.border} px-2.5 py-1 rounded-full text-xs font-semibold`}>
+            {officer.rank === 'commissioner' && <Shield size={12} />}
+            {officer.rank === 'inspector' && <Briefcase size={12} />}
+            {RANK_LABELS[officer.rank] ?? officer.rank}
+          </div>
+          <p className="text-gray-300 text-sm mt-2 flex items-center gap-1.5">
+            {DEPARTMENT_ICONS[officer.department]}
+            {DEPARTMENT_LABELS[officer.department] ?? officer.department}
+          </p>
+        </div>
+
+        {/* Quick stats */}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="bg-navy-700/50 border border-blue-900/40 rounded-lg p-3 text-center">
+            <Clock size={16} className="text-amber-400 mx-auto mb-1" />
+            <div className="text-lg font-bold text-white">{totalDutyHours}</div>
+            <div className="text-[10px] text-gray-500">ชม. ปฏิบัติหน้าที่</div>
+          </div>
+          <div className="bg-navy-700/50 border border-blue-900/40 rounded-lg p-3 text-center">
+            <Calendar size={16} className="text-blue-400 mx-auto mb-1" />
+            <div className="text-lg font-bold text-white">{dutyLogs.length}</div>
+            <div className="text-[10px] text-gray-500">เวรล่าสุด</div>
+          </div>
+          <div className="bg-navy-700/50 border border-blue-900/40 rounded-lg p-3 text-center">
+            <DollarSign size={16} className="text-emerald-400 mx-auto mb-1" />
+            <div className="text-lg font-bold text-white">{totalServiceAmount.toLocaleString()}</div>
+            <div className="text-[10px] text-gray-500">ค่าบริการรวม</div>
+          </div>
+        </div>
+
+        {/* Recent duty logs */}
+        <div>
+          <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-1.5">
+            <Clock size={14} className="text-amber-400" />
+            เวรที่เข้าล่าสุด
+          </h3>
+          {loading ? (
+            <div className="space-y-2">
+              <Skeleton variant="text" className="w-full" height={32} />
+              <Skeleton variant="text" className="w-full" height={32} />
+            </div>
+          ) : dutyLogs.length === 0 ? (
+            <div className="text-xs text-gray-500 text-center py-4 bg-navy-700/30 rounded-lg">ยังไม่มีประวัติการเข้าเวร</div>
+          ) : (
+            <div className="space-y-1.5">
+              {dutyLogs.map((d) => (
+                <div key={d.id} className="bg-navy-700/50 border border-blue-900/40 rounded-lg px-3 py-2 flex items-center justify-between">
+                  <div className="text-xs text-white">{formatDate(d.clock_in)}</div>
+                  <div className="text-[10px] text-gray-400">
+                    {d.clock_out
+                      ? `${(d.duration_minutes ?? 0)} นาที`
+                      : <span className="text-emerald-400 font-semibold">กำลังเข้าเวร</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Recent services */}
+        <div>
+          <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-1.5">
+            <DollarSign size={14} className="text-emerald-400" />
+            บริการที่ทำล่าสุด
+          </h3>
+          {loading ? (
+            <div className="space-y-2">
+              <Skeleton variant="text" className="w-full" height={32} />
+              <Skeleton variant="text" className="w-full" height={32} />
+            </div>
+          ) : services.length === 0 ? (
+            <div className="text-xs text-gray-500 text-center py-4 bg-navy-700/30 rounded-lg">ยังไม่มีประวัติการให้บริการ</div>
+          ) : (
+            <div className="space-y-1.5">
+              {services.map((s) => (
+                <div key={s.id} className="bg-navy-700/50 border border-blue-900/40 rounded-lg px-3 py-2 flex items-center justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs text-white truncate">{s.service_name}</div>
+                    <div className="text-[10px] text-gray-500">{formatDate(s.created_at)}</div>
+                  </div>
+                  <div className="text-right ml-2 flex-shrink-0">
+                    <div className="text-xs font-semibold text-amber-400">฿{s.amount.toLocaleString()}</div>
+                    <div className={`text-[10px] ${s.status === 'paid' ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {s.status === 'paid' ? 'ชำระแล้ว' : 'ค้างชำระ'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 }

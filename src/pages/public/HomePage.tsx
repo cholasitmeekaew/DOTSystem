@@ -1,12 +1,13 @@
 import { useEffect, useState, ReactNode } from 'react';
 import {
-  Truck, LogIn, FileText, ChevronRight,
+  LogIn, FileText, ChevronRight,
   Pin, AlertCircle, MessageSquare, Clock, User, Car,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { Announcement, Officer, RANK_LABELS, DEPARTMENT_LABELS } from '../../lib/types';
 
 import type { PublicPage } from '../../components/PublicLayout';
+import { LOGO_URL } from '../../components/PublicLayout';
 
 interface Props {
   onNavigate: (page: PublicPage) => void;
@@ -83,9 +84,11 @@ export function HomePage({ onNavigate }: Props) {
         }} />
         <div className="relative max-w-7xl mx-auto px-6 py-20 text-center">
           <div className="flex justify-center mb-6 anim-fadeInUp">
-            <div className="w-24 h-24 bg-amber-500/10 border-2 border-amber-500/30 rounded-2xl flex items-center justify-center anim-float">
-              <Truck size={46} className="text-amber-400" />
-            </div>
+            <img
+              src={LOGO_URL}
+              alt="Bit Cities DOT"
+              className="w-24 h-24 rounded-2xl anim-float"
+            />
           </div>
           <div className="anim-fadeInUp anim-delay-1 inline-flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 rounded-full px-4 py-1 mb-4">
             <div className="w-1.5 h-1.5 bg-amber-400 rounded-full anim-pulse" />

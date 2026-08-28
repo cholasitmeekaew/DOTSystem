@@ -20,14 +20,16 @@ export function Modal({ title, onClose, children, size = 'md' }: ModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className={`modal-shell ${widths[size]}`}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-blue-900/40">
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
-            <X size={20} />
-          </button>
-        </div>
-        <div className="p-6">{children}</div>
+      <div className={`modal-shell ${widths[size]} max-h-[90vh] flex flex-col overflow-hidden`}>
+        {title && (
+          <div className="flex items-center justify-between px-6 py-4 border-b border-blue-900/40 flex-shrink-0">
+            <h2 className="text-lg font-semibold text-white">{title}</h2>
+            <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+              <X size={20} />
+            </button>
+          </div>
+        )}
+        <div className="p-6 overflow-y-auto overscroll-contain">{children}</div>
       </div>
     </div>
   );

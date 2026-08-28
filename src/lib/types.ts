@@ -240,6 +240,7 @@ export const VEHICLE_TYPE_LABELS: Record<VehicleType, string> = {
 export const RANK_LABELS: Record<string, string> = {
   commissioner: 'หัวหน้ากรมขนส่ง',
   inspector: 'ผู้คุมสอบกรมขนส่ง',
+  probation: 'พนักงานทดลองงาน',
   officer: 'พนักงาน',
 };
 
