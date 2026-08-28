@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Siren, AlertTriangle, CarFront, Wrench, Truck as TowTruck,
   Eye, Trash2, MapPin, Clock, User, CheckCircle2,
-  XCircle, Loader2, Pencil, Save,
+  XCircle, Loader2,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import {
@@ -13,61 +13,6 @@ import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
-import { MapPicker, MapPreview, type MapPickerValue } from '../../components/MapPicker';
-
-interface ParsedLocation {
-  map: MapPickerValue;
-  label: string | null;
-}
-
-function parseLocation(loc: string): ParsedLocation | string {
-  try {
-    const p = JSON.parse(loc);
-    if (p && typeof p === 'object' && p.map && typeof p.map.lat === 'number' && typeof p.map.lng === 'number') {
-      return { map: p.map, label: p.label ?? null };
-    }
-  } catch {
-    // fall through
-  }
-  return loc;
-}
-
-function LocationThumb({ parsed }: { parsed: ParsedLocation | string }) {
-  if (typeof parsed === 'string') {
-    return <span className="truncate">{parsed}</span>;
-  }
-  const { map, label } = parsed;
-  return (
-    <div className="flex items-center gap-2 min-w-0">
-      <div className="flex-shrink-0 rounded border border-blue-900/50 bg-navy-900 overflow-hidden" style={{ width: 64, height: 40 }}>
-        <MapPreview value={map} height={40} />
-      </div>
-      <span className="truncate">
-        {label || `📍 ${map.lat.toFixed(4)}, ${map.lng.toFixed(4)}`}
-      </span>
-    </div>
-  );
-}
-
-function LocationPreview({ parsed }: { parsed: ParsedLocation | string }) {
-  if (typeof parsed === 'string') {
-    return (
-      <div className="text-white text-sm flex items-center gap-1.5">
-        <MapPin size={14} className="text-red-400" /> {parsed}
-      </div>
-    );
-  }
-  const { map, label } = parsed;
-  return (
-    <div className="space-y-2">
-      <MapPreview value={map} height={192} />
-      <div className="text-white text-sm flex items-center gap-1.5">
-        <MapPin size={14} className="text-red-400" />
-        {label || `พิกัด ${map.lat.toFixed(5)}, ${map.lng.toFixed(5)}`}
-      </div>
-    </div>
-  );
-}
 
 const TYPE_ICONS: Record<EmergencyReportType, React.ReactNode> = {
   accident: <AlertTriangle size={16} />,
@@ -90,10 +35,6 @@ export function EmergencyManagementPage() {
   const [filterStatus, setFilterStatus] = useState<'all' | EmergencyReportStatus>('all');
   const [viewReport, setViewReport] = useState<EmergencyReport | null>(null);
   const [deleteReport, setDeleteReport] = useState<EmergencyReport | null>(null);
-  const [editingLocation, setEditingLocation] = useState(false);
-  const [editPin, setEditPin] = useState<MapPickerValue | null>(null);
-  const [editLabel, setEditLabel] = useState('');
-  const [savingLocation, setSavingLocation] = useState(false);
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -136,6 +77,7 @@ export function EmergencyManagementPage() {
     await supabase.from('emergency_reports').delete().eq('id', deleteReport.id);
     await supabase.from('audit_logs').insert({
       action: 'DELETE_EMERGENCY_REPORT',
+      target_type: 'emergency_report',
       target_id: deleteReport.id,
       performed_by: officer.id,
       performed_by_name: officer.name,
@@ -143,57 +85,6 @@ export function EmergencyManagementPage() {
     });
     setDeleteReport(null);
     await fetchAll();
-  }
-
-  function startEditLocation() {
-    if (!viewReport) return;
-    const p = parseLocation(viewReport.location);
-    if (typeof p === 'string') {
-      setEditPin(null);
-      setEditLabel(p);
-    } else {
-      setEditPin(p.map);
-      setEditLabel(p.label ?? '');
-    }
-    setEditingLocation(true);
-  }
-
-  function cancelEditLocation() {
-    setEditingLocation(false);
-    setEditPin(null);
-    setEditLabel('');
-  }
-
-  async function saveLocation() {
-    if (!viewReport || !officer) return;
-    if (!editPin && !editLabel.trim()) return;
-    setSavingLocation(true);
-
-    const newLocation = editPin
-      ? JSON.stringify({ map: editPin, label: editLabel.trim() || null })
-      : editLabel.trim();
-
-    const oldLocation = viewReport.location;
-    await supabase.from('emergency_reports').update({
-      location: newLocation,
-      updated_at: new Date().toISOString(),
-    }).eq('id', viewReport.id);
-
-    await supabase.from('audit_logs').insert({
-      action: 'UPDATE_EMERGENCY_LOCATION',
-      target_type: 'emergency_report',
-      target_id: viewReport.id,
-      performed_by: officer.id,
-      performed_by_name: officer.name,
-      details: { old: oldLocation, new: newLocation },
-    });
-
-    setViewReport({ ...viewReport, location: newLocation });
-    setReports((prev) => prev.map((r) => r.id === viewReport.id ? { ...r, location: newLocation } : r));
-    setEditingLocation(false);
-    setEditPin(null);
-    setEditLabel('');
-    setSavingLocation(false);
   }
 
   const filtered = reports.filter((r) => filterStatus === 'all' || r.status === filterStatus);
@@ -288,7 +179,7 @@ export function EmergencyManagementPage() {
                 <div className="space-y-1.5 mb-3">
                   <div className="flex items-start gap-1.5 text-xs text-gray-400">
                     <MapPin size={12} className="text-amber-400 flex-shrink-0 mt-0.5" />
-                    <LocationThumb parsed={parseLocation(report.location)} />
+                    <span className="truncate">{report.location}</span>
                   </div>
                   <div className="flex items-start gap-1.5 text-xs text-gray-400">
                     <User size={12} className="text-gray-500 flex-shrink-0 mt-0.5" />
@@ -369,54 +260,10 @@ export function EmergencyManagementPage() {
                 </div>
               </div>
               <div className="col-span-2">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-xs text-gray-500">สถานที่</div>
-                  {!editingLocation && (
-                    <button
-                      type="button"
-                      onClick={startEditLocation}
-                      className="text-xs flex items-center gap-1 text-amber-400 hover:text-amber-300 transition-colors"
-                    >
-                      <Pencil size={12} /> แก้ไขพิกัด
-                    </button>
-                  )}
+                <div className="text-xs text-gray-500 mb-1">สถานที่</div>
+                <div className="text-white text-sm flex items-center gap-1.5">
+                  <MapPin size={14} className="text-red-400" /> {viewReport.location}
                 </div>
-                {editingLocation ? (
-                  <div className="space-y-2">
-                    <MapPicker
-                      value={editPin}
-                      onChange={setEditPin}
-                      height={280}
-                    />
-                    <input
-                      className="input-field"
-                      placeholder="ระบุชื่อสถานที่ (ไม่บังคับ)"
-                      value={editLabel}
-                      onChange={(e) => setEditLabel(e.target.value)}
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={saveLocation}
-                        disabled={savingLocation || (!editPin && !editLabel.trim())}
-                        className="btn-primary flex items-center gap-1.5 text-sm disabled:opacity-50"
-                      >
-                        <Save size={14} />
-                        {savingLocation ? 'กำลังบันทึก...' : 'บันทึกพิกัด'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={cancelEditLocation}
-                        disabled={savingLocation}
-                        className="btn-secondary text-sm"
-                      >
-                        ยกเลิก
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <LocationPreview parsed={parseLocation(viewReport.location)} />
-                )}
               </div>
               <div className="col-span-2">
                 <div className="text-xs text-gray-500 mb-1">รายละเอียด</div>
@@ -465,7 +312,7 @@ export function EmergencyManagementPage() {
       {deleteReport && (
         <ConfirmDialog
           title="ลบเรื่องแจ้งเหตุ"
-          message={`ต้องการลบเรื่องแจ้งเหตุ "${EMERGENCY_TYPE_LABELS[deleteReport.report_type]}" ที่ ${(() => { const p = parseLocation(deleteReport.location); return typeof p === 'string' ? p : (p.label || `พิกัด ${p.map.lat.toFixed(5)}, ${p.map.lng.toFixed(5)}`); })()} ใช่หรือไม่?`}
+          message={`ต้องการลบเรื่องแจ้งเหตุ "${EMERGENCY_TYPE_LABELS[deleteReport.report_type]}" ที่ ${deleteReport.location} ใช่หรือไม่?`}
           confirmLabel="ลบ"
           danger
           onConfirm={handleDelete}

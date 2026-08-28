@@ -26,8 +26,6 @@ export default defineConfig({
     },
     dedupe: ['react', 'react-dom'],
   },
-  // ไม่ optimize Supabase SDK — เพราะ supabase.ts ไม่ import ตรงแล้ว
-  // (เฉพาะตอน runtime เท่านั้นที่อาจ load)
   root: path.resolve(import.meta.dirname),
   build: {
     outDir: path.resolve(import.meta.dirname, 'dist/public'),

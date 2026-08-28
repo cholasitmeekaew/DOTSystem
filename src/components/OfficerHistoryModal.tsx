@@ -52,84 +52,31 @@ const leaveVariant: Record<LeaveStatus, 'warning' | 'success' | 'danger' | 'neut
 export function OfficerHistoryModal({ officer, onClose }: Props) {
   const [tab, setTab] = useState<TabKey>('duty');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [records, setRecords] = useState<ServiceRecord[]>([]);
   const [leaves, setLeaves] = useState<OfficerLeave[]>([]);
   const [searchQ, setSearchQ] = useState('');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     if (!officer) return;
     setLoading(true);
-    setError(null);
     Promise.all([
       supabase.from('duty_logs').select('*').eq('officer_id', officer.id).is('deleted_at', null).order('clock_in', { ascending: false }),
       supabase.from('service_records').select('*').eq('officer_id', officer.id).order('service_date', { ascending: false }),
       supabase.from('officer_leaves').select('*').eq('officer_id', officer.id).order('created_at', { ascending: false }),
     ]).then(([d, s, l]) => {
-      if (d.error || s.error || l.error) {
-        setError('ไม่สามารถโหลดข้อมูลประวัติได้');
-      } else {
-        setDutyLogs((d.data ?? []) as DutyLog[]);
-        setRecords((s.data ?? []) as ServiceRecord[]);
-        setLeaves((l.data ?? []) as OfficerLeave[]);
-      }
-      setLoading(false);
-    }).catch((e) => {
-      setError('เกิดข้อผิดพลาด: ' + (e?.message ?? 'Unknown'));
+      setDutyLogs((d.data ?? []) as DutyLog[]);
+      setRecords((s.data ?? []) as ServiceRecord[]);
+      setLeaves((l.data ?? []) as OfficerLeave[]);
       setLoading(false);
     });
-  }, [officer, retryKey]);
-
-  const sortMultiplier = sortDir === 'desc' ? -1 : 1;
-
-  const filteredDuty = useMemo(() => {
-    let list = dutyLogs.filter((d) => !d.deleted_at);
-    if (searchQ) {
-      const q = searchQ.toLowerCase();
-      list = list.filter((d) =>
-        fmtDateTime(d.clock_in).toLowerCase().includes(q) ||
-        (d.clock_out && fmtDateTime(d.clock_out).toLowerCase().includes(q)) ||
-        (d.forced_by_name && d.forced_by_name.toLowerCase().includes(q))
-      );
-    }
-    list.sort((a, b) => sortMultiplier * (new Date(a.clock_in).getTime() - new Date(b.clock_in).getTime()));
-    return list;
-  }, [dutyLogs, searchQ, sortMultiplier]);
-
-  const filteredRecords = useMemo(() => {
-    let list = [...records];
-    if (searchQ) {
-      const q = searchQ.toLowerCase();
-      list = list.filter((r) =>
-        r.service_name.toLowerCase().includes(q) ||
-        r.notes?.toLowerCase().includes(q) ||
-        fmtDate(r.service_date).toLowerCase().includes(q)
-      );
-    }
-    list.sort((a, b) => sortMultiplier * (new Date(a.service_date).getTime() - new Date(b.service_date).getTime()));
-    return list;
-  }, [records, searchQ, sortMultiplier]);
-
-  const filteredLeaves = useMemo(() => {
-    let list = [...leaves];
-    if (searchQ) {
-      const q = searchQ.toLowerCase();
-      list = list.filter((l) =>
-        LEAVE_TYPE_LABELS[l.leave_type].toLowerCase().includes(q) ||
-        l.reason?.toLowerCase().includes(q) ||
-        LEAVE_STATUS_LABELS[l.status].toLowerCase().includes(q)
-      );
-    }
-    return list;
-  }, [leaves, searchQ]);
+  }, [officer]);
 
   if (!officer) return null;
 
-  const activeLogs = filteredDuty;
-  const totalMinutes = dutyLogs.filter((d) => !d.deleted_at).reduce((sum, d) => sum + (d.duration_minutes ?? 0), 0);
+  const activeLogs = dutyLogs.filter((d) => !d.deleted_at);
+  const totalMinutes = activeLogs.reduce((sum, d) => sum + (d.duration_minutes ?? 0), 0);
   const totalAmount = records.reduce((sum, r) => sum + r.amount, 0);
   const unpaidAmount = records.filter((r) => r.status === 'unpaid').reduce((sum, r) => sum + r.amount, 0);
   const paidCount = records.filter((r) => r.status === 'paid').length;
@@ -148,25 +95,68 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
     { key: 'leaves', label: 'การลา', icon: <CalendarDays size={13} />, count: leaves.length },
   ];
 
+  const sortMultiplier = sortDir === 'desc' ? -1 : 1;
+
+  const filteredDuty = useMemo(() => {
+    let list = [...activeLogs];
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      list = list.filter((d) =>
+        fmtDateTime(d.clock_in).toLowerCase().includes(q) ||
+        (d.clock_out && fmtDateTime(d.clock_out).toLowerCase().includes(q)) ||
+        (d.forced_by_name && d.forced_by_name.toLowerCase().includes(q))
+      );
+    }
+    list.sort((a, b) => sortMultiplier * new Date(a.clock_in).getTime() + sortMultiplier * new Date(b.clock_in).getTime());
+    return sortDir === 'desc' ? list.reverse() : list;
+  }, [activeLogs, searchQ, sortDir]);
+
+  const filteredRecords = useMemo(() => {
+    let list = [...records];
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      list = list.filter((r) =>
+        r.service_name.toLowerCase().includes(q) ||
+        r.notes?.toLowerCase().includes(q) ||
+        fmtDate(r.service_date).toLowerCase().includes(q)
+      );
+    }
+    list.sort((a, b) => sortMultiplier * (a.amount - b.amount));
+    return sortDir === 'desc' ? list.reverse() : list;
+  }, [records, searchQ, sortDir]);
+
+  const filteredLeaves = useMemo(() => {
+    let list = [...leaves];
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      list = list.filter((l) =>
+        LEAVE_TYPE_LABELS[l.leave_type].toLowerCase().includes(q) ||
+        l.reason?.toLowerCase().includes(q) ||
+        LEAVE_STATUS_LABELS[l.status].toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [leaves, searchQ]);
+
   return (
     <Modal title="ประวัติการทำงาน" onClose={onClose} size="lg">
       {/* Officer identity */}
       <div className="flex items-center gap-4 pb-4 mb-4 border-b border-amber-500/20">
         <div className="w-14 h-14 rounded-xl overflow-hidden bg-blue-900 flex items-center justify-center flex-shrink-0 ring-2 ring-amber-500/40 shadow-lg shadow-amber-500/10">
-          {officer?.photo_url ? (
-            <img src={officer.photo_url} alt={officer?.name ?? ''} className="w-full h-full object-cover" />
+          {officer.photo_url ? (
+            <img src={officer.photo_url} alt={officer.name} className="w-full h-full object-cover" />
           ) : (
-            <span className="text-amber-400 font-bold text-xl">{(officer?.name ?? '?').charAt(0).toUpperCase()}</span>
+            <span className="text-amber-400 font-bold text-xl">{officer.name.charAt(0).toUpperCase()}</span>
           )}
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-white font-semibold">{officer?.name ?? 'ไม่ระบุชื่อ'}</span>
-            <span className="text-xs text-gray-500 font-mono">@{officer?.username ?? 'unknown'}</span>
+            <span className="text-white font-semibold">{officer.name}</span>
+            <span className="text-xs text-gray-500 font-mono">@{officer.username}</span>
           </div>
           <div className="text-xs text-gray-400 mt-0.5">
-            {DEPARTMENT_LABELS[officer?.department as keyof typeof DEPARTMENT_LABELS] ?? 'ไม่ระบุแผนก'}
-            {officer?.is_on_duty && (
+            {DEPARTMENT_LABELS[officer.department]}
+            {officer.is_on_duty && (
               <span className="ml-2 text-emerald-400">● กำลังปฏิบัติหน้าที่</span>
             )}
           </div>
@@ -224,17 +214,6 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
 
       {/* Content */}
       <div className="max-h-[42vh] overflow-y-auto pr-1 space-y-2">
-        {error && (
-          <div className="py-8 text-center">
-            <p className="text-red-400 text-sm">{error}</p>
-            <button
-              onClick={() => { setRetryKey((k) => k + 1); }}
-              className="mt-2 text-xs text-amber-400 hover:text-amber-300"
-            >
-              ลองใหม่
-            </button>
-          </div>
-        )}
         {loading ? (
           <div className="py-12 text-center">
             <History size={28} className="text-gray-600 mx-auto mb-2 animate-pulse" />

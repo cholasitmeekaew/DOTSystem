@@ -33,18 +33,18 @@ interface SearchTypeOption {
 
 const SEARCH_TYPE_OPTIONS: SearchTypeOption[] = [
   {
-    id: 'discord',
-    label: 'Discord Username',
-    description: 'ค้นหาด้วยชื่อ Discord',
-    icon: <MessageCircle size={18} />,
-    placeholder: 'ระบุ Discord Username...',
-  },
-  {
     id: 'roblox',
     label: 'Roblox Username',
     description: 'ค้นหาด้วยชื่อในเกม',
     icon: <User size={18} />,
     placeholder: 'ระบุ Roblox Username...',
+  },
+  {
+    id: 'discord',
+    label: 'Discord Username',
+    description: 'ค้นหาด้วยชื่อ Discord',
+    icon: <MessageCircle size={18} />,
+    placeholder: 'ระบุ Discord Username...',
   },
   {
     id: 'plate',
@@ -58,7 +58,7 @@ const SEARCH_TYPE_OPTIONS: SearchTypeOption[] = [
 
 export function CitizenPage() {
   const [tab, setTab] = useState<Tab>('overview');
-  const [searchType, setSearchType] = useState<SearchType>('discord');
+  const [searchType, setSearchType] = useState<SearchType>('roblox');
   const [query, setQuery] = useState('');
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -642,8 +642,8 @@ function LicensesTab({ licenses, formatDate }: { licenses: License[]; formatDate
                     {expired ? <Badge variant="danger">หมดอายุ</Badge> : expiringSoon ? <Badge variant="warning">ใกล้หมดอายุ</Badge> : <Badge variant="success">ใช้งานได้</Badge>}
                   </div>
                   <div className="grid grid-cols-2 gap-4 pt-3 border-t border-blue-900/30">
-                    <DetailItem icon={<User size={14} />} label="Discord" value={lic.discord_username || '-'} />
                     <DetailItem icon={<User size={14} />} label="Roblox" value={lic.roblox_username} />
+                    <DetailItem icon={<User size={14} />} label="Discord" value={lic.discord_username || '-'} />
                     <DetailItem icon={<Clock size={14} />} label="วันออกบัตร" value={formatDate(lic.issue_date)} />
                     <DetailItem icon={<Clock size={14} />} label="วันหมดอายุ" value={formatDate(lic.expiry_date)} />
                     {lic.issued_by_name && <DetailItem icon={<Shield size={14} />} label="ออกโดย" value={lic.issued_by_name} />}
