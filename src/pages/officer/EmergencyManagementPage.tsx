@@ -2,17 +2,72 @@ import { useEffect, useState } from 'react';
 import {
   Siren, AlertTriangle, CarFront, Wrench, Truck as TowTruck,
   Eye, Trash2, MapPin, Clock, User, CheckCircle2,
-  XCircle, Loader2,
+  XCircle, Loader2, Pencil, Save, UserCheck,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import {
-  EmergencyReport, EmergencyReportType, EmergencyReportStatus,
+  EmergencyReport, EmergencyReportType, EmergencyReportStatus, Officer,
   EMERGENCY_TYPE_LABELS, EMERGENCY_STATUS_LABELS,
 } from '../../lib/types';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
+import { MapPicker, MapPreview, type MapPickerValue } from '../../components/MapPicker';
+
+interface ParsedLocation {
+  map: MapPickerValue;
+  label: string | null;
+}
+
+function parseLocation(loc: string): ParsedLocation | string {
+  try {
+    const p = JSON.parse(loc);
+    if (p && typeof p === 'object' && p.map && typeof p.map.lat === 'number' && typeof p.map.lng === 'number') {
+      return { map: p.map, label: p.label ?? null };
+    }
+  } catch {
+    // fall through
+  }
+  return loc;
+}
+
+function LocationThumb({ parsed }: { parsed: ParsedLocation | string }) {
+  if (typeof parsed === 'string') {
+    return <span className="truncate">{parsed}</span>;
+  }
+  const { map, label } = parsed;
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <div className="flex-shrink-0 rounded border border-blue-900/50 bg-navy-900 overflow-hidden" style={{ width: 64, height: 40 }}>
+        <MapPreview value={map} height={40} />
+      </div>
+      <span className="truncate">
+        {label || `📍 ${map.lat.toFixed(4)}, ${map.lng.toFixed(4)}`}
+      </span>
+    </div>
+  );
+}
+
+function LocationPreview({ parsed }: { parsed: ParsedLocation | string }) {
+  if (typeof parsed === 'string') {
+    return (
+      <div className="text-white text-sm flex items-center gap-1.5">
+        <MapPin size={14} className="text-red-400" /> {parsed}
+      </div>
+    );
+  }
+  const { map, label } = parsed;
+  return (
+    <div className="space-y-2">
+      <MapPreview value={map} height={192} />
+      <div className="text-white text-sm flex items-center gap-1.5">
+        <MapPin size={14} className="text-red-400" />
+        {label || `พิกัด ${map.lat.toFixed(5)}, ${map.lng.toFixed(5)}`}
+      </div>
+    </div>
+  );
+}
 
 const TYPE_ICONS: Record<EmergencyReportType, React.ReactNode> = {
   accident: <AlertTriangle size={16} />,
@@ -31,29 +86,41 @@ const STATUS_BADGE: Record<EmergencyReportStatus, 'warning' | 'info' | 'success'
 export function EmergencyManagementPage() {
   const { officer, isCommissioner } = useAuth();
   const [reports, setReports] = useState<EmergencyReport[]>([]);
+  const [officers, setOfficers] = useState<Officer[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<'all' | EmergencyReportStatus>('all');
   const [viewReport, setViewReport] = useState<EmergencyReport | null>(null);
   const [deleteReport, setDeleteReport] = useState<EmergencyReport | null>(null);
+  const [editingLocation, setEditingLocation] = useState(false);
+  const [editPin, setEditPin] = useState<MapPickerValue | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [savingLocation, setSavingLocation] = useState(false);
+  const [editingHandler, setEditingHandler] = useState(false);
+  const [selectedHandlerId, setSelectedHandlerId] = useState('');
+  const [savingHandler, setSavingHandler] = useState(false);
 
   useEffect(() => { fetchAll(); }, []);
 
   async function fetchAll() {
     setLoading(true);
-    const { data } = await supabase
-      .from('emergency_reports')
-      .select('*')
-      .order('created_at', { ascending: false });
-    setReports(data ?? []);
+    const [reportsRes, officersRes] = await Promise.all([
+      supabase.from('emergency_reports').select('*').order('created_at', { ascending: false }),
+      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+    ]);
+    setReports(reportsRes.data ?? []);
+    setOfficers((officersRes.data ?? []) as Officer[]);
     setLoading(false);
   }
 
   async function updateStatus(report: EmergencyReport, status: EmergencyReportStatus) {
     if (!officer) return;
+    const responderId = report.responded_by || officer.id;
+    const responderName = report.responded_by_name || officer.name;
+
     await supabase.from('emergency_reports').update({
       status,
-      responded_by: officer.id,
-      responded_by_name: officer.name,
+      responded_by: responderId,
+      responded_by_name: responderName,
       updated_at: new Date().toISOString(),
     }).eq('id', report.id);
 
@@ -64,12 +131,42 @@ export function EmergencyManagementPage() {
         target_id: report.id,
         performed_by: officer.id,
         performed_by_name: officer.name,
-        details: { report_type: report.report_type, location: report.location },
+        details: { report_type: report.report_type, location: report.location, handler: responderName },
       });
     }
 
-    setReports((prev) => prev.map((r) => r.id === report.id ? { ...r, status, responded_by_name: officer.name } : r));
-    if (viewReport?.id === report.id) setViewReport({ ...viewReport, status, responded_by_name: officer.name });
+    setReports((prev) => prev.map((r) => r.id === report.id ? { ...r, status, responded_by: responderId, responded_by_name: responderName } : r));
+    if (viewReport?.id === report.id) setViewReport({ ...viewReport, status, responded_by: responderId, responded_by_name: responderName });
+  }
+
+  async function saveHandler() {
+    if (!viewReport || !officer || !selectedHandlerId) return;
+    setSavingHandler(true);
+    const targetOfficer = officers.find((o) => o.id === selectedHandlerId);
+    if (!targetOfficer) {
+      setSavingHandler(false);
+      return;
+    }
+
+    await supabase.from('emergency_reports').update({
+      responded_by: targetOfficer.id,
+      responded_by_name: targetOfficer.name,
+      updated_at: new Date().toISOString(),
+    }).eq('id', viewReport.id);
+
+    await supabase.from('audit_logs').insert({
+      action: 'UPDATE_EMERGENCY_HANDLER',
+      target_type: 'emergency_report',
+      target_id: viewReport.id,
+      performed_by: officer.id,
+      performed_by_name: officer.name,
+      details: { new_handler_id: targetOfficer.id, new_handler_name: targetOfficer.name },
+    });
+
+    setViewReport({ ...viewReport, responded_by: targetOfficer.id, responded_by_name: targetOfficer.name });
+    setReports((prev) => prev.map((r) => r.id === viewReport.id ? { ...r, responded_by: targetOfficer.id, responded_by_name: targetOfficer.name } : r));
+    setEditingHandler(false);
+    setSavingHandler(false);
   }
 
   async function handleDelete() {
@@ -77,7 +174,6 @@ export function EmergencyManagementPage() {
     await supabase.from('emergency_reports').delete().eq('id', deleteReport.id);
     await supabase.from('audit_logs').insert({
       action: 'DELETE_EMERGENCY_REPORT',
-      target_type: 'emergency_report',
       target_id: deleteReport.id,
       performed_by: officer.id,
       performed_by_name: officer.name,
@@ -85,6 +181,57 @@ export function EmergencyManagementPage() {
     });
     setDeleteReport(null);
     await fetchAll();
+  }
+
+  function startEditLocation() {
+    if (!viewReport) return;
+    const p = parseLocation(viewReport.location);
+    if (typeof p === 'string') {
+      setEditPin(null);
+      setEditLabel(p);
+    } else {
+      setEditPin(p.map);
+      setEditLabel(p.label ?? '');
+    }
+    setEditingLocation(true);
+  }
+
+  function cancelEditLocation() {
+    setEditingLocation(false);
+    setEditPin(null);
+    setEditLabel('');
+  }
+
+  async function saveLocation() {
+    if (!viewReport || !officer) return;
+    if (!editPin && !editLabel.trim()) return;
+    setSavingLocation(true);
+
+    const newLocation = editPin
+      ? JSON.stringify({ map: editPin, label: editLabel.trim() || null })
+      : editLabel.trim();
+
+    const oldLocation = viewReport.location;
+    await supabase.from('emergency_reports').update({
+      location: newLocation,
+      updated_at: new Date().toISOString(),
+    }).eq('id', viewReport.id);
+
+    await supabase.from('audit_logs').insert({
+      action: 'UPDATE_EMERGENCY_LOCATION',
+      target_type: 'emergency_report',
+      target_id: viewReport.id,
+      performed_by: officer.id,
+      performed_by_name: officer.name,
+      details: { old: oldLocation, new: newLocation },
+    });
+
+    setViewReport({ ...viewReport, location: newLocation });
+    setReports((prev) => prev.map((r) => r.id === viewReport.id ? { ...r, location: newLocation } : r));
+    setEditingLocation(false);
+    setEditPin(null);
+    setEditLabel('');
+    setSavingLocation(false);
   }
 
   const filtered = reports.filter((r) => filterStatus === 'all' || r.status === filterStatus);
@@ -179,7 +326,7 @@ export function EmergencyManagementPage() {
                 <div className="space-y-1.5 mb-3">
                   <div className="flex items-start gap-1.5 text-xs text-gray-400">
                     <MapPin size={12} className="text-amber-400 flex-shrink-0 mt-0.5" />
-                    <span className="truncate">{report.location}</span>
+                    <LocationThumb parsed={parseLocation(report.location)} />
                   </div>
                   <div className="flex items-start gap-1.5 text-xs text-gray-400">
                     <User size={12} className="text-gray-500 flex-shrink-0 mt-0.5" />
@@ -260,22 +407,119 @@ export function EmergencyManagementPage() {
                 </div>
               </div>
               <div className="col-span-2">
-                <div className="text-xs text-gray-500 mb-1">สถานที่</div>
-                <div className="text-white text-sm flex items-center gap-1.5">
-                  <MapPin size={14} className="text-red-400" /> {viewReport.location}
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs text-gray-500">สถานที่</div>
+                  {!editingLocation && (
+                    <button
+                      type="button"
+                      onClick={startEditLocation}
+                      className="text-xs flex items-center gap-1 text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      <Pencil size={12} /> แก้ไขพิกัด
+                    </button>
+                  )}
                 </div>
+                {editingLocation ? (
+                  <div className="space-y-2">
+                    <MapPicker
+                      value={editPin}
+                      onChange={setEditPin}
+                      height={280}
+                    />
+                    <input
+                      className="input-field"
+                      placeholder="ระบุชื่อสถานที่ (ไม่บังคับ)"
+                      value={editLabel}
+                      onChange={(e) => setEditLabel(e.target.value)}
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={saveLocation}
+                        disabled={savingLocation || (!editPin && !editLabel.trim())}
+                        className="btn-primary flex items-center gap-1.5 text-sm disabled:opacity-50"
+                      >
+                        <Save size={14} />
+                        {savingLocation ? 'กำลังบันทึก...' : 'บันทึกพิกัด'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEditLocation}
+                        disabled={savingLocation}
+                        className="btn-secondary text-sm"
+                      >
+                        ยกเลิก
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <LocationPreview parsed={parseLocation(viewReport.location)} />
+                )}
               </div>
               <div className="col-span-2">
                 <div className="text-xs text-gray-500 mb-1">รายละเอียด</div>
                 <div className="text-gray-300 text-sm whitespace-pre-wrap break-words bg-navy-900/50 rounded-lg p-3">{viewReport.details}</div>
               </div>
               <div className="col-span-2">
-                <div className="text-xs text-gray-500 mb-1">สถานะ</div>
-                <Badge variant={STATUS_BADGE[viewReport.status]}>
-                  {EMERGENCY_STATUS_LABELS[viewReport.status]}
-                </Badge>
-                {viewReport.responded_by_name && (
-                  <span className="ml-2 text-xs text-gray-500">ดูแลโดย {viewReport.responded_by_name}</span>
+                <div className="text-xs text-gray-500 mb-1">สถานะและการมอบหมายเคส</div>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant={STATUS_BADGE[viewReport.status]}>
+                      {EMERGENCY_STATUS_LABELS[viewReport.status]}
+                    </Badge>
+                    {viewReport.responded_by_name && (
+                      <span className="text-xs text-gray-400">ดูแลโดย <span className="text-amber-400 font-medium">{viewReport.responded_by_name}</span></span>
+                    )}
+                  </div>
+                  {!editingHandler && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedHandlerId(viewReport.responded_by || officer?.id || '');
+                        setEditingHandler(true);
+                      }}
+                      className="text-xs flex items-center gap-1 text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      <UserCheck size={12} /> {viewReport.responded_by_name ? 'เปลี่ยนผู้ดูแลเคส' : 'มอบหมายผู้ดูแลเคส'}
+                    </button>
+                  )}
+                </div>
+
+                {editingHandler && (
+                  <div className="mt-3 p-3 bg-navy-900/80 rounded-lg border border-amber-500/20 space-y-2">
+                    <label className="block text-xs font-semibold text-gray-300">เลือกเจ้าหน้าที่ผู้รับผิดชอบเคส</label>
+                    <select
+                      className="input-field text-sm"
+                      value={selectedHandlerId}
+                      onChange={(e) => setSelectedHandlerId(e.target.value)}
+                    >
+                      <option value="">-- เลือกเจ้าหน้าที่ --</option>
+                      {officers.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.name} ({o.rank})
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setEditingHandler(false)}
+                        disabled={savingHandler}
+                        className="btn-secondary text-xs px-3 py-1.5"
+                      >
+                        ยกเลิก
+                      </button>
+                      <button
+                        type="button"
+                        onClick={saveHandler}
+                        disabled={savingHandler || !selectedHandlerId}
+                        className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <Save size={12} />
+                        {savingHandler ? 'กำลังบันทึก...' : 'บันทึกผู้ดูแลเคส'}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -312,7 +556,7 @@ export function EmergencyManagementPage() {
       {deleteReport && (
         <ConfirmDialog
           title="ลบเรื่องแจ้งเหตุ"
-          message={`ต้องการลบเรื่องแจ้งเหตุ "${EMERGENCY_TYPE_LABELS[deleteReport.report_type]}" ที่ ${deleteReport.location} ใช่หรือไม่?`}
+          message={`ต้องการลบเรื่องแจ้งเหตุ "${EMERGENCY_TYPE_LABELS[deleteReport.report_type]}" ที่ ${(() => { const p = parseLocation(deleteReport.location); return typeof p === 'string' ? p : (p.label || `พิกัด ${p.map.lat.toFixed(5)}, ${p.map.lng.toFixed(5)}`); })()} ใช่หรือไม่?`}
           confirmLabel="ลบ"
           danger
           onConfirm={handleDelete}

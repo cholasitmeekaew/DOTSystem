@@ -24,7 +24,6 @@ export function useRealtimeSubscription(
     const channel = supabase
       .channel(`rt_${table}_${Math.random().toString(36).slice(2, 8)}`)
       .on(
-        // @ts-expect-error — supabase typing for jsonDb client is loose
         'postgres_changes',
         { event: eventList.join(','), schema: 'public', table, filter },
         (payload: { eventType: string; new: unknown; old: unknown }) => {
@@ -54,7 +53,6 @@ export function useRealtimeInvalidate(
     const channel = supabase
       .channel(`rt_inv_${table}_${Math.random().toString(36).slice(2, 8)}`)
       .on(
-        // @ts-expect-error — see above
         'postgres_changes',
         { event: eventList.join(','), schema: 'public', table, filter },
         () => {

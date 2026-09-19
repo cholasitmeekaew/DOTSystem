@@ -10,7 +10,7 @@ export interface OfficerRankRecord {
   created_at: string;
   updated_at: string;
 }
-export type ServiceStatus = 'paid' | 'unpaid';
+export type ServiceStatus = 'paid' | 'unpaid'; // 'partial' is rendered in UI when 0 < paid_amount < amount
 export type ServiceType = 'normal' | 'impound';
 
 export type Department =
@@ -30,9 +30,47 @@ export interface Officer {
   status: OfficerStatus;
   is_on_duty: boolean;
   photo_url: string | null;
+  // Performance Point System (optional — column added in migration 0006)
+  points?: number;
+  points_period?: string | null;
+  points_log?: PointsLogEntry[];
+  // Rates (optional — column added in migration 0007)
+  duty_rate?: number;
+  service_category?: string | null;
+  // Claim share accumulator (optional — column added in migration 0009)
+  accumulated_share?: number;
   created_at: string;
   updated_at: string;
 }
+
+export interface DepartmentBalance {
+  department: string;
+  balance: number;
+  total_earned: number;
+  updated_at: string;
+}
+
+export interface OfficerPayrollOverride {
+  officer_id: string;
+  period_month: string;
+  manual_duty_income: number | null;
+  manual_service_income: number | null;
+  manual_bonus: number | null;
+  manual_total_net_payout: number | null;
+  is_manual_mode: boolean;
+  updated_at: string;
+  updated_by_id: string;
+  updated_by_name: string;
+}
+
+export const SERVICE_CATEGORIES = [
+  { value: 'vehicle_rescue', label: 'กู้ภัยรถยก' },
+  { value: 'civil_maintenance', label: 'โยธาซ่อมบำรุง' },
+  { value: 'electrical', label: 'การไฟฟ้า' },
+  { value: 'traffic_management', label: 'จัดการจราจร' },
+  { value: 'emergency_assistance', label: 'ช่วยเหลือฉุกเฉิน' },
+  { value: 'general', label: 'ทั่วไป' },
+] as const;
 
 export interface Announcement {
   id: string;
@@ -48,6 +86,7 @@ export interface Announcement {
 
 export interface ServiceRate {
   id: string;
+  rate_key?: string | null;
   name: string;
   description: string;
   price: number;
@@ -64,6 +103,8 @@ export interface ServiceRecord {
   service_rate_id: string | null;
   service_name: string;
   amount: number;
+  // Payment installments (added in migration 0011)
+  paid_amount?: number;
   status: ServiceStatus;
   service_type: ServiceType;
   officer_id: string | null;
@@ -72,8 +113,92 @@ export interface ServiceRecord {
   evidence_url: string | null;
   service_date: string;
   citizen_id: string | null;
+  // Revenue sharing (added in migration 0008)
+  officer_share?: number;
+  central_share?: number;
+  assigned_officer_count?: number;
+  // Service category for scope calculation (optional — may be inferred from service_name)
+  service_category?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ServicePayment {
+  id: string;
+  service_record_id: string;
+  amount: number;
+  recorded_by: string | null;
+  recorded_by_name: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServiceRecordOfficer {
+  service_record_id: string;
+  officer_id: string;
+  assigned_at: string;
+  assigned_by: string | null;
+}
+
+export interface RevenueConfig {
+  scope: 'default' | 'vehicle_rescue';
+  officer_share_percent: number;
+  central_share_percent: number;
+  notes: string | null;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+export interface RevenueOverride {
+  service_record_id: string;
+  officer_share: number;
+  central_share: number;
+  reason: string | null;
+  edited_at: string;
+  edited_by: string | null;
+}
+
+export type ClaimStatus = 'pending' | 'approved' | 'rejected' | 'paid';
+
+export interface ClaimRecord {
+  id: string;
+  officer_id: string;
+  service_record_id: string | null;
+  amount: number;
+  scope: 'default' | 'vehicle_rescue';
+  officer_share_percent: number;
+  claim_period: string;
+  record_count: number;
+  status: ClaimStatus;
+  claimed_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  rejected_by: string | null;
+  rejected_at: string | null;
+  reject_reason: string | null;
+  paid_by: string | null;
+  paid_at: string | null;
+  note: string | null;
+  created_at: string;
+}
+
+export interface ClaimPreviewRecord {
+  id: string;
+  service_name: string;
+  amount: number;
+  assigned_count: number;
+  per_officer_share: number;
+}
+
+export interface ClaimPreview {
+  scope: 'default' | 'vehicle_rescue';
+  period: string;
+  officer_share_percent: number;
+  record_count: number;
+  gross_amount: number;
+  per_officer_total: number;
+  records: ClaimPreviewRecord[];
 }
 
 export interface DutyLog {
@@ -101,6 +226,32 @@ export interface AuditLog {
   performed_by: string | null;
   performed_by_name: string;
   details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface WorkReport {
+  id: string;
+  officer_id: string;
+  officer_name: string;
+  duty_log_id: string | null;
+  duty_category?: string | null;
+  summary: string | null;
+  report_text: string;
+  cases?: WorkReportCase[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkReportCase {
+  id: string;
+  work_report_id: string;
+  case_name?: string | null;
+  case_type: string | null;
+  citizen_username?: string | null;
+  citizen_id?: string | null;
+  case_status?: 'completed' | 'in_progress' | 'transferred' | string | null;
+  details: string;
+  evidence_url: string | null;
   created_at: string;
 }
 
@@ -202,7 +353,7 @@ export interface Vehicle {
   updated_at: string;
 }
 
-export type CitizenStatus = 'normal' | 'watched' | 'suspended';
+export type CitizenStatus = 'normal' | 'watched' | 'suspended' | 'banned';
 
 export interface Citizen {
   id: string;
@@ -218,6 +369,7 @@ export const CITIZEN_STATUS_LABELS: Record<CitizenStatus, string> = {
   normal: 'ปกติ',
   watched: 'เฝ้าระวัง',
   suspended: 'ระงับสิทธิ์',
+  banned: 'แบน',
 };
 
 export const VEHICLE_CATEGORY_LABELS: Record<string, string> = {
@@ -347,3 +499,60 @@ export const VEHICLE_COLORS: { label: string; value: string }[] = [
   { label: 'สีเทาเข้ม', value: 'เทาเข้ม' },
   { label: 'สีอื่นๆ', value: 'อื่นๆ' },
 ];
+
+// ============== Performance Point System (PPS) ==============
+
+export interface PointsLogEntry {
+  at: string;             // ISO timestamp
+  by: string;             // user id คนกระทำ
+  by_name: string;        // ชื่อคนกระทำ
+  delta: number;          // +10 / -20
+  reason: string;         // เหตุผล
+  balance_after: number;  // คะแนนคงเหลือหลังทำรายการ
+  period: string;         // 'YYYY-MM'
+}
+
+export const POINTS_REWARDS: { label: string; delta: number }[] = [
+  { label: 'ลงเวลาปฏิบัติหน้าที่ครบ 1 สัปดาห์', delta: 5 },
+  { label: 'ปฏิบัติหน้าที่ครบ 1 ชั่วโมง (เซิฟเปิด-เซิฟปิด)', delta: 5 },
+  { label: 'รับแจ้งเหตุและดำเนินการสำเร็จ', delta: 10 },
+  { label: 'ช่วยเหลือรถเสีย', delta: 10 },
+  { label: 'ลากรถสำเร็จ', delta: 10 },
+  { label: 'จัดการจราจรในอุบัติเหตุ', delta: 10 },
+  { label: 'ปฏิบัติงานร่วมกับ Police / Fire / EMS', delta: 15 },
+  { label: 'ได้รับคำชมจากประชาชนหรือผู้บังคับบัญชา', delta: 15 },
+  { label: 'เข้าร่วมการฝึกอบรม / ผ่านการทดสอบประจำเดือน', delta: 20 },
+  { label: 'ปฏิบัติหน้าที่ในกิจกรรมพิเศษของเมือง', delta: 30 },
+];
+
+export const POINTS_PENALTIES: { label: string; delta: number }[] = [
+  { label: 'ไม่เข้าเวรเกิน 1 สัปดาห์', delta: -5 },
+  { label: 'ไม่แต่งเครื่องแบบถูกต้อง', delta: -5 },
+  { label: 'ไม่รายงานตัวทางวิทยุ', delta: -10 },
+  { label: 'ใช้วิทยุไม่ถูกระเบียบ', delta: -10 },
+  { label: 'ละทิ้งหน้าที่', delta: -15 },
+  { label: 'ใช้รถราชการผิดวัตถุประสงค์', delta: -20 },
+  { label: 'ทำรถราชการเสียหายจากความประมาท', delta: -20 },
+  { label: 'ฝ่าฝืน SOP', delta: -20 },
+  { label: 'ไม่เชื่อฟังคำสั่งผู้บังคับบัญชา', delta: -25 },
+  { label: 'ประพฤติตนไม่เหมาะสม', delta: -30 },
+  { label: 'ใช้อำนาจโดยมิชอบ', delta: -50 },
+  { label: 'ทุจริตหรือแอบอ้างหน้าที่', delta: -100 },
+];
+
+export const POINTS_LEVELS = [
+  { min: 0,    max: 99,        label: 'ต้องปรับปรุง',       color: 'red',     ringClass: 'ring-red-500/30',     bgClass: 'bg-red-500/10',     textClass: 'text-red-400' },
+  { min: 100,  max: 249,       label: 'ผ่านเกณฑ์',          color: 'amber',   ringClass: 'ring-amber-500/30',   bgClass: 'bg-amber-500/10',   textClass: 'text-amber-400' },
+  { min: 250,  max: 499,       label: 'ดี',                 color: 'emerald', ringClass: 'ring-emerald-500/30', bgClass: 'bg-emerald-500/10', textClass: 'text-emerald-400' },
+  { min: 500,  max: 799,       label: 'ดีมาก',              color: 'blue',    ringClass: 'ring-blue-500/30',    bgClass: 'bg-blue-500/10',    textClass: 'text-blue-400' },
+  { min: 800,  max: 999,       label: 'ดีเด่น',             color: 'purple',  ringClass: 'ring-purple-500/30',  bgClass: 'bg-purple-500/10',  textClass: 'text-purple-400' },
+  { min: 1000, max: Infinity,  label: 'เจ้าหน้าที่ดีเด่น', color: 'amber',   ringClass: 'ring-amber-400/40',  bgClass: 'bg-amber-500/15',   textClass: 'text-amber-300' },
+] as const;
+
+export function getPointsLevel(points: number) {
+  return POINTS_LEVELS.find((l) => points >= l.min && points <= l.max) ?? POINTS_LEVELS[0];
+}
+
+export function getNextPointsLevel(points: number) {
+  return POINTS_LEVELS.find((l) => l.min > points) ?? null;
+}

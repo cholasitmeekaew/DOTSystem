@@ -1,13 +1,17 @@
 import React, { useState } from 'react';
 import {
-  MessageSquare, Send, CheckCircle, AlertTriangle, Paperclip, Lock, Info,
+  MessageSquare, Send, CheckCircle, AlertTriangle, Paperclip, Lock, Info, ArrowLeft, Home,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { FadeIn, Stagger, StaggerItem } from '../../components/animations';
 
 type Status = 'idle' | 'submitting' | 'success' | 'error';
 
-export function ComplaintPage() {
+interface Props {
+  onBack?: () => void;
+}
+
+export function ComplaintPage({ onBack }: Props) {
   const [status, setStatus] = useState<Status>('idle');
   const [form, setForm] = useState({
     discord_username: '',
@@ -60,18 +64,39 @@ export function ComplaintPage() {
         <p className="text-gray-500 text-sm max-w-md mx-auto mb-8">
           เรื่องร้องเรียนของท่านได้รับการบันทึกเรียบร้อยแล้ว หัวหน้ากรมจะดำเนินการตรวจสอบและติดต่อกลับหากจำเป็น
         </p>
-        <button
-          onClick={() => { setStatus('idle'); setForm({ discord_username: '', officer_name: '', incident_datetime: '', details: '', evidence_url: '' }); }}
-          className="btn-secondary btn-ripple"
-        >
-          ส่งเรื่องใหม่
-        </button>
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-2">
+          <button
+            onClick={() => { setStatus('idle'); setForm({ discord_username: '', officer_name: '', incident_datetime: '', details: '', evidence_url: '' }); }}
+            className="btn-secondary btn-ripple"
+          >
+            ส่งเรื่องใหม่
+          </button>
+          {onBack && (
+            <button onClick={onBack} className="btn-primary btn-ripple flex items-center gap-2">
+              <Home size={16} />
+              กลับหน้าหลัก
+            </button>
+          )}
+        </div>
       </FadeIn>
     );
   }
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-12">
+      {/* Back button */}
+      {onBack && (
+        <FadeIn className="mb-4">
+          <button
+            onClick={onBack}
+            className="inline-flex items-center gap-1.5 text-gray-400 hover:text-amber-400 text-sm font-medium transition-colors group"
+          >
+            <ArrowLeft size={16} className="group-hover:-translate-x-1 transition-transform" />
+            กลับหน้าหลัก
+          </button>
+        </FadeIn>
+      )}
+
       {/* Header */}
       <FadeIn className="text-center mb-10">
         <div className="inline-flex w-16 h-16 bg-red-900/30 border border-red-700/40 rounded-2xl items-center justify-center mb-4 anim-float">

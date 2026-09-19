@@ -4,6 +4,8 @@ import { supabase } from '../../lib/supabase';
 import { hashPassword } from '../../lib/crypto';
 import { Officer } from '../../lib/types';
 
+const LOGO_URL = '/logo.png';
+
 interface Props {
   onLogin: (officer: Officer) => void;
   onBack: () => void;
@@ -92,9 +94,7 @@ export function LoginPage({ onLogin, onBack }: Props) {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex w-16 h-16 bg-amber-500/10 border-2 border-amber-500/30 rounded-2xl items-center justify-center mb-4">
-            <Truck size={30} className="text-amber-400" />
-          </div>
+          <img src={LOGO_URL} alt="Bit Cities DOT" className="inline-block w-16 h-16 rounded-2xl shadow-lg mb-4" />
           <div className="text-xs text-amber-500 font-semibold tracking-widest mb-1">BIT CITIES</div>
           <h1 className="text-2xl font-black text-white">DOT System</h1>
           <p className="text-gray-500 text-sm mt-1">ระบบสำหรับเจ้าหน้าที่เท่านั้น</p>

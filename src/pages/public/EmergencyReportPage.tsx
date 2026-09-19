@@ -7,6 +7,7 @@ import { supabase } from '../../lib/supabase';
 import { uploadImage } from '../../lib/storage';
 import { EmergencyReportType, EMERGENCY_TYPE_LABELS } from '../../lib/types';
 import { FadeIn, Stagger, StaggerItem } from '../../components/animations';
+import { MapPicker, type MapPickerValue } from '../../components/MapPicker';
 
 const REPORT_TYPES: { type: EmergencyReportType; icon: React.ReactNode; desc: string }[] = [
   { type: 'accident', icon: <AlertTriangle size={22} />, desc: 'อุบัติเหตุ ชนกัน พลิกคว่ำ' },
@@ -20,8 +21,9 @@ export function EmergencyReportPage() {
     discord_username: '',
     report_type: 'accident' as EmergencyReportType,
     details: '',
-    location: '',
   });
+  const [pin, setPin] = useState<MapPickerValue | null>(null);
+  const [locationLabel, setLocationLabel] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -38,6 +40,7 @@ export function EmergencyReportPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!pin && !locationLabel.trim()) return;
     setSubmitting(true);
 
     let imageUrl: string | null = null;
@@ -45,11 +48,15 @@ export function EmergencyReportPage() {
       imageUrl = await uploadImage(imageFile, 'evidence');
     }
 
+    const locationValue = pin
+      ? JSON.stringify({ map: pin, label: locationLabel.trim() || null })
+      : locationLabel.trim();
+
     await supabase.from('emergency_reports').insert({
       discord_username: form.discord_username || 'ไม่ระบุตัวตน',
       report_type: form.report_type,
       details: form.details,
-      location: form.location,
+      location: locationValue,
       image_url: imageUrl,
       status: 'pending',
     });
@@ -74,7 +81,9 @@ export function EmergencyReportPage() {
             <button
               onClick={() => {
                 setSubmitted(false);
-                setForm({ discord_username: '', report_type: 'accident', details: '', location: '' });
+                setForm({ discord_username: '', report_type: 'accident', details: '' });
+                setPin(null);
+                setLocationLabel('');
                 setImageFile(null);
                 setImagePreview(null);
               }}
@@ -151,13 +160,22 @@ export function EmergencyReportPage() {
               <MapPin size={14} className="inline mr-1.5 text-amber-400" />
               พิกัด / สถานที่เกิดเหตุ *
             </label>
-            <input
-              required
-              className="input-field"
-              placeholder="เช่น แยกถนนสุขุมวิท 17 หรือพิกัด GPS"
-              value={form.location}
-              onChange={(e) => setForm({ ...form, location: e.target.value })}
+            <MapPicker
+              value={pin}
+              onChange={setPin}
+              height={360}
             />
+            <div className="mt-2">
+              <input
+                className="input-field"
+                placeholder="ระบุชื่อสถานที่เพิ่มเติม (ไม่บังคับ)"
+                value={locationLabel}
+                onChange={(e) => setLocationLabel(e.target.value)}
+              />
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1.5">
+              * ต้องปักหมุดบนแผนที่ หรือระบุชื่อสถานที่อย่างใดอย่างหนึ่ง
+            </p>
           </div>
         </StaggerItem>
 

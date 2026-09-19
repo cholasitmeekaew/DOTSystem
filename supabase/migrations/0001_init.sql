@@ -3,14 +3,6 @@
 -- ใช้กับ Supabase mode (VITE_SUPABASE_URL ตั้งค่าแล้ว)
 -- =============================================================
 
--- Helper: rank ของ user ปัจจุบัน (จาก officer row)
-create or replace function current_rank() returns text
-language sql stable security definer
-set search_path = public
-as $$
-  select rank from officers where id = auth.uid();
-$$;
-
 -- ------------------ system_settings ------------------
 create table if not exists system_settings (
   id int primary key default 1,
@@ -28,7 +20,7 @@ on conflict (id) do nothing;
 
 -- ------------------ officer_ranks ------------------
 create table if not exists officer_ranks (
-  id text primary key,
+  id uuid primary key default gen_random_uuid(),
   label text not null,
   rank_key text unique,
   sort_order int not null default 0,
@@ -37,11 +29,11 @@ create table if not exists officer_ranks (
   updated_at timestamptz not null default now()
 );
 
-insert into officer_ranks (id, label, rank_key, sort_order) values
-  ('rank_commissioner', 'หัวหน้ากรมขนส่ง', 'commissioner', 1),
-  ('rank_inspector', 'ผู้คุมสอบกรมขนส่ง', 'inspector', 2),
-  ('rank_officer', 'พนักงาน', 'officer', 3)
-on conflict (id) do nothing;
+insert into officer_ranks (label, rank_key, sort_order) values
+  ('หัวหน้ากรมขนส่ง', 'commissioner', 1),
+  ('ผู้คุมสอบกรมขนส่ง', 'inspector', 2),
+  ('พนักงาน', 'officer', 3)
+on conflict (rank_key) do nothing;
 
 -- ------------------ officers ------------------
 create table if not exists officers (
@@ -72,6 +64,13 @@ values (
   'active'
 )
 on conflict (id) do nothing;
+
+create or replace function current_rank() returns text
+language sql stable security definer
+set search_path = public
+as $$
+  select rank from officers where id = auth.uid();
+$$;
 
 -- ------------------ citizens ------------------
 create table if not exists citizens (
@@ -136,6 +135,7 @@ create index if not exists licenses_roblox_username_idx on licenses (roblox_user
 -- ------------------ service_rates ------------------
 create table if not exists service_rates (
   id uuid primary key default gen_random_uuid(),
+  rate_key text unique,
   name text not null,
   description text,
   price numeric(10,2) not null default 0,

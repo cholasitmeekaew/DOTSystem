@@ -114,8 +114,6 @@ export function ComplaintsManagementPage() {
 
       {/* Search */}
       <div className="relative mb-6 max-w-sm">
-        <span className="ph-corner ph-corner-tl" aria-hidden />
-        <span className="ph-corner ph-corner-br" aria-hidden />
         <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
         <input
           className="input-field pl-9"

@@ -1,14 +1,23 @@
 import { useEffect, useState, useMemo } from 'react';
 import {
-  Clock, DollarSign, CalendarDays, History, Zap, Search, ArrowUpDown, User,
+  Clock, DollarSign, CalendarDays, History, Zap, Search, ArrowUpDown, User, TrendingUp, Edit2, Save, X as XIcon,
+  HandCoins, Wallet, RefreshCw, AlertTriangle,
 } from 'lucide-react';
 import { Modal } from './Modal';
 import { Badge } from './Badge';
+import { ClaimShareModal } from './ClaimShareModal';
 import { supabase } from '../lib/supabase';
 import {
   DutyLog, ServiceRecord, OfficerLeave, Officer,
   DEPARTMENT_LABELS, LEAVE_TYPE_LABELS, LEAVE_STATUS_LABELS, LeaveStatus,
+  ClaimRecord,
 } from '../lib/types';
+import {
+  computeMonthlyIncome, loadOverrides, saveOverride, MonthlyIncome,
+} from '../lib/api/officerStats';
+import {
+  previewClaimShare, fetchOfficerClaims, ClaimScope,
+} from '../lib/api/claimShare';
 
 interface Props {
   officer: Officer | null;
@@ -55,23 +64,141 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [records, setRecords] = useState<ServiceRecord[]>([]);
   const [leaves, setLeaves] = useState<OfficerLeave[]>([]);
+  const [recordOfficerCounts, setRecordOfficerCounts] = useState<Map<string, number>>(new Map());
   const [searchQ, setSearchQ] = useState('');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  // รายได้เฉลี่ย
+  const [overrides, setOverrides] = useState<Record<string, number>>({});
+  const [editingMonth, setEditingMonth] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState<string>('');
+  const [showIncomeDetail, setShowIncomeDetail] = useState(false);
+
+  // Claim share state
+  const [showClaimModal, setShowClaimModal] = useState(false);
+  const [claimSummary, setClaimSummary] = useState<{ scope: ClaimScope; count: number; amount: number }[]>([]);
+  const [claimHistory, setClaimHistory] = useState<ClaimRecord[]>([]);
+  const [claimLoading, setClaimLoading] = useState(false);
 
   useEffect(() => {
     if (!officer) return;
     setLoading(true);
     Promise.all([
       supabase.from('duty_logs').select('*').eq('officer_id', officer.id).is('deleted_at', null).order('clock_in', { ascending: false }),
-      supabase.from('service_records').select('*').eq('officer_id', officer.id).order('service_date', { ascending: false }),
+      supabase.from('service_records').select('*').order('service_date', { ascending: false }),
+      supabase.from('service_record_officers').select('service_record_id, officer_id'),
       supabase.from('officer_leaves').select('*').eq('officer_id', officer.id).order('created_at', { ascending: false }),
-    ]).then(([d, s, l]) => {
+    ]).then(([d, s, sro, l]) => {
       setDutyLogs((d.data ?? []) as DutyLog[]);
-      setRecords((s.data ?? []) as ServiceRecord[]);
+      const allRecords = (s.data ?? []) as ServiceRecord[];
+      const allSro = (sro.data ?? []) as { service_record_id: string; officer_id: string }[];
+
+      // สร้าง map: record_id -> [officer_ids]
+      const sroMap = new Map<string, string[]>();
+      for (const row of allSro) {
+        const list = sroMap.get(row.service_record_id) ?? [];
+        list.push(row.officer_id);
+        sroMap.set(row.service_record_id, list);
+      }
+
+      // กรองเฉพาะเคสที่เจ้าหน้าที่คนนี้ดูแล
+      const myRecords = allRecords.filter((r) => {
+        const assigned = sroMap.get(r.id);
+        if (assigned && assigned.length > 0) {
+          return assigned.includes(officer.id);
+        }
+        return r.officer_id === officer.id;
+      });
+
+      // สร้าง map จำนวนเจ้าหน้าที่ต่อเคส (สำหรับหารเฉลี่ยรายได้)
+      const counts = new Map<string, number>();
+      for (const r of myRecords) {
+        const assigned = sroMap.get(r.id);
+        counts.set(r.id, assigned && assigned.length > 0 ? assigned.length : 1);
+      }
+      setRecordOfficerCounts(counts);
+
+      setRecords(myRecords);
       setLeaves((l.data ?? []) as OfficerLeave[]);
       setLoading(false);
     });
+    setOverrides(loadOverrides(officer.id));
   }, [officer]);
+
+  async function loadClaimSummary() {
+    if (!officer) return;
+    setClaimLoading(true);
+    const period = new Date().toISOString().slice(0, 7);
+    try {
+      const [defaultP, rescueP, history] = await Promise.all([
+        previewClaimShare(officer.id, period, 'default'),
+        previewClaimShare(officer.id, period, 'vehicle_rescue'),
+        fetchOfficerClaims(officer.id),
+      ]);
+      setClaimSummary([
+        { scope: 'default', count: defaultP.record_count, amount: defaultP.per_officer_total },
+        { scope: 'vehicle_rescue', count: rescueP.record_count, amount: rescueP.per_officer_total },
+      ]);
+      setClaimHistory(history.slice(0, 5));
+    } catch (e) {
+      console.warn('[OfficerHistoryModal] loadClaimSummary error:', e);
+    } finally {
+      setClaimLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (officer) loadClaimSummary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [officer?.id]);
+
+  const sortMultiplier = sortDir === 'desc' ? -1 : 1;
+
+  const filteredDuty = useMemo(() => {
+    let list = [...dutyLogs.filter((d) => !d.deleted_at)];
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      list = list.filter((d) =>
+        fmtDateTime(d.clock_in).toLowerCase().includes(q) ||
+        (d.clock_out && fmtDateTime(d.clock_out).toLowerCase().includes(q)) ||
+        (d.forced_by_name && d.forced_by_name.toLowerCase().includes(q))
+      );
+    }
+    list.sort((a, b) => sortMultiplier * (new Date(a.clock_in).getTime() - new Date(b.clock_in).getTime()));
+    return list;
+  }, [dutyLogs, searchQ, sortDir, sortMultiplier]);
+
+  const filteredRecords = useMemo(() => {
+    let list = [...records];
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      list = list.filter((r) =>
+        r.service_name.toLowerCase().includes(q) ||
+        r.notes?.toLowerCase().includes(q) ||
+        fmtDate(r.service_date).toLowerCase().includes(q)
+      );
+    }
+    list.sort((a, b) => sortMultiplier * (a.amount - b.amount));
+    return list;
+  }, [records, searchQ, sortMultiplier]);
+
+  const filteredLeaves = useMemo(() => {
+    let list = [...leaves];
+    if (searchQ) {
+      const q = searchQ.toLowerCase();
+      list = list.filter((l) =>
+        LEAVE_TYPE_LABELS[l.leave_type].toLowerCase().includes(q) ||
+        l.reason?.toLowerCase().includes(q) ||
+        LEAVE_STATUS_LABELS[l.status].toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [leaves, searchQ]);
+
+  const income = useMemo(() => {
+    if (!officer) return { months: [], average: 0, hasOverride: false };
+    return computeMonthlyIncome(officer, dutyLogs, records, overrides, recordOfficerCounts);
+  }, [officer, dutyLogs, records, overrides, recordOfficerCounts]);
 
   if (!officer) return null;
 
@@ -87,6 +214,8 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
     { icon: <Zap size={14} />, label: 'ชั่วโมงรวม', value: fmtDuration(totalMinutes), color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
     { icon: <DollarSign size={14} />, label: 'รายการบริการ', value: records.length.toString(), color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
     { icon: <CalendarDays size={14} />, label: `ยอดรวม${unpaidAmount > 0 ? ` (ค้าง ${unpaidAmount.toLocaleString('th-TH')})` : ''}`, value: `${totalAmount.toLocaleString('th-TH')} BC`, color: 'text-pink-400 bg-pink-500/10 border-pink-500/20' },
+    { icon: <Wallet size={14} />, label: 'ยอดสะสมรอจ่าย', value: `${(officer.accumulated_share ?? 0).toLocaleString('th-TH')} BC`, color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
+    { icon: <TrendingUp size={14} />, label: 'รายได้เฉลี่ย/เดือน', value: `${income.average.toLocaleString('th-TH', { maximumFractionDigits: 0 })} BC`, color: 'text-violet-400 bg-violet-500/10 border-violet-500/20' },
   ];
 
   const tabs: { key: TabKey; label: string; icon: React.ReactNode; count: number }[] = [
@@ -94,49 +223,6 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
     { key: 'services', label: 'แจ้งค่าบริการ', icon: <DollarSign size={13} />, count: records.length },
     { key: 'leaves', label: 'การลา', icon: <CalendarDays size={13} />, count: leaves.length },
   ];
-
-  const sortMultiplier = sortDir === 'desc' ? -1 : 1;
-
-  const filteredDuty = useMemo(() => {
-    let list = [...activeLogs];
-    if (searchQ) {
-      const q = searchQ.toLowerCase();
-      list = list.filter((d) =>
-        fmtDateTime(d.clock_in).toLowerCase().includes(q) ||
-        (d.clock_out && fmtDateTime(d.clock_out).toLowerCase().includes(q)) ||
-        (d.forced_by_name && d.forced_by_name.toLowerCase().includes(q))
-      );
-    }
-    list.sort((a, b) => sortMultiplier * new Date(a.clock_in).getTime() + sortMultiplier * new Date(b.clock_in).getTime());
-    return sortDir === 'desc' ? list.reverse() : list;
-  }, [activeLogs, searchQ, sortDir]);
-
-  const filteredRecords = useMemo(() => {
-    let list = [...records];
-    if (searchQ) {
-      const q = searchQ.toLowerCase();
-      list = list.filter((r) =>
-        r.service_name.toLowerCase().includes(q) ||
-        r.notes?.toLowerCase().includes(q) ||
-        fmtDate(r.service_date).toLowerCase().includes(q)
-      );
-    }
-    list.sort((a, b) => sortMultiplier * (a.amount - b.amount));
-    return sortDir === 'desc' ? list.reverse() : list;
-  }, [records, searchQ, sortDir]);
-
-  const filteredLeaves = useMemo(() => {
-    let list = [...leaves];
-    if (searchQ) {
-      const q = searchQ.toLowerCase();
-      list = list.filter((l) =>
-        LEAVE_TYPE_LABELS[l.leave_type].toLowerCase().includes(q) ||
-        l.reason?.toLowerCase().includes(q) ||
-        LEAVE_STATUS_LABELS[l.status].toLowerCase().includes(q)
-      );
-    }
-    return list;
-  }, [leaves, searchQ]);
 
   return (
     <Modal title="ประวัติการทำงาน" onClose={onClose} size="lg">
@@ -164,13 +250,183 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
       </div>
 
       {/* Stat chips */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
         {stats.map((s) => (
           <div key={s.label} className={`gold-stat px-3 py-2 ${s.color}`}>
             <div className="flex items-center gap-1.5 text-[10px] opacity-90">{s.icon}{s.label}</div>
             <div className="text-sm font-bold mt-0.5 truncate">{s.value}</div>
           </div>
         ))}
+      </div>
+
+      {/* Claim Service Share — All Paid Services */}
+      <div className="card p-3 mb-3 bg-gradient-to-br from-amber-500/5 to-amber-500/0 border-amber-500/20">
+        <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2">
+              <HandCoins size={14} className="text-amber-400" />
+              <h3 className="text-sm font-semibold text-amber-300">ส่วนแบ่งเคสรอรับ (เดือนนี้)</h3>
+              <button
+                onClick={loadClaimSummary}
+                disabled={claimLoading}
+                className="text-gray-500 hover:text-amber-400 transition-colors"
+                title="รีเฟรช"
+              >
+                <RefreshCw size={12} className={claimLoading ? 'animate-spin' : ''} />
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-500 mt-0.5">All Paid Services · รวมทุก scope (default / vehicle_rescue)</p>
+          </div>
+          <button
+            onClick={() => setShowClaimModal(true)}
+            disabled={claimSummary.every((c) => c.count === 0)}
+            className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-navy-900 font-semibold rounded-lg text-xs disabled:opacity-40 disabled:cursor-not-allowed transition-colors btn-ripple"
+          >
+            <HandCoins size={13} /> กดรับส่วนแบ่งเคส
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {claimSummary.map((s) => {
+            const label = s.scope === 'default' ? 'เคสทั่วไป' : 'กู้ภัยรถยก';
+            const empty = s.count === 0;
+            return (
+              <div
+                key={s.scope}
+                className={`px-3 py-2 rounded-lg border ${
+                  empty
+                    ? 'bg-navy-900/40 border-blue-900/30'
+                    : 'bg-amber-500/10 border-amber-500/30'
+                }`}
+              >
+                <div className="text-[10px] text-gray-500">{label}</div>
+                <div className={`text-sm font-bold ${empty ? 'text-gray-500' : 'text-amber-300'}`}>
+                  {s.amount.toLocaleString('th-TH', { maximumFractionDigits: 2 })} BC
+                </div>
+                <div className="text-[10px] text-gray-500">
+                  {empty ? 'ไม่มีรายการ' : `${s.count} รายการรอ claim`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {claimHistory.length > 0 && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[10px] text-gray-400 hover:text-amber-400">
+              ประวัติ claim ล่าสุด ({claimHistory.length})
+            </summary>
+            <div className="mt-1 space-y-1">
+              {claimHistory.map((c) => (
+                <div key={c.id} className="flex items-center justify-between gap-2 text-[10px] px-2 py-1 rounded bg-navy-900/40">
+                  <span className="text-gray-400 font-mono">{c.claim_period}</span>
+                  <span className="text-gray-500 truncate">{c.scope}</span>
+                  <span className="text-amber-300 font-mono">
+                    {c.amount.toLocaleString('th-TH', { maximumFractionDigits: 2 })}
+                  </span>
+                  <Badge
+                    variant={
+                      c.status === 'paid' ? 'success'
+                      : c.status === 'approved' ? 'success'
+                      : c.status === 'rejected' ? 'danger'
+                      : 'warning'
+                    }
+                  >
+                    {c.status === 'pending' && 'รออนุมัติ'}
+                    {c.status === 'approved' && 'อนุมัติ'}
+                    {c.status === 'rejected' && 'ปฏิเสธ'}
+                    {c.status === 'paid' && 'จ่ายแล้ว'}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+
+      {/* Monthly Income Detail */}
+      <div className="mb-3">
+        <button
+          onClick={() => setShowIncomeDetail((v) => !v)}
+          className="text-xs text-amber-400 hover:text-amber-300 font-medium"
+        >
+          {showIncomeDetail ? '▾ ซ่อน' : '▸ ดู'}รายละเอียดรายได้รายเดือน {income.hasOverride && <Badge variant="warning">มีการปรับแล้ว</Badge>}
+        </button>
+        {showIncomeDetail && (
+          <div className="card p-3 mt-2">
+            {income.months.length === 0 ? (
+              <p className="text-xs text-gray-500 text-center py-3">ยังไม่มีข้อมูลการขึ้นเวร/ค่าบริการ</p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="text-gray-500 border-b border-blue-900/40">
+                  <tr>
+                    <th className="text-left py-1.5">เดือน</th>
+                    <th className="text-right py-1.5">เวร (ชม.)</th>
+                    <th className="text-right py-1.5">ค่าขึ้นเวร</th>
+                    <th className="text-right py-1.5">ค่าบริการ (10%)</th>
+                    <th className="text-right py-1.5">รวม</th>
+                    <th className="py-1.5"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {income.months.map((m) => {
+                    const isEditing = editingMonth === m.month;
+                    const displayValue = m.override ?? m.total;
+                    return (
+                      <tr key={m.month} className="border-b border-blue-900/20">
+                        <td className="py-1.5 text-white font-mono">{m.month}</td>
+                        <td className="py-1.5 text-right text-gray-400">{m.duty_hours} ชม. ({m.duty_count} เวร)</td>
+                        <td className="py-1.5 text-right text-gray-400">{m.duty_income.toLocaleString('th-TH')}</td>
+                        <td className="py-1.5 text-right text-gray-400">{m.service_income.toLocaleString('th-TH', { maximumFractionDigits: 0 })}</td>
+                        <td className="py-1.5 text-right text-amber-300 font-semibold">
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              autoFocus
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              className="w-24 bg-navy-700 border border-amber-500/40 rounded px-1.5 py-0.5 text-right text-amber-300"
+                            />
+                          ) : (
+                            <>{displayValue.toLocaleString('th-TH', { maximumFractionDigits: 0 })} {m.override != null && <span className="text-violet-400">*</span>}</>
+                          )}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          {isEditing ? (
+                            <div className="flex gap-1 justify-end">
+                              <button
+                                onClick={() => {
+                                  const val = parseFloat(editValue);
+                                  const newOverrides = saveOverride(officer.id, m.month, isNaN(val) ? null : val);
+                                  setOverrides(newOverrides);
+                                  setEditingMonth(null);
+                                }}
+                                className="text-emerald-400 hover:text-emerald-300"
+                                title="บันทึก"
+                              ><Save size={12} /></button>
+                              <button
+                                onClick={() => setEditingMonth(null)}
+                                className="text-gray-500 hover:text-gray-300"
+                                title="ยกเลิก"
+                              ><XIcon size={12} /></button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => { setEditingMonth(m.month); setEditValue(String(displayValue)); }}
+                              className="text-amber-400 hover:text-amber-300"
+                              title="แก้ไข"
+                            ><Edit2 size={12} /></button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+            <p className="text-[10px] text-gray-500 mt-2">* = ค่าที่ปรับด้วยตนเอง · เก็บใน localStorage · ค่าเฉลี่ย = ผลรวม / จำนวนเดือน</p>
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -281,6 +537,15 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
           ))
         )}
       </div>
+
+      {showClaimModal && officer && (
+        <ClaimShareModal
+          officerId={officer.id}
+          actorId={officer.id}
+          onClose={() => setShowClaimModal(false)}
+          onSuccess={loadClaimSummary}
+        />
+      )}
     </Modal>
   );
 }

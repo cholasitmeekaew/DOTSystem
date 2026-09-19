@@ -10,7 +10,7 @@ export type JsonDb = Record<string, Record<string, unknown>[]>;
 
 export const defaultServiceRates = [
   {
-    id: 'rate_towing_std',
+    rate_key: 'rate_towing_std',
     name: 'บริการรถยกลากจูงทั่วไป',
     description: 'ยกรถเสีย กีดขวาง หรือเคลื่อนย้ายระยะใกล้-กลาง',
     price: 2000,
@@ -20,7 +20,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_towing_heavy',
+    rate_key: 'rate_towing_heavy',
     name: 'กู้ภัยยกรถกรณีอุบัติเหตุ / พลิกคว่ำ',
     description: 'ยกรถกรณีอุบัติเหตุรุนแรง ตกข้างทาง หรือพลิกคว่ำ',
     price: 4000,
@@ -30,7 +30,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_impound_release',
+    rate_key: 'rate_impound_release',
     name: 'ค่าธรรมเนียมปลดการยึดรถ / อายัด',
     description: 'ค่าธรรมเนียมถอนการอายัดและปล่อยรถออกจากที่กักเก็บ DOT',
     price: 5000,
@@ -40,7 +40,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_road_repair',
+    rate_key: 'rate_road_repair',
     name: 'ซ่อมแซมผิวจราจร / หลุมบ่อ',
     description: 'งานซ่อมแซมและปรับปรุงพื้นผิวถนนที่ชำรุด',
     price: 2500,
@@ -50,7 +50,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_street_light',
+    rate_key: 'rate_street_light',
     name: 'ซ่อมแซมเสาไฟส่องสว่างทางหลวง',
     description: 'ซ่อมแซมหรือเปลี่ยนเสาไฟและหลอดไฟทางหลวง',
     price: 1500,
@@ -60,7 +60,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_traffic_sign',
+    rate_key: 'rate_traffic_sign',
     name: 'ติดตั้ง / ซ่อมแซมป้ายจราจรและราวกั้น',
     description: 'ซ่อมแซมป้ายบอกทาง แผงกั้น หรือการ์ดเรล',
     price: 1200,
@@ -70,7 +70,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_traffic_signal',
+    rate_key: 'rate_traffic_signal',
     name: 'ซ่อมแซมตู้ควบคุมสัญญาณไฟจราจร',
     description: 'แก้ไขระบบสัญญาณไฟแยกและระบบคอนโทรลเลอร์',
     price: 3500,
@@ -80,7 +80,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_power_line',
+    rate_key: 'rate_power_line',
     name: 'เก็บสายไฟฟ้า / จัดการระบบสายส่งสาธารณะ',
     description: 'ตรวจเช็คและจัดระเบียบสายไฟฟ้าหรือสายเคเบิลอันตราย',
     price: 1800,
@@ -90,7 +90,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_vehicle_inspect',
+    rate_key: 'rate_vehicle_inspect',
     name: 'ตรวจสภาพยานพาหนะประจำปี',
     description: 'ตรวจเช็คความพร้อมและสภาพความปลอดภัยของรถยนต์',
     price: 1000,
@@ -100,7 +100,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_license_fee',
+    rate_key: 'rate_license_fee',
     name: 'ค่าธรรมเนียมออก / ต่ออายุใบขับขี่',
     description: 'ออกใบอนุญาตขับขี่หรือต่ออายุบัตรอนุญาตขับขี่',
     price: 2000,
@@ -110,7 +110,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_vehicle_reg',
+    rate_key: 'rate_vehicle_reg',
     name: 'ค่าธรรมเนียมจดทะเบียนยานพาหนะใหม่',
     description: 'จดทะเบียนรถยนต์และออกป้ายทะเบียนระบบ DOT',
     price: 2500,
@@ -120,7 +120,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_emergency_fuel',
+    rate_key: 'rate_emergency_fuel',
     name: 'บริการเติมน้ำมัน',
     description: 'การให้ความช่วยเหลือกรณีรถน้ำมันหมดระหว่างการเดินทาง โดยนำน้ำมันเชื้อเพลิงไปเติมในปริมาณที่เพียงพอ เพื่อให้รถสามารถเดินทางไปยังสถานีบริการน้ำมันที่ใกล้ที่สุดได้อย่างปลอดภัย',
     price: 100,
@@ -130,7 +130,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_emergency_battery',
+    rate_key: 'rate_emergency_battery',
     name: 'บริการเปลี่ยนแบตเตอรี่',
     description: 'การช่วยเหลือรถที่แบตเตอรี่หมดหรือขัดข้อง โดยการพ่วงแบตเตอรี่ (Jump Start) หรือเปลี่ยนแบตเตอรี่ใหม่ตามความเหมาะสม เพื่อให้รถสามารถสตาร์ตและใช้งานได้',
     price: 100,
@@ -140,7 +140,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_emergency_tire',
+    rate_key: 'rate_emergency_tire',
     name: 'บริการเปลี่ยนยาง',
     description: 'การช่วยเหลือผู้ใช้รถที่ยางรั่ว ยางแตก หรือไม่สามารถใช้งานได้ โดยเปลี่ยนเป็นยางอะไหล่หรือดำเนินการเบื้องต้นเพื่อให้รถสามารถเดินทางต่อไปได้อย่างปลอดภัย',
     price: 50,
@@ -150,7 +150,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_rescue_water',
+    rate_key: 'rate_rescue_water',
     name: 'บริการกู้รถตกน้ำ',
     description: 'การกู้และนำรถที่ตกลงในแหล่งน้ำ เช่น แม่น้ำ คลอง บึง หรือสระ ขึ้นสู่พื้นดินอย่างปลอดภัย โดยใช้อุปกรณ์และรถกู้เฉพาะทาง',
     price: 250,
@@ -160,7 +160,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_rescue_lift',
+    rate_key: 'rate_rescue_lift',
     name: 'บริการยกรถ',
     description: 'การใช้รถยกหรืออุปกรณ์เฉพาะทางในการยกเคลื่อนย้ายรถที่ไม่สามารถเคลื่อนที่ได้ด้วยตนเองหรืออยู่ในสภาพที่ต้องยกขึ้นก่อนเคลื่อนย้าย',
     price: 150,
@@ -170,7 +170,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_rescue_tow',
+    rate_key: 'rate_rescue_tow',
     name: 'บริการลากรถ',
     description: 'การเคลื่อนย้ายรถที่เสีย ขัดข้อง หรือประสบอุบัติเหตุ โดยใช้รถลากจูงนำรถไปยังจุดหมายที่กำหนด เช่น อู่ซ่อม ศูนย์บริการ หรือสถานที่ปลอดภัย',
     price: 150,
@@ -180,7 +180,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_rescue_suspect',
+    rate_key: 'rate_rescue_suspect',
     name: 'บริการลากรถผู้ต้องหา (กรณีตำรวจจับกุม)',
     description: 'การประสานงานร่วมระหว่างเจ้าหน้าที่ตำรวจและ DOT ในการเข้ายกลากยานพาหนะของผู้ต้องหาในคดีต่างๆ ไปยังสถานที่จัดเก็บของทางราชการทันทีหลังการจับกุม เพื่อความปลอดภัยของทรัพย์สินและไม่กีดขวางการจราจร',
     price: 200,
@@ -190,7 +190,7 @@ export const defaultServiceRates = [
     updated_at: NOW,
   },
   {
-    id: 'rate_general_doc',
+    rate_key: 'rate_general_doc',
     name: 'ค่าธรรมเนียมคำร้องและเอกสารทั่วไป',
     description: 'ค่าบริการออกใบรับรอง เอกสาร และตรวจสอบประวัติ',
     price: 500,
@@ -213,13 +213,13 @@ export const seedData: JsonDb = {
     },
   ],
   officer_ranks: [
-    { id: 'rank_commissioner', label: 'หัวหน้ากรมขนส่ง', rank_key: 'commissioner', sort_order: 1, is_active: true, created_at: NOW, updated_at: NOW },
-    { id: 'rank_inspector', label: 'ผู้คุมสอบกรมขนส่ง', rank_key: 'inspector', sort_order: 2, is_active: true, created_at: NOW, updated_at: NOW },
-    { id: 'rank_officer', label: 'พนักงาน', rank_key: 'officer', sort_order: 3, is_active: true, created_at: NOW, updated_at: NOW },
+    { label: 'หัวหน้ากรมขนส่ง', rank_key: 'commissioner', sort_order: 1, is_active: true, created_at: NOW, updated_at: NOW },
+    { label: 'ผู้คุมสอบกรมขนส่ง', rank_key: 'inspector', sort_order: 2, is_active: true, created_at: NOW, updated_at: NOW },
+    { label: 'พนักงาน', rank_key: 'officer', sort_order: 3, is_active: true, created_at: NOW, updated_at: NOW },
   ],
   officers: [
     {
-      id: 'officer_admin',
+      id: '00000000-0000-0000-0000-000000000001',
       username: ADMIN_USERNAME,
       password_hash: ADMIN_PASSWORD_HASH,
       name: 'หัวหน้ากรมขนส่ง',

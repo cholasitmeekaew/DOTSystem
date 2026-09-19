@@ -4,17 +4,34 @@ import {
   FileText, CheckCircle2, Car, MapPin,
   Bike, Truck as TowTruck, CarFront, Lock, CreditCard, Shield, Hash, MessageCircle,
 } from 'lucide-react';
+
 import { supabase } from '../../lib/supabase';
 import {
-  ServiceRecord, Vehicle, License, Complaint,
-  VEHICLE_TYPE_LABELS, EMERGENCY_TYPE_LABELS,
+  ServiceRecord, Vehicle, License, Complaint, Citizen, CitizenStatus,
+  VEHICLE_TYPE_LABELS, EMERGENCY_TYPE_LABELS, CITIZEN_STATUS_LABELS,
   EMERGENCY_STATUS_LABELS, EmergencyReport,
 } from '../../lib/types';
+import { getCitizenDebtTotal, getDebtExclusionMessage } from '../../lib/citizenDebt';
 import { Badge } from '../../components/Badge';
 import { Modal } from '../../components/Modal';
 import {
   FadeIn, Stagger, StaggerItem, TabTransition, Skeleton, CountUp,
 } from '../../components/animations';
+
+function CitizenStatusBadge({ status }: { status: CitizenStatus }) {
+  const map: Record<CitizenStatus, { label: string; className: string }> = {
+    normal: { label: 'ปกติ', className: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
+    watched: { label: 'เฝ้าระวัง', className: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' },
+    suspended: { label: 'ระงับสิทธิ์', className: 'bg-orange-500/10 text-orange-400 border-orange-500/20' },
+    banned: { label: 'แบน', className: 'bg-red-500/20 text-red-400 border-red-500/30' },
+  };
+  const cfg = map[status] || map.normal;
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.className}`}>
+      {cfg.label}
+    </span>
+  );
+}
 
 type Tab = 'overview' | 'vehicles' | 'licenses' | 'fees' | 'emergency' | 'complaints';
 type SearchType = 'roblox' | 'discord' | 'plate';
@@ -66,17 +83,19 @@ export function CitizenPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [licenses, setLicenses] = useState<License[]>([]);
   const [feeRecords, setFeeRecords] = useState<ServiceRecord[]>([]);
+  const [feeAssignedNames, setFeeAssignedNames] = useState<Record<string, string>>({});
   const [emergencyReports, setEmergencyReports] = useState<EmergencyReport[]>([]);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [citizen, setCitizen] = useState<Citizen | null>(null);
   const [viewImage, setViewImage] = useState<string | null>(null);
 
-  const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
+  const tabs: { id: Tab; label: string; icon: ReactNode; count?: number }[] = [
     { id: 'overview', label: 'ข้อมูลรวม', icon: <User size={16} /> },
-    { id: 'vehicles', label: 'ยานพาหนะ', icon: <Car size={16} /> },
-    { id: 'licenses', label: 'ใบอนุญาต', icon: <CreditCard size={16} /> },
-    { id: 'fees', label: 'ค่าบริการ', icon: <DollarSign size={16} /> },
-    { id: 'emergency', label: 'ประวัติแจ้งเหตุ', icon: <Siren size={16} /> },
-    { id: 'complaints', label: 'ประวัติร้องเรียน', icon: <MessageSquare size={16} /> },
+    { id: 'vehicles', label: 'ยานพาหนะ', icon: <Car size={16} />, count: vehicles.length },
+    { id: 'licenses', label: 'ใบอนุญาต', icon: <CreditCard size={16} />, count: licenses.length },
+    { id: 'fees', label: 'แจ้งบริการ / ค่าบริการ', icon: <DollarSign size={16} />, count: feeRecords.length },
+    { id: 'emergency', label: 'ประวัติแจ้งเหตุ', icon: <Siren size={16} />, count: emergencyReports.length },
+    { id: 'complaints', label: 'ประวัติร้องเรียน', icon: <MessageSquare size={16} />, count: complaints.length },
   ];
 
   async function handleSearch(e: React.FormEvent) {
@@ -87,8 +106,10 @@ export function CitizenPage() {
     setVehicles([]);
     setLicenses([]);
     setFeeRecords([]);
+    setFeeAssignedNames({});
     setEmergencyReports([]);
     setComplaints([]);
+    setCitizen(null);
 
     const q = query.trim();
 
@@ -116,23 +137,71 @@ export function CitizenPage() {
   }
 
   async function loadAssociatedData(username: string, field: string) {
-    const [vRes, lRes, fRes, eRes, cRes] = await Promise.all([
+    const citizenField = field === 'roblox_username' ? 'roblox_username' : 'discord_username';
+    const [vRes, lRes, fRes, eRes, cRes, citizenRes] = await Promise.all([
       supabase.from('vehicles').select('*').ilike('owner_name', '%' + username + '%').order('created_at', { ascending: false }),
       supabase.from('licenses').select('*').ilike(field, '%' + username + '%').order('created_at', { ascending: false }),
       supabase.from('service_records').select('*').ilike(field, '%' + username + '%').order('service_date', { ascending: false }),
       supabase.from('emergency_reports').select('*').ilike('discord_username', '%' + username + '%').order('created_at', { ascending: false }),
       supabase.from('complaints').select('*').or('discord_username.ilike.%' + username + '%,complainant_name.ilike.%' + username + '%').order('created_at', { ascending: false }),
+      supabase.from('citizens').select('*').ilike(citizenField, '%' + username + '%').limit(1).maybeSingle(),
     ]);
 
+    setCitizen((citizenRes.data as unknown as Citizen) ?? null);
     setVehicles(vRes.data ?? []);
     setLicenses(lRes.data ?? []);
-    setFeeRecords(fRes.data ?? []);
+    const feeData = (fRes.data ?? []) as ServiceRecord[];
+    setFeeRecords(feeData);
     setEmergencyReports(eRes.data ?? []);
     setComplaints(cRes.data ?? []);
+
+    if (feeData.length > 0) {
+      const recordIds = feeData.map((r) => r.id);
+      const [sroRes, offRes] = await Promise.all([
+        supabase.from('service_record_officers').select('service_record_id, officer_id').in('service_record_id', recordIds),
+        supabase.from('officers').select('id, name'),
+      ]);
+      const offLookup: Record<string, string> = {};
+      (offRes.data ?? []).forEach((o: any) => { offLookup[o.id] = o.name; });
+      const assignedMap: Record<string, string[]> = {};
+      (sroRes.data ?? []).forEach((s: any) => {
+        const name = offLookup[s.officer_id];
+        if (name) {
+          if (!assignedMap[s.service_record_id]) assignedMap[s.service_record_id] = [];
+          assignedMap[s.service_record_id].push(name);
+        }
+      });
+      setFeeAssignedNames(
+        Object.fromEntries(Object.entries(assignedMap).map(([k, v]) => [k, v.join(', ')]))
+      );
+    } else {
+      setFeeAssignedNames({});
+    }
   }
 
-  const totalUnpaid = feeRecords.filter((r) => r.status === 'unpaid').reduce((s, r) => s + Number(r.amount), 0);
-  const totalPaid = feeRecords.filter((r) => r.status === 'paid').reduce((s, r) => s + Number(r.amount), 0);
+  useEffect(() => {
+    if (!searched || !query.trim()) return;
+    const reload = () => {
+      const q = query.trim();
+      if (searchType === 'plate') {
+        handleSearch({ preventDefault: () => undefined } as React.FormEvent);
+      } else {
+        const field = searchType === 'roblox' ? 'roblox_username' : 'discord_username';
+        loadAssociatedData(q, field);
+      }
+    };
+    const channel = supabase.channel('citizen_public_sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'citizens' }, reload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicles' }, reload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'licenses' }, reload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_records' }, reload)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searched, query, searchType]);
+
+  const totalPaid = feeRecords.reduce((s, r) => s + Number(r.paid_amount ?? 0), 0);
+  const totalUnpaid = getCitizenDebtTotal(feeRecords, citizen);
   const impoundedCount = vehicles.filter((v) => v.is_impounded).length;
   const activeLicenses = licenses.filter((l) => l.status === 'active').length;
   const pendingEmergency = emergencyReports.filter((e) => e.status === 'pending' || e.status === 'responding').length;
@@ -167,6 +236,10 @@ export function CitizenPage() {
         <p className="text-gray-400 text-sm max-w-2xl mx-auto">
           ศูนย์ค้นหาข้อมูลประชาชน — ตรวจสอบสถานะรถ ใบขับขี่ ค่าบริการ และประวัติการแจ้งเหตุได้ในที่เดียว
         </p>
+        <div className="mt-4 inline-flex items-start gap-2 bg-amber-500/15 border-2 border-amber-500/50 text-amber-300 text-sm font-semibold px-5 py-3 rounded-xl max-w-2xl mx-auto text-left shadow-lg shadow-amber-500/10">
+          <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
+          <span>หากไม่พบชื่อตนเอง โปรดติดต่อผู้พัฒนาระบบหรือหัวหน้ากรม</span>
+        </div>
       </FadeIn>
 
       {/* Search Section */}
@@ -242,6 +315,13 @@ export function CitizenPage() {
               >
                 {t.icon}
                 {t.label}
+                {t.count !== undefined && searched && (
+                  <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                    active ? 'bg-navy-900/40 text-navy-900' : 'bg-navy-700 text-gray-300'
+                  }`}>
+                    {t.count}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -281,6 +361,7 @@ export function CitizenPage() {
         <TabTransition tabId={tab}>
           {tab === 'overview' && (
             <OverviewTab
+              citizen={citizen}
               vehicles={vehicles}
               licenses={licenses}
               feeRecords={feeRecords}
@@ -293,6 +374,7 @@ export function CitizenPage() {
               pendingEmergency={pendingEmergency}
               pendingComplaints={pendingComplaints}
               formatMoney={formatMoney}
+              formatDate={formatDate}
             />
           )}
 
@@ -313,7 +395,7 @@ export function CitizenPage() {
           )}
 
           {tab === 'fees' && (
-            <FeesTab feeRecords={feeRecords} totalUnpaid={totalUnpaid} totalPaid={totalPaid} formatDate={formatDate} formatMoney={formatMoney} onViewImage={setViewImage} />
+            <FeesTab feeRecords={feeRecords} feeAssignedNames={feeAssignedNames} totalUnpaid={totalUnpaid} totalPaid={totalPaid} formatDate={formatDate} formatMoney={formatMoney} onViewImage={setViewImage} />
           )}
 
           {tab === 'emergency' && (
@@ -337,9 +419,10 @@ export function CitizenPage() {
 
 /* =================== Overview Tab =================== */
 function OverviewTab({
-  vehicles, licenses, feeRecords, emergencyReports, complaints,
-  totalUnpaid, totalPaid, impoundedCount, activeLicenses, pendingEmergency, pendingComplaints, formatMoney,
+  citizen, vehicles, licenses, feeRecords, emergencyReports, complaints,
+  totalUnpaid, totalPaid, impoundedCount, activeLicenses, pendingEmergency, pendingComplaints, formatMoney, formatDate,
 }: {
+  citizen: Citizen | null;
   vehicles: Vehicle[];
   licenses: License[];
   feeRecords: ServiceRecord[];
@@ -352,8 +435,9 @@ function OverviewTab({
   pendingEmergency: number;
   pendingComplaints: number;
   formatMoney: (n: number) => string;
+  formatDate: (iso: string | null) => string;
 }) {
-  const hasData = vehicles.length > 0 || licenses.length > 0 || feeRecords.length > 0 || emergencyReports.length > 0 || complaints.length > 0;
+  const hasData = citizen || vehicles.length > 0 || licenses.length > 0 || feeRecords.length > 0 || emergencyReports.length > 0 || complaints.length > 0;
 
   if (!hasData) {
     return (
@@ -364,25 +448,99 @@ function OverviewTab({
           </div>
           <p className="text-white font-semibold mb-1">ไม่พบข้อมูล</p>
           <p className="text-gray-400 text-sm">ไม่พบข้อมูลสำหรับการค้นหานี้ในระบบ</p>
+          <p className="text-gray-500 text-xs mt-2">หากไม่พบชื่อตนเอง โปรดติดต่อผู้พัฒนาระบบหรือหัวหน้ากรม</p>
         </div>
       </FadeIn>
     );
   }
 
+  const unpaidAmount = getCitizenDebtTotal(feeRecords, citizen);
+
   return (
     <div className="space-y-6">
+      {/* Citizen Profile Card — matches CitizenManagementPage Overview */}
+      {citizen && (
+        <FadeIn>
+          <div className="card p-6">
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center">
+                  <User size={24} className="text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">{citizen.roblox_username}</h3>
+                  {citizen.discord_username && <p className="text-gray-500 text-sm">{citizen.discord_username}</p>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <CitizenStatusBadge status={citizen.status} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-blue-900/30">
+              <div>
+                <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><User size={14} className="text-amber-400" /> Roblox Username</div>
+                <div className="text-white text-sm font-medium">{citizen.roblox_username}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><User size={14} className="text-amber-400" /> Discord Username</div>
+                <div className="text-white text-sm font-medium">{citizen.discord_username || '-'}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><Shield size={14} className="text-amber-400" /> สถานะ</div>
+                <CitizenStatusBadge status={citizen.status} />
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><Clock size={14} className="text-amber-400" /> ลงทะเบียนเมื่อ</div>
+                <div className="text-white text-sm font-medium">{formatDate(citizen.created_at)}</div>
+              </div>
+            </div>
+
+            {getDebtExclusionMessage(citizen.status) && (
+              <div className="mt-4 flex items-start gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-300">
+                <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                <span>{getDebtExclusionMessage(citizen.status)}</span>
+              </div>
+            )}
+
+            {/* Quick stats — 3 cards like CitizenManagementPage */}
+            <div className="mt-4 pt-4 border-t border-blue-900/30 grid grid-cols-3 gap-3">
+              <div className="bg-navy-900/50 rounded-lg p-3 text-center">
+                <div className="text-2xl font-bold text-white">{vehicles.length}</div>
+                <div className="text-xs text-gray-500">ยานพาหนะ</div>
+              </div>
+              <div className="bg-navy-900/50 rounded-lg p-3 text-center">
+                <div className="text-2xl font-bold text-white">{licenses.length}</div>
+                <div className="text-xs text-gray-500">ใบอนุญาต</div>
+              </div>
+              <div className="bg-navy-900/50 rounded-lg p-3 text-center">
+                <div className="text-2xl font-bold text-amber-400">{formatMoney(unpaidAmount)}</div>
+                <div className="text-xs text-gray-500">ยอดค้างชำระ</div>
+              </div>
+            </div>
+          </div>
+        </FadeIn>
+      )}
+
+      {/* Summary Cards */}
       <Stagger className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StaggerItem>
-          <SummaryCard icon={<Car size={18} />} label="ยานพาหนะทั้งหมด" value={vehicles.length} subValue={'ถูกยึด ' + impoundedCount} variant={impoundedCount > 0 ? 'danger' : 'neutral'} />
+          <SummaryCard icon={<Car size={18} />} label="ยานพาหนะทั้งหมด" value={`${vehicles.length} คัน`} subValue={'ถูกยึด ' + impoundedCount + ' คัน'} variant={impoundedCount > 0 ? 'danger' : 'neutral'} />
         </StaggerItem>
         <StaggerItem>
-          <SummaryCard icon={<CreditCard size={18} />} label="ใบอนุญาต" value={licenses.length} subValue={'ใช้งานได้ ' + activeLicenses} variant="info" />
+          <SummaryCard icon={<CreditCard size={18} />} label="ใบอนุญาต" value={`${licenses.length} ใบ`} subValue={'ใช้งานได้ ' + activeLicenses + ' ใบ'} variant="info" />
         </StaggerItem>
         <StaggerItem>
-          <SummaryCard icon={<DollarSign size={18} />} label="ยอดค้างชำระ" value={formatMoney(totalUnpaid)} subValue={'ชำระแล้ว ' + formatMoney(totalPaid)} variant={totalUnpaid > 0 ? 'danger' : 'success'} isMoney />
+          <SummaryCard
+            icon={<DollarSign size={18} />}
+            label="แจ้งบริการ / ค่าบริการ"
+            value={`${feeRecords.length} รายการ`}
+            subValue={totalUnpaid > 0 ? `ค้างชำระ ${formatMoney(totalUnpaid)}` : totalPaid > 0 ? `ชำระแล้ว ${formatMoney(totalPaid)}` : 'ไม่มีประวัติค้างชำระ'}
+            variant={totalUnpaid > 0 ? 'danger' : 'success'}
+          />
         </StaggerItem>
         <StaggerItem>
-          <SummaryCard icon={<Siren size={18} />} label="แจ้งเหตุ" value={emergencyReports.length} subValue={'รอดำเนินการ ' + pendingEmergency} variant="warning" />
+          <SummaryCard icon={<Siren size={18} />} label="ประวัติแจ้งเหตุ" value={`${emergencyReports.length} เรื่อง`} subValue={'รอดำเนินการ ' + pendingEmergency + ' เรื่อง'} variant="warning" />
         </StaggerItem>
       </Stagger>
 
@@ -660,8 +818,9 @@ function LicensesTab({ licenses, formatDate }: { licenses: License[]; formatDate
 }
 
 /* =================== Fees Tab =================== */
-function FeesTab({ feeRecords, totalUnpaid, totalPaid, formatDate, formatMoney, onViewImage }: {
+function FeesTab({ feeRecords, feeAssignedNames, totalUnpaid, totalPaid, formatDate, formatMoney, onViewImage }: {
   feeRecords: ServiceRecord[];
+  feeAssignedNames?: Record<string, string>;
   totalUnpaid: number;
   totalPaid: number;
   formatDate: (iso: string | null) => string;
@@ -714,6 +873,7 @@ function FeesTab({ feeRecords, totalUnpaid, totalPaid, formatDate, formatMoney, 
       <Stagger className="space-y-3">
         {feeRecords.map((rec) => {
           const cardCls = rec.service_type === 'impound' ? 'card p-4 border-red-500/20' : 'card p-4';
+          const displayedOfficer = feeAssignedNames?.[rec.id] || rec.officer_name || '-';
           return (
             <StaggerItem key={rec.id}>
               <div className={`${cardCls} hover-lift`}>
@@ -724,7 +884,7 @@ function FeesTab({ feeRecords, totalUnpaid, totalPaid, formatDate, formatMoney, 
                     </Badge>
                     <span className="text-white text-sm font-medium">{rec.service_name}</span>
                   </div>
-                  <span className={'text-sm font-bold ' + (rec.status === 'paid' ? 'text-emerald-400' : 'text-red-400')}>{formatMoney(Number(rec.amount))}</span>
+                  <span className={'text-sm font-bold ' + (((rec.paid_amount ?? 0) >= rec.amount) ? 'text-emerald-400' : 'text-red-400')}>{formatMoney(Number(rec.amount))}</span>
                 </div>
                 {rec.evidence_url && (
                   <button onClick={() => onViewImage(rec.evidence_url!)} className="block w-full mb-2 rounded-lg overflow-hidden border border-blue-900/40 bg-navy-900 hover:opacity-80 transition-opacity">
@@ -732,8 +892,13 @@ function FeesTab({ feeRecords, totalUnpaid, totalPaid, formatDate, formatMoney, 
                   </button>
                 )}
                 <div className="flex items-center justify-between text-xs text-gray-500">
-                  <span>{formatDate(rec.service_date)} · เจ้าหน้าที่: {rec.officer_name}</span>
-                  <Badge variant={rec.status === 'paid' ? 'success' : 'danger'}>{rec.status === 'paid' ? 'ชำระแล้ว' : 'ค้างชำระ'}</Badge>
+                  <span>{formatDate(rec.service_date)} · เจ้าหน้าที่ผู้ดูแล: <span className="text-gray-300 font-medium">{displayedOfficer}</span></span>
+                  {(() => {
+                    const paid = rec.paid_amount ?? 0;
+                    if (paid >= rec.amount) return <Badge variant="success">ชำระแล้ว</Badge>;
+                    if (paid > 0) return <Badge variant="warning">ชำระบางส่วน ({formatMoney(paid)} / {formatMoney(rec.amount)})</Badge>;
+                    return <Badge variant="danger">ค้างชำระ</Badge>;
+                  })()}
                 </div>
                 {rec.notes && <div className="mt-2 text-xs text-gray-500">{rec.notes}</div>}
               </div>

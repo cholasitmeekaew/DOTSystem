@@ -68,6 +68,8 @@ export function AnnouncementsPage() {
       if (uploaded) {
         if (editItem?.image_url) deleteImage(editItem.image_url);
         imageUrl = uploaded;
+      } else {
+        alert('อัปโหลดรูปไม่สำเร็จ — ประกาศจะไม่แนบรูป (ตรวจว่า bucket/policies ใน Supabase ครบ และไฟล์ไม่เกิน 2MB ในโหมดจำลอง)');
       }
     } else if (!imagePreview && editItem?.image_url) {
       deleteImage(editItem.image_url);
@@ -154,8 +156,8 @@ export function AnnouncementsPage() {
               <span className="ph-corner ph-corner-tl" aria-hidden />
               <span className="ph-corner ph-corner-br" aria-hidden />
               {item.image_url && (
-                <div className="w-full bg-navy-900">
-                  <img src={item.image_url} alt={item.title} className="w-full h-auto object-contain max-h-96" />
+                <div className="w-full bg-navy-900 flex justify-center">
+                  <img src={item.image_url} alt={item.title} className="max-h-64 w-auto max-w-full object-contain" />
                 </div>
               )}
               <div className="p-5">

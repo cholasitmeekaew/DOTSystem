@@ -1,15 +1,19 @@
-import { useEffect, useRef, useState, ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import {
   Users, DollarSign, FileText, TrendingUp, Clock, AlertCircle, Pin,
   Phone, Power, Image as ImageIcon, Lock, Unlock, Database, Download, Upload, RotateCcw,
+  BarChart3, PieChart,
 } from 'lucide-react';
 import { supabase, isJsonMode } from '../../lib/supabase';
 import { jsonDbExport, jsonDbImport, jsonDbReset } from '../../lib/jsonDb';
-import { Announcement, Officer, ServiceRecord, DEPARTMENT_LABELS } from '../../lib/types';
+import { Announcement, Officer, ServiceRecord, EmergencyReport, DEPARTMENT_LABELS, DutyLog } from '../../lib/types';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { ConfirmDialog, Modal } from '../../components/Modal';
 import { IdCard } from '../../components/IdCard';
+import { getRemainingDebt, calculateRevenueAndDebtSummary } from '../../lib/citizenDebt';
+import { buildMonthlyDutyHours, buildWorkloadByCategory } from '../../lib/dutyStats';
+import { GoldBarChart, DonutChart } from '../../components/Charts';
 
 export function DashboardPage() {
   const { officer, isCommissioner } = useAuth();
@@ -17,7 +21,11 @@ export function DashboardPage() {
   const [unpaidCount, setUnpaidCount] = useState(0);
   const [unpaidTotal, setUnpaidTotal] = useState(0);
   const [todayRecords, setTodayRecords] = useState(0);
+  const [todayEmergencies, setTodayEmergencies] = useState(0);
+  const [pendingEmergencies, setPendingEmergencies] = useState(0);
   const [recentServices, setRecentServices] = useState<ServiceRecord[]>([]);
+  const [allServices, setAllServices] = useState<ServiceRecord[]>([]);
+  const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [onDutyOfficers, setOnDutyOfficers] = useState<Officer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,11 +43,14 @@ export function DashboardPage() {
   async function fetchAllData() {
     const today = new Date().toISOString().slice(0, 10);
 
-    const [officersRes, servicesRes, annRes, settingsRes] = await Promise.all([
+    const [officersRes, servicesRes, annRes, settingsRes, emergencyRes, citizensRes, dutyRes] = await Promise.all([
       supabase.from('officers').select('*').eq('status', 'active').order('name'),
       supabase.from('service_records').select('*').order('created_at', { ascending: false }),
       supabase.from('announcements').select('*').order('created_at', { ascending: false }).limit(4),
       supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
+      supabase.from('emergency_reports').select('*'),
+      supabase.from('citizens').select('id, status, roblox_username'),
+      supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }).limit(2000),
     ]);
 
     const officers = (officersRes.data ?? []) as unknown as Officer[];
@@ -47,12 +58,20 @@ export function DashboardPage() {
     setOnDutyOfficers(activeDuty);
     setOnDutyCount(activeDuty.length);
 
+    const citizens = (citizensRes.data ?? []) as unknown as { id: string; status: any; roblox_username: string }[];
     const services = (servicesRes.data ?? []) as unknown as ServiceRecord[];
-    const unpaid = services.filter((s) => s.status === 'unpaid');
-    setUnpaidCount(unpaid.length);
-    setUnpaidTotal(unpaid.reduce((sum, s) => sum + (s.amount || 0), 0));
+
+    const revDebtSummary = calculateRevenueAndDebtSummary(services, citizens);
+    setUnpaidCount(revDebtSummary.unpaidCount);
+    setUnpaidTotal(revDebtSummary.unpaidTotal);
     setTodayRecords(services.filter((s) => (s.created_at ?? s.service_date ?? '').slice(0, 10) === today).length);
     setRecentServices(services.slice(0, 5));
+    setAllServices(services);
+    setDutyLogs((dutyRes.data ?? []) as unknown as DutyLog[]);
+
+    const emergencies = (emergencyRes.data ?? []) as unknown as EmergencyReport[];
+    setPendingEmergencies(emergencies.filter((e) => e.status === 'pending' || e.status === 'responding').length);
+    setTodayEmergencies(emergencies.filter((e) => (e.created_at ?? '').slice(0, 10) === today).length);
 
     const anns = (annRes.data ?? []) as unknown as Announcement[];
     setAnnouncements(anns.slice(0, 4));
@@ -146,6 +165,9 @@ export function DashboardPage() {
     return 'สวัสดีตอนเย็น';
   };
 
+  const monthlyDutyHours = useMemo(() => buildMonthlyDutyHours(dutyLogs, 7), [dutyLogs]);
+  const workloadByCategory = useMemo(() => buildWorkloadByCategory(allServices), [allServices]);
+
   const formatMoney = (n: number) => n.toLocaleString('th-TH') + ' BC';
   const formatDate = (iso: string) =>
     new Date(iso).toLocaleDateString('th-TH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -166,9 +188,45 @@ export function DashboardPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard label="เจ้าหน้าที่ปฏิบัติหน้าที่" value={onDutyCount.toString()} icon={<Users size={20} />} color="emerald" loading={loading} />
-        <StatCard label="รายการค้างชำระ" value={unpaidCount.toString()} icon={<AlertCircle size={20} />} color="red" loading={loading} />
+        <StatCard label="บริการ/แจ้งเหตุวันนี้" value={(todayRecords + todayEmergencies).toString()} icon={<TrendingUp size={20} />} color="blue" loading={loading} />
+        <StatCard label="เหตุฉุกเฉินรอดำเนินการ" value={pendingEmergencies.toString()} icon={<AlertCircle size={20} />} color={pendingEmergencies > 0 ? "red" : "emerald"} loading={loading} />
         <StatCard label="ยอดค้างชำระทั้งหมด" value={formatMoney(unpaidTotal)} icon={<DollarSign size={20} />} color="amber" loading={loading} small />
-        <StatCard label="บริการวันนี้" value={todayRecords.toString()} icon={<TrendingUp size={20} />} color="blue" loading={loading} />
+      </div>
+
+      {/* Charts */}
+      <div className="grid lg:grid-cols-5 gap-4 mb-8">
+        <div className="section-panel lg:col-span-3">
+          <div className="section-bar">
+            <span className="section-bar-icon"><BarChart3 size={14} /></span>
+            <span className="section-bar-title">ชั่วโมงเวรย้อนหลัง 7 เดือน</span>
+          </div>
+          <div className="p-4">
+            {loading ? (
+              <div className="animate-pulse">
+                <div className="h-40 bg-navy-600 rounded" />
+              </div>
+            ) : (
+              <GoldBarChart data={monthlyDutyHours} />
+            )}
+          </div>
+        </div>
+        <div className="section-panel lg:col-span-2">
+          <div className="section-bar">
+            <span className="section-bar-icon"><PieChart size={14} /></span>
+            <span className="section-bar-title">สัดส่วนงานตามหมวด</span>
+          </div>
+          <div className="p-4">
+            {loading ? (
+              <div className="animate-pulse">
+                <div className="h-40 bg-navy-600 rounded" />
+              </div>
+            ) : workloadByCategory.length === 0 ? (
+              <p className="text-gray-500 text-sm text-center py-8">ยังไม่มีข้อมูลงานบริการ</p>
+            ) : (
+              <DonutChart data={workloadByCategory} />
+            )}
+          </div>
+        </div>
       </div>
 
       {/* On-Duty Officers */}
@@ -461,8 +519,6 @@ function StatCard({
   };
   return (
     <div className="card p-5 relative">
-      <span className="ph-corner ph-corner-tl" aria-hidden />
-      <span className="ph-corner ph-corner-br" aria-hidden />
       {loading ? (
         <div className="animate-pulse">
           <div className="h-3 bg-navy-600 rounded w-3/4 mb-3" />

@@ -1,8 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const url = process.env.SUPABASE_URL || 'https://lricjaiakrpsswvjgbgj.supabase.co';
-const key = process.env.SUPABASE_ANON_KEY;
-if (!key) { console.error('Set SUPABASE_ANON_KEY env var'); process.exit(1); }
+const url = 'https://lricjaiakrpswsvjgbgj.supabase.co';
+const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxyaWNqYWlha3Jwc3dzdmpnYmdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4MzU5OTEsImV4cCI6MjEwMzQxMTk5MX0.q3GsWtv5TdxgA1c-E0Ebr0v9WvJwKOJdGiFt-wXwjB4';
 const sb = createClient(url, key);
 
 const { data, error } = await sb.from('officers').select('id, username, name, rank, status').eq('username', 'admin');

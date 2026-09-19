@@ -6,7 +6,7 @@ import {
 import { supabase } from '../../lib/supabase';
 import { Announcement, Officer, RANK_LABELS, DEPARTMENT_LABELS } from '../../lib/types';
 
-import type { PublicPage } from '../../components/PublicLayout';
+import { LOGO_URL, type PublicPage } from '../../components/PublicLayout';
 
 interface Props {
   onNavigate: (page: PublicPage) => void;
@@ -39,21 +39,29 @@ export function HomePage({ onNavigate }: Props) {
       .eq('is_on_duty', true)
       .eq('status', 'active')
       .order('name');
-    const officers = data ?? [];
+    const officers = (data ?? []) as Officer[];
     setOnDutyOfficers(officers);
 
+    if (officers.length === 0) {
+      setDutyTimes({});
+      return;
+    }
+
+    const ids = officers.map((o) => o.id);
+    const { data: logs } = await supabase
+      .from('duty_logs')
+      .select('officer_id, clock_in')
+      .in('officer_id', ids)
+      .is('clock_out', null)
+      .is('deleted_at', null)
+      .order('clock_in', { ascending: false });
+
     const times: Record<string, string | null> = {};
-    for (const o of officers) {
-      const { data: log } = await supabase
-        .from('duty_logs')
-        .select('clock_in')
-        .eq('officer_id', o.id)
-        .is('clock_out', null)
-        .is('deleted_at', null)
-        .order('clock_in', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      times[o.id] = log?.clock_in ?? null;
+    for (const o of officers) times[o.id] = null;
+    for (const log of (logs ?? []) as { officer_id: string; clock_in: string }[]) {
+      if (times[log.officer_id] === null) {
+        times[log.officer_id] = log.clock_in;
+      }
     }
     setDutyTimes(times);
   }
@@ -83,9 +91,11 @@ export function HomePage({ onNavigate }: Props) {
         }} />
         <div className="relative max-w-7xl mx-auto px-6 py-20 text-center">
           <div className="flex justify-center mb-6 anim-fadeInUp">
-            <div className="w-24 h-24 bg-amber-500/10 border-2 border-amber-500/30 rounded-2xl flex items-center justify-center anim-float">
-              <Truck size={46} className="text-amber-400" />
-            </div>
+            <img
+              src={LOGO_URL}
+              alt="Bit Cities DOT"
+              className="h-28 w-auto rounded-2xl shadow-lg anim-float"
+            />
           </div>
           <div className="anim-fadeInUp anim-delay-1 inline-flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 rounded-full px-4 py-1 mb-4">
             <div className="w-1.5 h-1.5 bg-amber-400 rounded-full anim-pulse" />
@@ -96,13 +106,16 @@ export function HomePage({ onNavigate }: Props) {
             ระบบบริหารจัดการและให้บริการกรมขนส่ง Bit Cities
           </p>
 
-          {/* Quick Action Buttons — 2 items ชิดกันตรงกลาง (vehicle รวมอยู่ในระบบประชาชนแล้ว) */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 max-w-2xl mx-auto">
+          {/* Quick Action Buttons — 3 items ชิดกันตรงกลาง */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 max-w-3xl mx-auto">
             <div className="anim-fadeInUp anim-delay-4 w-full sm:w-auto">
               <QuickBtn icon={<LogIn size={22} />} label="เข้าสู่ระบบเจ้าหน้าที่" sublabel="สำหรับเจ้าหน้าที่ DOT" color="amber" onClick={() => onNavigate('login')} />
             </div>
             <div className="anim-fadeInUp anim-delay-5 w-full sm:w-auto">
               <QuickBtn icon={<User size={22} />} label="ระบบประชาชน" sublabel="ค้นหาข้อมูล / ตรวจสอบรถ" color="blue" onClick={() => onNavigate('citizen')} />
+            </div>
+            <div className="anim-fadeInUp anim-delay-6 w-full sm:w-auto">
+              <QuickBtn icon={<MessageSquare size={22} />} label="ร้องเรียน" sublabel="แจ้งเรื่องร้องเรียนเจ้าหน้าที่" color="red" onClick={() => onNavigate('complaint')} />
             </div>
           </div>
         </div>
@@ -178,11 +191,11 @@ export function HomePage({ onNavigate }: Props) {
             {announcements.map((ann) => (
               <div key={ann.id} className={`card-hover cursor-pointer group ${ann.is_pinned ? 'border-amber-500/30' : ''}`}>
                 {ann.image_url && (
-                  <div className="w-full bg-navy-900 rounded-t-xl overflow-hidden">
+                  <div className="w-full bg-navy-900 rounded-t-xl overflow-hidden flex justify-center">
                     <img
                       src={ann.image_url}
                       alt={ann.title}
-                      className="w-full h-auto object-contain group-hover:opacity-90 transition-opacity"
+                      className="max-h-64 w-auto max-w-full object-contain mx-auto group-hover:opacity-90 transition-opacity"
                     />
                   </div>
                 )}
@@ -291,6 +304,13 @@ function QuickBtn({ icon, label, sublabel, color, onClick }: { icon: ReactNode; 
       subtext: 'text-blue-100',
       shadow: 'shadow-lg shadow-blue-600/20 hover:shadow-blue-500/40',
       ring: 'hover:ring-2 hover:ring-blue-300/50',
+    },
+    red: {
+      bg: 'bg-red-600 hover:bg-red-500',
+      text: 'text-white',
+      subtext: 'text-red-100',
+      shadow: 'shadow-lg shadow-red-600/20 hover:shadow-red-500/40',
+      ring: 'hover:ring-2 hover:ring-red-300/50',
     },
   };
   const c = colors[color] ?? colors.blue;

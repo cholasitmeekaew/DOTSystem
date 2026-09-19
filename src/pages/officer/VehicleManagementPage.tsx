@@ -270,6 +270,10 @@ export function VehicleManagementPage() {
                     <Car size={12} className="text-gray-500" /> {v.color}
                   </div>
                 )}
+                <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                  <Clock size={12} className="text-gray-500" />
+                  ต่อทะเบียน: {getVehicleBitInfo(v).regDate} · หมดอายุ: {getVehicleBitInfo(v).expDate}
+                </div>
                 {v.is_impounded && v.image_url && (
                   <div className="w-full h-28 overflow-hidden rounded-lg mb-2 bg-navy-900">
                     <img src={v.image_url} alt={v.license_plate} className="w-full h-full object-cover" />
@@ -466,7 +470,9 @@ export function VehicleManagementPage() {
               <DetailItem icon={vehicleIcon(viewVehicle.vehicle_type)} label="ประเภท" value={VEHICLE_TYPE_LABELS[viewVehicle.vehicle_type]} />
               <DetailItem icon={<Car size={14} />} label="สี" value={viewVehicle.color || '-'} />
               <DetailItem icon={<User size={14} />} label="เจ้าของ" value={viewVehicle.owner_name || '-'} />
-              <DetailItem icon={<FileText size={14} />} label="หมายเหตุ" value={viewVehicle.notes || '-'} />
+              <DetailItem icon={<Clock size={14} />} label="วันที่ต่อทะเบียน" value={getVehicleBitInfo(viewVehicle).regDate} />
+              <DetailItem icon={<Clock size={14} />} label="วันหมดอายุทะเบียน" value={getVehicleBitInfo(viewVehicle).expDate} />
+              <DetailItem icon={<FileText size={14} />} label="หมายเหตุ" value={getDisplayNotes(viewVehicle.notes) || '-'} />
             </div>
 
             {viewVehicle.is_impounded && (
@@ -540,6 +546,31 @@ export function VehicleManagementPage() {
       )}
     </div>
   );
+}
+
+function getBitNoteValue(notes: string | null | undefined, label: string): string | null {
+  if (!notes?.includes('[BIT_DB_IMPORT]')) return null;
+  const line = notes
+    .split(/\r?\n/)
+    .find((entry) => entry.trim().startsWith(label + ':'));
+  const value = line?.slice(label.length + 1).trim();
+  return value || null;
+}
+
+function getDisplayNotes(notes: string | null | undefined): string {
+  if (!notes) return '';
+  return notes
+    .split(/\r?\n\r?\n/)
+    .filter((block) => !block.includes('[BIT_DB_IMPORT]'))
+    .join('\n\n')
+    .trim();
+}
+
+function getVehicleBitInfo(vehicle: Vehicle): { regDate: string; expDate: string } {
+  return {
+    regDate: getBitNoteValue(vehicle.notes, 'วันที่ต่อทะเบียน') ?? '-',
+    expDate: getBitNoteValue(vehicle.notes, 'วันหมดอายุทะเบียน') ?? '-',
+  };
 }
 
 function DetailItem({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

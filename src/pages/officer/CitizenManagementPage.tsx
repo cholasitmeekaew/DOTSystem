@@ -3,21 +3,34 @@ import {
   Search, UserCog, Plus, Edit2, Trash2, Car, CreditCard, X,
   AlertCircle, CheckCircle2, Lock, User, FileText, Clock, MapPin,
   Bike, Truck as TowTruck, CarFront, Shield, Save, DollarSign, Eye, Upload,
-  BarChart3, BriefcaseBusiness, ChevronUp, ChevronDown,
+  BarChart3, ChevronUp, ChevronDown, Users,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { uploadImage, deleteImage } from '../../lib/storage';
 import {
-  Citizen, CitizenStatus, Vehicle, License, ServiceRecord, ServiceRate, ServiceType,
+  Citizen, CitizenStatus, Vehicle, License, ServiceRecord, ServiceRate, ServiceType, Officer,
   VEHICLE_TYPE_LABELS, VEHICLE_CATEGORY_LABELS, CITIZEN_STATUS_LABELS,
   VehicleType, VEHICLE_BRAND_MODELS, VEHICLE_COLORS,
 } from '../../lib/types';
+import {
+  assignRecordOfficers, fetchAssignedOfficerNames, fetchRevenueConfigs, recalculateRecord, getScopeForCategory,
+} from '../../lib/api/revenueSharing';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
-import { RankedList, type RankItem } from '../../components/RankedList';
 import { SERVICE_CATEGORIES } from './ServiceRatesPage';
+import { toLocalDateTimeInputValue } from '../../lib/utils';
+import {
+  buildCitizenDebtRows,
+  calculateRevenueAndDebtSummary,
+  findUnlinkedDebtRecords,
+  getCitizenDebtTotal,
+  getDebtExclusionMessage,
+  getRemainingDebt,
+  type DebtSortMode,
+  type CitizenDebtRow,
+} from '../../lib/citizenDebt';
 
 type Tab = 'overview' | 'vehicles' | 'licenses' | 'fees';
 
@@ -29,6 +42,10 @@ export function CitizenManagementPage() {
   const [loading, setLoading] = useState(false);
 
   const [citizens, setCitizens] = useState<Citizen[]>([]);
+  // รายชื่อทั้งหมดสำหรับคำนวณยอด — ห้ามให้ผล search มาเขียนทับ
+  // (เดิม handleSearch setCitizens ตรง ๆ ทำให้ยอด Dashboard/ตารางเพี้ยน เช่น 6,000 → 7,750)
+  const [allCitizens, setAllCitizens] = useState<Citizen[]>([]);
+  const [citizenStatusFilter, setCitizenStatusFilter] = useState<CitizenStatus | 'all'>('all');
   const [selectedCitizen, setSelectedCitizen] = useState<Citizen | null>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [licenses, setLicenses] = useState<License[]>([]);
@@ -57,10 +74,14 @@ export function CitizenManagementPage() {
   const [showFeeForm, setShowFeeForm] = useState(false);
   const [editingFee, setEditingFee] = useState<ServiceRecord | null>(null);
   const [feeForm, setFeeForm] = useState({
-    service_rate_id: '', service_name: '', amount: '',
+    service_rate_id: '', service_name: '', amount: '', paid_amount: '',
     status: 'unpaid' as 'paid' | 'unpaid', service_type: 'normal' as ServiceType,
-    notes: '', service_date: new Date().toISOString().slice(0, 16),
+    notes: '', service_date: toLocalDateTimeInputValue(new Date()),
   });
+  const [feeAssignedIds, setFeeAssignedIds] = useState<string[]>([]);
+  const [officers, setOfficers] = useState<Officer[]>([]);
+  const [feeAssignedNames, setFeeAssignedNames] = useState<Record<string, string>>({});
+  const [revenueConfigs, setRevenueConfigs] = useState<{ scope: string; officer_share_percent: number }[]>([]);
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [evidencePreview, setEvidencePreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -68,9 +89,12 @@ export function CitizenManagementPage() {
   const [confirmDelete, setConfirmDelete] = useState<{ type: 'citizen' | 'vehicle' | 'license' | 'fee'; id: string; name: string } | null>(null);
   const [allRecords, setAllRecords] = useState<ServiceRecord[]>([]);
   const [showDash, setShowDash] = useState(true);
-  const [dashSortAmount, setDashSortAmount] = useState<'desc' | 'asc'>('desc');
-  const [dashSortDays, setDashSortDays] = useState<'desc' | 'asc'>('desc');
-  const [dashSortUsage, setDashSortUsage] = useState<'desc' | 'asc'>('desc');
+  const [dashStatusFilter, setDashStatusFilter] = useState<CitizenStatus | 'all'>('all');
+  const [dashStartDate, setDashStartDate] = useState('');
+  const [dashEndDate, setDashEndDate] = useState('');
+  const [dashSortMode, setDashSortMode] = useState<DebtSortMode>('amount_desc');
+  const [historyCitizen, setHistoryCitizen] = useState<Citizen | null>(null);
+  const canManageCitizen = isCommissioner || officer?.rank === 'inspector';
 
   useEffect(() => {
     fetchCitizens();
@@ -89,94 +113,76 @@ export function CitizenManagementPage() {
     return () => { supabase.removeChannel(citCh); supabase.removeChannel(rateCh); supabase.removeChannel(recCh); };
   }, []);
 
+  useEffect(() => {
+    if (!selectedCitizen) return;
+    const fresh = allCitizens.find((c) => c.id === selectedCitizen.id);
+    if (fresh && fresh.updated_at !== selectedCitizen.updated_at) setSelectedCitizen(fresh);
+  }, [allCitizens, selectedCitizen]);
+
   async function fetchRecords() {
     const { data } = await supabase.from('service_records').select('*');
     setAllRecords(data ?? []);
   }
 
-  const citizenName = (id: string | null) =>
-    id ? (citizens.find((c) => c.id === id)?.roblox_username ?? 'ไม่ทราบชื่อ') : 'ไม่ระบุตัวตน';
+  const dashDebtRows = useMemo<CitizenDebtRow[]>(() => {
+    return buildCitizenDebtRows(allCitizens, allRecords, {
+      statusFilter: dashStatusFilter,
+      startDate: dashStartDate,
+      endDate: dashEndDate,
+      sortMode: dashSortMode,
+    }).filter((row) => row.amount > 0);
+  }, [allRecords, allCitizens, dashEndDate, dashSortMode, dashStartDate, dashStatusFilter]);
 
-  const dashOverdueAmount = useMemo<RankItem[]>(() => {
-    const map = new Map<string, { amount: number; count: number }>();
-    for (const r of allRecords) {
-      if (!r.citizen_id || r.status !== 'unpaid') continue;
-      const cur = map.get(r.citizen_id) ?? { amount: 0, count: 0 };
-      cur.amount += r.amount;
-      cur.count += 1;
-      map.set(r.citizen_id, cur);
-    }
-    return [...map.entries()]
-      .sort((a, b) => b[1].amount - a[1].amount)
-      .map(([cid, s]) => ({
-        id: cid,
-        primary: citizenName(cid),
-        value: `${s.amount.toLocaleString('th-TH')} BC`,
-        subValue: `${s.count} รายการ`,
-      }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRecords, citizens]);
+  // สูตรเดียวกับ Dashboard — ใช้กระทบยอดว่าตารางรวม = Dashboard
+  const debtSummary = useMemo(
+    () => calculateRevenueAndDebtSummary(allRecords, allCitizens),
+    [allRecords, allCitizens],
+  );
+  const dashTableTotal = useMemo(
+    () => dashDebtRows.reduce((s, r) => s + r.amount, 0),
+    [dashDebtRows],
+  );
+  const unlinkedDebtRecords = useMemo(
+    () => findUnlinkedDebtRecords(allRecords, allCitizens),
+    [allRecords, allCitizens],
+  );
+  const unlinkedDebtTotal = useMemo(
+    () => unlinkedDebtRecords.reduce((s, r) => s + getRemainingDebt(r), 0),
+    [unlinkedDebtRecords],
+  );
 
-  const dashOverdueDays = useMemo<RankItem[]>(() => {
-    const now = Date.now();
-    const map = new Map<string, { oldest: number; amount: number }>();
-    for (const r of allRecords) {
-      if (!r.citizen_id || r.status !== 'unpaid') continue;
-      const dateStr = r.service_date || r.created_at;
-      const t = dateStr ? new Date(dateStr).getTime() : NaN;
-      if (Number.isNaN(t)) continue;
-      const cur = map.get(r.citizen_id);
-      if (!cur || t < cur.oldest) map.set(r.citizen_id, { oldest: t, amount: cur ? cur.amount + r.amount : r.amount });
-      else cur.amount += r.amount;
-    }
-    return [...map.entries()]
-      .map(([cid, v]) => ({ cid, days: Math.max(0, Math.floor((now - v.oldest) / 86_400_000)), amount: v.amount }))
-      .sort((a, b) => b.days - a.days || b.amount - a.amount)
-      .map(({ cid, days, amount }) => ({
-        id: cid,
-        primary: citizenName(cid),
-        value: `${days.toLocaleString('th-TH')} วัน`,
-        subValue: `${amount.toLocaleString('th-TH')} BC`,
-      }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRecords, citizens]);
+  const openCitizenHistory = async (citizen: Citizen) => {
+    setHistoryCitizen(citizen);
+    if (selectedCitizen?.id !== citizen.id) await selectCitizen(citizen);
+  };
 
-  const dashUsage = useMemo<RankItem[]>(() => {
-    const map = new Map<string, { count: number; total: number }>();
-    for (const r of allRecords) {
-      if (!r.citizen_id) continue;
-      const cur = map.get(r.citizen_id) ?? { count: 0, total: 0 };
-      cur.count += 1;
-      cur.total += r.amount;
-      map.set(r.citizen_id, cur);
-    }
-    return [...map.entries()]
-      .filter(([, v]) => v.count > 0)
-      .sort((a, b) => b[1].count - a[1].count || b[1].total - a[1].total)
-      .map(([cid, v]) => ({
-        id: cid,
-        primary: citizenName(cid),
-        value: `${v.count} ครั้ง`,
-        subValue: `${v.total.toLocaleString('th-TH')} BC`,
-      }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRecords, citizens]);
-
-  function jumpToCitizen(item: RankItem) {
-    const c = citizens.find((x) => x.id === item.id);
-    if (c) selectCitizen(c);
-  }
+  const filteredCitizens = useMemo(() => {
+    if (citizenStatusFilter === 'all') return citizens;
+    return citizens.filter((c) => c.status === citizenStatusFilter);
+  }, [citizens, citizenStatusFilter]);
 
   async function fetchCitizens() {
     setLoading(true);
-    const { data } = await supabase.from('citizens').select('*').order('updated_at', { ascending: false });
-    setCitizens(data ?? []);
+    const [c, o, rc] = await Promise.all([
+      supabase.from('citizens').select('*').order('updated_at', { ascending: false }),
+      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+      fetchRevenueConfigs(),
+    ]);
+    setCitizens(c.data ?? []);
+    setAllCitizens(c.data ?? []);
+    setOfficers((o.data ?? []) as Officer[]);
+    setRevenueConfigs(rc);
     setLoading(false);
   }
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    if (!searchQ.trim()) { setSearched(true); return; }
+    // ค้นหาเปลี่ยนแค่รายการที่โชว์ — ห้ามแตะ allCitizens ที่ใช้คำนวณยอดเด็ดขาด
+    if (!searchQ.trim()) {
+      setCitizens(allCitizens);
+      setSearched(false);
+      return;
+    }
     setLoading(true);
     const q = searchQ.trim();
     const { data } = await supabase
@@ -222,6 +228,15 @@ export function CitizenManagementPage() {
   async function fetchFees(citizenId: string) {
     const { data } = await supabase.from('service_records').select('*').eq('citizen_id', citizenId).order('service_date', { ascending: false });
     setFeeRecords(data ?? []);
+    // ดึงชื่อ officers ที่ assign
+    const officerLookup: Record<string, string> = {};
+    for (const o of officers) officerLookup[o.id] = o.name;
+    const namesMap: Record<string, string> = {};
+    await Promise.all(((data ?? []) as ServiceRecord[]).map(async (r: ServiceRecord) => {
+      const names = await fetchAssignedOfficerNames(r.id, officerLookup);
+      if (names) namesMap[r.id] = names;
+    }));
+    setFeeAssignedNames((prev) => ({ ...prev, ...namesMap }));
   }
 
   async function fetchRates() {
@@ -238,7 +253,7 @@ export function CitizenManagementPage() {
 
   function openEditCitizen(c: Citizen) {
     setEditingCitizen(c);
-    setCitizenForm({ roblox_username: c.roblox_username, discord_username: c.discord_username || '', status: c.status, notes: c.notes || '' });
+    setCitizenForm({ roblox_username: c.roblox_username, discord_username: c.discord_username || '', status: c.status, notes: getDisplayNotes(c.notes) });
     setShowCitizenForm(true);
   }
 
@@ -317,7 +332,7 @@ export function CitizenManagementPage() {
       vehicle_type: v.vehicle_type, color: v.color || '', brand, model, brand_model: brandModel,
       vehicle_category: v.vehicle_category || 'personal', is_impounded: v.is_impounded,
       impound_reason: v.impound_reason || '', impound_location: v.impound_location || '',
-      notes: v.notes || '',
+      notes: getDisplayNotes(v.notes),
     });
     setShowVehicleForm(true);
   }
@@ -378,7 +393,7 @@ export function CitizenManagementPage() {
       license_type: l.license_type, license_number: l.license_number || '',
       issue_date: l.issue_date ? l.issue_date.split('T')[0] : '',
       expiry_date: l.expiry_date ? l.expiry_date.split('T')[0] : '',
-      status: l.status, notes: l.notes || '',
+      status: l.status, notes: getDisplayNotes(l.notes),
     });
     setShowLicenseForm(true);
   }
@@ -420,9 +435,9 @@ export function CitizenManagementPage() {
     if (!selectedCitizen) return;
     setEditingFee(null);
     setFeeForm({
-      service_rate_id: '', service_name: '', amount: '',
+      service_rate_id: '', service_name: '', amount: '', paid_amount: '',
       status: 'unpaid', service_type: 'normal',
-      notes: '', service_date: new Date().toISOString().slice(0, 16),
+      notes: '', service_date: toLocalDateTimeInputValue(new Date()),
     });
     setEvidenceFile(null);
     setEvidencePreview(null);
@@ -434,12 +449,25 @@ export function CitizenManagementPage() {
     setFeeForm({
       service_rate_id: f.service_rate_id ?? '',
       service_name: f.service_name, amount: f.amount.toString(),
+      paid_amount: f.paid_amount != null ? f.paid_amount.toString() : '',
       status: f.status, service_type: f.service_type,
-      notes: f.notes, service_date: new Date(f.service_date).toISOString().slice(0, 16),
+      notes: f.notes, service_date: toLocalDateTimeInputValue(f.service_date),
     });
     setEvidenceFile(null);
     setEvidencePreview(f.evidence_url ?? null);
     setShowFeeForm(true);
+    // โหลด assigned officers
+    setFeeAssignedIds(f.officer_id ? [f.officer_id] : []);
+    supabase
+      .from('service_record_officers')
+      .select('officer_id')
+      .eq('service_record_id', f.id)
+      .then((res: { data: { officer_id: string }[] | null }) => {
+        const sroRows = (res.data ?? []);
+        if (sroRows.length > 0) {
+          setFeeAssignedIds(sroRows.map((r) => r.officer_id));
+        }
+      });
   }
 
   function handleEvidenceSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -478,37 +506,65 @@ export function CitizenManagementPage() {
       evidenceUrl = null;
     }
 
+    const assignedNames = feeAssignedIds
+      .map((id) => officers.find((o) => o.id === id)?.name)
+      .filter(Boolean)
+      .join(', ');
+
+    const amount = parseFloat(feeForm.amount) || 0;
+    const rawPaid = parseFloat(feeForm.paid_amount) || 0;
+    const paid_amount = feeForm.status === 'paid' && rawPaid <= 0 ? amount : Math.max(0, rawPaid);
+    const finalStatus = paid_amount >= amount && amount > 0 ? 'paid' : feeForm.status;
+
     const payload = {
       roblox_username: selectedCitizen.roblox_username,
       discord_username: selectedCitizen.discord_username || '',
       citizen_id: selectedCitizen.id,
       service_rate_id: feeForm.service_rate_id || null,
       service_name: feeForm.service_name,
-      amount: parseFloat(feeForm.amount) || 0,
-      status: feeForm.status,
+      amount,
+      paid_amount,
+      status: finalStatus,
       service_type: feeForm.service_type,
-      officer_id: officer?.id ?? null,
-      officer_name: officer?.name ?? '',
+      officer_id: feeAssignedIds[0] || (officer?.id ?? null),
+      officer_name: assignedNames || (officer?.name ?? ''),
       notes: feeForm.notes,
       evidence_url: evidenceUrl,
       service_date: new Date(feeForm.service_date).toISOString(),
       updated_at: new Date().toISOString(),
     };
+    let recordId: string | null = null;
     if (editingFee) {
+      recordId = editingFee.id;
       await supabase.from('service_records').update(payload).eq('id', editingFee.id);
     } else {
-      await supabase.from('service_records').insert(payload);
+      const { data } = await supabase.from('service_records').insert(payload).select('id').single();
+      recordId = data?.id ?? null;
+    }
+    if (recordId) {
+      await assignRecordOfficers(recordId, feeAssignedIds, officer?.id ?? '');
+      const scope = getScopeForCategory(feeForm.service_name);
+      const cfg = revenueConfigs.find((c) => c.scope === scope);
+      if (cfg) await recalculateRecord(recordId, cfg.officer_share_percent);
     }
     setUploading(false);
     setShowFeeForm(false);
+    setFeeAssignedIds([]);
     await fetchFees(selectedCitizen.id);
+    await fetchRecords();
   }
 
   async function toggleFeeStatus(f: ServiceRecord) {
-    if (!isCommissioner && officer && f.officer_id !== officer.id) return;
+    if (!canManageCitizen) return;
     const newStatus = f.status === 'paid' ? 'unpaid' : 'paid';
-    await supabase.from('service_records').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', f.id);
-    setFeeRecords((prev) => prev.map((r) => r.id === f.id ? { ...r, status: newStatus } : r));
+    const newPaidAmount = newStatus === 'paid' ? f.amount : 0;
+    await supabase.from('service_records').update({
+      status: newStatus,
+      paid_amount: newPaidAmount,
+      updated_at: new Date().toISOString()
+    }).eq('id', f.id);
+    setFeeRecords((prev) => prev.map((r) => r.id === f.id ? { ...r, status: newStatus, paid_amount: newPaidAmount } : r));
+    await fetchRecords();
   }
 
   async function deleteFee(id: string) {
@@ -551,11 +607,11 @@ export function CitizenManagementPage() {
         icon={<UserCog size={26} />}
         title="จัดการข้อมูลประชาชน"
         subtitle="ค้นหาและจัดการข้อมูลประชาชน — สำหรับหัวหน้ากรมเท่านั้น"
-        actions={
+        actions={canManageCitizen ? (
           <button onClick={openAddCitizen} className="btn-primary flex items-center gap-2">
             <Plus size={16} /> เพิ่มประชาชน
           </button>
-        }
+        ) : null}
       />
 
       {/* Search */}
@@ -590,100 +646,107 @@ export function CitizenManagementPage() {
           {showDash ? <ChevronUp size={15} className="text-gray-400" /> : <ChevronDown size={15} className="text-gray-400" />}
         </button>
         {showDash && (
-          <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Overdue Amount */}
-            <div className="card overflow-hidden flex flex-col">
+          <div className="p-4 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">สถานะ</label>
+                <select className="input-field text-sm" value={dashStatusFilter} onChange={(e) => setDashStatusFilter(e.target.value as CitizenStatus | 'all')}>
+                  <option value="all">ทั้งหมด</option>
+                  <option value="normal">ปกติ</option>
+                  <option value="watched">เฝ้าระวัง</option>
+                  <option value="suspended">ระงับสิทธิ์</option>
+                  <option value="banned">แบน</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">วันที่เริ่มต้น</label>
+                <input type="date" className="input-field text-sm" value={dashStartDate} onChange={(e) => setDashStartDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">วันที่สิ้นสุด</label>
+                <input type="date" className="input-field text-sm" value={dashEndDate} onChange={(e) => setDashEndDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">เรียงลำดับ</label>
+                <select className="input-field text-sm" value={dashSortMode} onChange={(e) => setDashSortMode(e.target.value as DebtSortMode)}>
+                  <option value="amount_desc">ยอดเงินมาก → น้อย</option>
+                  <option value="amount_asc">ยอดเงินน้อย → มาก</option>
+                  <option value="days_desc">ค้างนานที่สุด</option>
+                  <option value="usage_desc">ใช้งานบ่อยที่สุด</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="table-panel overflow-hidden">
               <div className="ph-panel-head flex items-center justify-between gap-2">
                 <span className="flex items-center gap-2">
-                  <span className="ph-corner ph-corner-tl" aria-hidden />
-                  <span className="ph-corner ph-corner-br" aria-hidden />
                   <DollarSign size={13} className="text-amber-400" />
-                  <h3 className="text-xs font-bold text-white tracking-wide">ค้างชำระ (ยอดเงิน)</h3>
+                  <h3 className="text-xs font-bold text-white tracking-wide">ตารางจัดอันดับหนี้สินรวม</h3>
                 </span>
-                <div className="gold-toggle">
-                  <button className={dashSortAmount === 'desc' ? 'active' : ''} onClick={(e) => { e.stopPropagation(); setDashSortAmount('desc'); }}>มาก→น้อย</button>
-                  <button className={dashSortAmount === 'asc' ? 'active' : ''} onClick={(e) => { e.stopPropagation(); setDashSortAmount('asc'); }}>น้อย→มาก</button>
-                </div>
+                <span className="text-[10px] text-gray-500">ไม่รวมสถานะแบนและระงับสิทธิ์</span>
               </div>
-              <div className="flex-1 p-2 space-y-1.5 min-h-[180px]">
-                {dashOverdueAmount.length === 0 ? (
-                  <p className="text-gray-500 text-xs text-center py-8">ไม่มีรายการค้างชำระ</p>
-                ) : (dashSortAmount === 'desc' ? dashOverdueAmount : [...dashOverdueAmount].reverse()).map((item, idx) => (
-                  <button key={item.id} onClick={() => jumpToCitizen(item)} className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 hover:bg-navy-700/70 cursor-pointer text-left transition-colors">
-                    <span className={`w-6 h-6 rounded-md border flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${idx === 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/50' : idx === 1 ? 'bg-slate-400/15 text-slate-300 border-slate-400/40' : idx === 2 ? 'bg-orange-700/20 text-orange-300 border-orange-600/40' : 'bg-navy-700/60 text-gray-500 border-blue-900/40'}`}>{idx + 1}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-white text-xs font-medium truncate">{item.primary}</div>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-white text-xs font-semibold whitespace-nowrap">{item.value}</div>
-                      {item.subValue && <div className="text-gray-500 text-[10px] whitespace-nowrap">{item.subValue}</div>}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Overdue Days */}
-            <div className="card overflow-hidden flex flex-col">
-              <div className="ph-panel-head flex items-center justify-between gap-2">
-                <span className="flex items-center gap-2">
-                  <span className="ph-corner ph-corner-tl" aria-hidden />
-                  <span className="ph-corner ph-corner-br" aria-hidden />
-                  <Clock size={13} className="text-amber-400" />
-                  <h3 className="text-xs font-bold text-white tracking-wide">ค้างชำระ (นานสุด)</h3>
+              <div className="px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-amber-500/15 bg-amber-500/5 text-xs">
+                <span className="text-gray-400">
+                  รวมในตาราง <span className="text-amber-300 font-bold">{formatMoney(dashTableTotal)}</span>
                 </span>
-                <div className="gold-toggle">
-                  <button className={dashSortDays === 'desc' ? 'active' : ''} onClick={(e) => { e.stopPropagation(); setDashSortDays('desc'); }}>นาน→สั้น</button>
-                  <button className={dashSortDays === 'asc' ? 'active' : ''} onClick={(e) => { e.stopPropagation(); setDashSortDays('asc'); }}>สั้น→นาน</button>
-                </div>
-              </div>
-              <div className="flex-1 p-2 space-y-1.5 min-h-[180px]">
-                {dashOverdueDays.length === 0 ? (
-                  <p className="text-gray-500 text-xs text-center py-8">ไม่มีรายการค้างชำระ</p>
-                ) : (dashSortDays === 'desc' ? dashOverdueDays : [...dashOverdueDays].reverse()).map((item, idx) => (
-                  <button key={item.id} onClick={() => jumpToCitizen(item)} className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 hover:bg-navy-700/70 cursor-pointer text-left transition-colors">
-                    <span className={`w-6 h-6 rounded-md border flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${idx === 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/50' : idx === 1 ? 'bg-slate-400/15 text-slate-300 border-slate-400/40' : idx === 2 ? 'bg-orange-700/20 text-orange-300 border-orange-600/40' : 'bg-navy-700/60 text-gray-500 border-blue-900/40'}`}>{idx + 1}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-white text-xs font-medium truncate">{item.primary}</div>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-white text-xs font-semibold whitespace-nowrap">{item.value}</div>
-                      {item.subValue && <div className="text-gray-500 text-[10px] whitespace-nowrap">{item.subValue}</div>}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Service Usage */}
-            <div className="card overflow-hidden flex flex-col">
-              <div className="ph-panel-head flex items-center justify-between gap-2">
-                <span className="flex items-center gap-2">
-                  <span className="ph-corner ph-corner-tl" aria-hidden />
-                  <span className="ph-corner ph-corner-br" aria-hidden />
-                  <BriefcaseBusiness size={13} className="text-amber-400" />
-                  <h3 className="text-xs font-bold text-white tracking-wide">การใช้บริการ</h3>
+                <span className="text-gray-600">•</span>
+                <span className="text-gray-400">
+                  Dashboard (ยอดค้าง) <span className="text-white font-bold">{formatMoney(debtSummary.unpaidTotal)}</span>
                 </span>
-                <div className="gold-toggle">
-                  <button className={dashSortUsage === 'desc' ? 'active' : ''} onClick={(e) => { e.stopPropagation(); setDashSortUsage('desc'); }}>มาก→น้อย</button>
-                  <button className={dashSortUsage === 'asc' ? 'active' : ''} onClick={(e) => { e.stopPropagation(); setDashSortUsage('asc'); }}>น้อย→มาก</button>
-                </div>
+                {unlinkedDebtRecords.length > 0 && (
+                  <>
+                    <span className="text-gray-600">•</span>
+                    <span className="text-orange-300" title={unlinkedDebtRecords.map((r) => `${r.roblox_username} ${Number(r.amount).toLocaleString('th-TH')}`).join(', ')}>
+                      ไม่ผูกประชาชน {unlinkedDebtRecords.length} รายการ ({formatMoney(unlinkedDebtTotal)})
+                    </span>
+                  </>
+                )}
+                {dashTableTotal !== debtSummary.unpaidTotal && (
+                  <span className="text-gray-500 text-[10px]">ส่วนต่าง = ตัวกรองวันที่/สถานะ หรือรายการไม่ผูกประชาชน</span>
+                )}
               </div>
-              <div className="flex-1 p-2 space-y-1.5 min-h-[180px]">
-                {dashUsage.length === 0 ? (
-                  <p className="text-gray-500 text-xs text-center py-8">ยังไม่มีประวัติใช้บริการ</p>
-                ) : (dashSortUsage === 'desc' ? dashUsage : [...dashUsage].reverse()).map((item, idx) => (
-                  <button key={item.id} onClick={() => jumpToCitizen(item)} className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 hover:bg-navy-700/70 cursor-pointer text-left transition-colors">
-                    <span className={`w-6 h-6 rounded-md border flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${idx === 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/50' : idx === 1 ? 'bg-slate-400/15 text-slate-300 border-slate-400/40' : idx === 2 ? 'bg-orange-700/20 text-orange-300 border-orange-600/40' : 'bg-navy-700/60 text-gray-500 border-blue-900/40'}`}>{idx + 1}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-white text-xs font-medium truncate">{item.primary}</div>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-white text-xs font-semibold whitespace-nowrap">{item.value}</div>
-                      {item.subValue && <div className="text-gray-500 text-[10px] whitespace-nowrap">{item.subValue}</div>}
-                    </div>
-                  </button>
-                ))}
+              <div className="overflow-x-auto">
+                {dashDebtRows.length === 0 ? (
+                  <p className="text-gray-500 text-xs text-center py-8">ไม่มีรายการค้างชำระตามเงื่อนไข</p>
+                ) : (
+                  <table className="w-full">
+                    <thead className="table-header-gold">
+                      <tr className="border-b border-amber-500/15">
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">ลำดับ</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Roblox / Discord</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">สถานะ</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">ยอดค้าง</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">ค้างนาน</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">รายการ</th>
+                        <th className="px-4 py-3" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dashDebtRows.map((row, idx) => (
+                        <tr key={row.citizen.id} className="table-row">
+                          <td className="px-4 py-3">
+                            <span className={`w-7 h-7 rounded-md border flex items-center justify-center text-[10px] font-bold ${idx === 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/50' : idx === 1 ? 'bg-slate-400/15 text-slate-300 border-slate-400/40' : idx === 2 ? 'bg-orange-700/20 text-orange-300 border-orange-600/40' : 'bg-navy-700/60 text-gray-500 border-blue-900/40'}`}>{idx + 1}</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <button onClick={() => selectCitizen(row.citizen)} className="text-left">
+                              <div className="text-sm font-medium text-white">{row.citizen.roblox_username}</div>
+                              <div className="text-xs text-gray-500">{row.citizen.discord_username || '-'}</div>
+                            </button>
+                          </td>
+                          <td className="px-4 py-3"><CitizenStatusBadge status={row.citizen.status} /></td>
+                          <td className="px-4 py-3 text-right text-sm font-semibold text-amber-300 whitespace-nowrap">{formatMoney(row.amount)}</td>
+                          <td className="px-4 py-3 text-right text-sm text-gray-300 whitespace-nowrap">{row.days.toLocaleString('th-TH')} วัน</td>
+                          <td className="px-4 py-3 text-right text-sm text-gray-400 whitespace-nowrap">{row.count.toLocaleString('th-TH')} รายการ</td>
+                          <td className="px-4 py-3 text-right">
+                            <button onClick={() => openCitizenHistory(row.citizen)} className="btn-secondary px-3 py-1.5 text-xs flex items-center gap-1.5 ml-auto">
+                              <Eye size={13} /> ดูประวัติ
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           </div>
@@ -693,15 +756,48 @@ export function CitizenManagementPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Citizen List */}
         <div className="lg:col-span-1">
-          <h2 className="text-sm font-semibold text-gray-400 mb-3">รายการประชาชน ({citizens.length})</h2>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-semibold text-gray-400">รายการประชาชน ({filteredCitizens.length})</h2>
+          </div>
+
+          {/* Status Filter Chips */}
+          <div className="flex gap-1 overflow-x-auto pb-2 mb-2 scrollbar-thin">
+            {[
+              { key: 'all' as const, label: 'ทั้งหมด', count: allCitizens.length },
+              { key: 'normal' as const, label: 'ปกติ', count: allCitizens.filter((c) => c.status === 'normal').length },
+              { key: 'watched' as const, label: 'เฝ้าระวัง', count: allCitizens.filter((c) => c.status === 'watched').length },
+              { key: 'suspended' as const, label: 'ระงับสิทธิ์', count: allCitizens.filter((c) => c.status === 'suspended').length },
+              { key: 'banned' as const, label: 'แบน', count: allCitizens.filter((c) => c.status === 'banned').length },
+            ].map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setCitizenStatusFilter(f.key)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+                  citizenStatusFilter === f.key
+                    ? 'bg-amber-500 text-navy-900 font-bold shadow-sm shadow-amber-500/20'
+                    : 'bg-navy-800 text-gray-400 hover:text-white border border-blue-900/40'
+                }`}
+              >
+                {f.label} ({f.count})
+              </button>
+            ))}
+          </div>
+
           <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-            {citizens.length === 0 && (
+            {filteredCitizens.length === 0 && (
               <div className="card p-6 text-center">
                 <UserCog size={28} className="text-gray-600 mx-auto mb-2" />
-                <p className="text-gray-400 text-sm">{searched ? 'ไม่พบข้อมูล' : 'ยังไม่มีข้อมูลประชาชน'}</p>
+                <p className="text-gray-400 text-sm">
+                  {searched
+                    ? 'ไม่พบข้อมูล'
+                    : citizenStatusFilter !== 'all'
+                    ? `ไม่มีประชาชนสถานะ "${CITIZEN_STATUS_LABELS[citizenStatusFilter as CitizenStatus]}"`
+                    : 'ยังไม่มีข้อมูลประชาชน'}
+                </p>
               </div>
             )}
-            {citizens.map((c) => (
+            {filteredCitizens.map((c) => (
               <button
                 key={c.id}
                 onClick={() => selectCitizen(c)}
@@ -755,14 +851,16 @@ export function CitizenManagementPage() {
                         {selectedCitizen.discord_username && <p className="text-gray-500 text-sm">{selectedCitizen.discord_username}</p>}
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => openEditCitizen(selectedCitizen)} className="btn-secondary px-3 py-1.5 text-sm flex items-center gap-1.5">
-                        <Edit2 size={14} /> แก้ไข
-                      </button>
-                      <button onClick={() => setConfirmDelete({ type: 'citizen', id: selectedCitizen.id, name: selectedCitizen.roblox_username })} className="bg-red-500/10 text-red-400 border border-red-500/20 px-3 py-1.5 rounded-lg text-sm hover:bg-red-500/20 flex items-center gap-1.5">
-                        <Trash2 size={14} /> ลบ
-                      </button>
-                    </div>
+                    {canManageCitizen && (
+                      <div className="flex gap-2">
+                        <button onClick={() => openEditCitizen(selectedCitizen)} className="btn-secondary px-3 py-1.5 text-sm flex items-center gap-1.5">
+                          <Edit2 size={14} /> แก้ไข
+                        </button>
+                        <button onClick={() => setConfirmDelete({ type: 'citizen', id: selectedCitizen.id, name: selectedCitizen.roblox_username })} className="bg-red-500/10 text-red-400 border border-red-500/20 px-3 py-1.5 rounded-lg text-sm hover:bg-red-500/20 flex items-center gap-1.5">
+                          <Trash2 size={14} /> ลบ
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 pt-4 border-t border-blue-900/30">
@@ -772,18 +870,26 @@ export function CitizenManagementPage() {
                       <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><Shield size={14} className="text-amber-400" /> สถานะ</div>
                       <CitizenStatusBadge status={selectedCitizen.status} />
                     </div>
+                    <DetailItem icon={<CreditCard size={14} />} label="สถานะใบขับขี่" value={getDriverLicenseLabel(selectedCitizen, licenses)} />
                     <DetailItem icon={<Clock size={14} />} label="ลงทะเบียนเมื่อ" value={formatDate(selectedCitizen.created_at)} />
                   </div>
 
-                  {selectedCitizen.notes && (
+                  {getDisplayNotes(selectedCitizen.notes) && (
                     <div className="mt-4 pt-4 border-t border-blue-900/30">
                       <div className="text-xs text-gray-500 mb-1 flex items-center gap-1"><FileText size={14} className="text-amber-400" /> หมายเหตุส่วนตัว</div>
-                      <div className="bg-navy-900/50 rounded-lg p-3 text-gray-300 text-sm">{selectedCitizen.notes}</div>
+                      <div className="bg-navy-900/50 rounded-lg p-3 text-gray-300 text-sm">{getDisplayNotes(selectedCitizen.notes)}</div>
+                    </div>
+                  )}
+
+                  {getDebtExclusionMessage(selectedCitizen.status) && (
+                    <div className="mt-4 flex items-start gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-300">
+                      <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                      <span>{getDebtExclusionMessage(selectedCitizen.status)}</span>
                     </div>
                   )}
 
                   {/* Quick stats */}
-                  <div className="mt-4 pt-4 border-t border-blue-900/30 grid grid-cols-2 gap-3">
+                  <div className="mt-4 pt-4 border-t border-blue-900/30 grid grid-cols-3 gap-3">
                     <div className="bg-navy-900/50 rounded-lg p-3 text-center">
                       <div className="text-2xl font-bold text-white">{vehicles.length}</div>
                       <div className="text-xs text-gray-500">ยานพาหนะ</div>
@@ -792,6 +898,12 @@ export function CitizenManagementPage() {
                       <div className="text-2xl font-bold text-white">{licenses.length}</div>
                       <div className="text-xs text-gray-500">ใบอนุญาต</div>
                     </div>
+                    <div className="bg-navy-900/50 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-amber-400">
+                        {formatMoney(getCitizenDebtTotal(feeRecords, selectedCitizen))}
+                      </div>
+                      <div className="text-xs text-gray-500">ยอดค้างชำระ</div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -799,8 +911,12 @@ export function CitizenManagementPage() {
               {/* Fees Tab */}
               {tab === 'fees' && (() => {
                 const feeTotal = feeRecords.reduce((s, r) => s + Number(r.amount), 0);
-                const feePaid = feeRecords.filter((r) => r.status === 'paid').reduce((s, r) => s + Number(r.amount), 0);
-                const feeUnpaid = feeTotal - feePaid;
+                const feePaid = feeRecords.reduce((s, r) => {
+                  if (r.status === 'paid') return s + Number(r.amount);
+                  return s + Math.min(Number(r.amount), Number(r.paid_amount ?? 0));
+                }, 0);
+                const feeUnpaid = Math.max(0, feeTotal - feePaid);
+                const partialCount = feeRecords.filter((r) => r.status !== 'paid' && Number(r.paid_amount ?? 0) > 0).length;
                 return (
                 <div>
                   {/* Summary cards */}
@@ -811,19 +927,23 @@ export function CitizenManagementPage() {
                     </div>
                     <div className="card p-4 text-center border-emerald-500/20">
                       <div className="text-xl font-bold text-emerald-400">{formatMoney(feePaid)}</div>
-                      <div className="text-xs text-gray-500 mt-0.5">ชำระแล้ว</div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        ชำระแล้ว {partialCount > 0 && <span className="text-amber-400">({partialCount} รายการบางส่วน)</span>}
+                      </div>
                     </div>
                     <div className="card p-4 text-center border-red-500/20">
                       <div className="text-xl font-bold text-red-400">{formatMoney(feeUnpaid)}</div>
-                      <div className="text-xs text-gray-500 mt-0.5">ค้างชำระ</div>
+                      <div className="text-xs text-gray-500 mt-0.5">คงเหลือค้างชำระ</div>
                     </div>
                   </div>
 
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-sm font-semibold text-gray-400">ประวัติค่าบริการ ({feeRecords.length})</h3>
-                    <button onClick={openAddFee} className="btn-primary px-4 py-1.5 text-sm flex items-center gap-1.5">
-                      <Plus size={14} /> เพิ่มค่าบริการ
-                    </button>
+                    {canManageCitizen && (
+                      <button onClick={openAddFee} className="btn-primary px-4 py-1.5 text-sm flex items-center gap-1.5">
+                        <Plus size={14} /> เพิ่มค่าบริการ
+                      </button>
+                    )}
                   </div>
                   {feeRecords.length === 0 ? (
                     <div className="card p-8 text-center">
@@ -833,7 +953,10 @@ export function CitizenManagementPage() {
                   ) : (
                     <div className="space-y-3">
                       {feeRecords.map((f) => {
-                        const canEdit = isCommissioner || (officer && f.officer_id === officer.id);
+                        const canEdit = canManageCitizen;
+                        const paid = f.status === 'paid' ? Number(f.amount) : Math.min(Number(f.amount), Number(f.paid_amount ?? 0));
+                        const remaining = Math.max(0, Number(f.amount) - paid);
+                        const isPartial = f.status !== 'paid' && paid > 0 && remaining > 0;
                         return (
                         <div key={f.id} className={'card p-4 ' + (f.service_type === 'impound' ? 'border-red-500/20' : '')}>
                           <div className="flex items-start justify-between">
@@ -847,18 +970,31 @@ export function CitizenManagementPage() {
                                   <Badge variant={f.service_type === 'impound' ? 'danger' : 'info'}>{f.service_type === 'impound' ? 'ยึด' : 'ปกติ'}</Badge>
                                 </div>
                                 <div className="text-gray-500 text-xs mt-0.5">
-                                  {formatDate(f.service_date)} · เจ้าหน้าที่: {f.officer_name}
+                                  {formatDate(f.service_date)} · เจ้าหน้าที่: {feeAssignedNames[f.id] || f.officer_name}
                                 </div>
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className={'text-sm font-bold ' + (f.status === 'paid' ? 'text-emerald-400' : 'text-red-400')}>{formatMoney(Number(f.amount))}</span>
+                              <div className="text-right">
+                                <div className={'text-sm font-bold ' + (f.status === 'paid' ? 'text-emerald-400' : isPartial ? 'text-amber-400' : 'text-red-400')}>
+                                  {formatMoney(Number(f.amount))}
+                                </div>
+                                {isPartial && (
+                                  <div className="text-[11px] text-gray-400">
+                                    จ่ายแล้ว <span className="text-emerald-400">{formatMoney(paid)}</span> · ค้าง <span className="text-red-400">{formatMoney(remaining)}</span>
+                                  </div>
+                                )}
+                              </div>
                               {canEdit ? (
                                 <button onClick={() => toggleFeeStatus(f)} title="สลับสถานะการชำระ">
-                                  <Badge variant={f.status === 'paid' ? 'success' : 'danger'}>{f.status === 'paid' ? 'ชำระแล้ว' : 'ค้างชำระ'}</Badge>
+                                  <Badge variant={f.status === 'paid' ? 'success' : isPartial ? 'warning' : 'danger'}>
+                                    {f.status === 'paid' ? 'ชำระแล้ว' : isPartial ? `ชำระบางส่วน (${formatMoney(paid)})` : 'ค้างชำระ'}
+                                  </Badge>
                                 </button>
                               ) : (
-                                <Badge variant={f.status === 'paid' ? 'success' : 'danger'}>{f.status === 'paid' ? 'ชำระแล้ว' : 'ค้างชำระ'}</Badge>
+                                <Badge variant={f.status === 'paid' ? 'success' : isPartial ? 'warning' : 'danger'}>
+                                  {f.status === 'paid' ? 'ชำระแล้ว' : isPartial ? `ชำระบางส่วน (${formatMoney(paid)})` : 'ค้างชำระ'}
+                                </Badge>
                               )}
                               {f.evidence_url && (
                                 <button onClick={() => setViewFeeImage(f.evidence_url)} className="bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 p-1.5 rounded-lg" title="ดูหลักฐาน"><Eye size={14} /></button>
@@ -868,7 +1004,7 @@ export function CitizenManagementPage() {
                               ) : (
                                 <span className="text-gray-600 text-xs px-1" title="ไม่สามารถแก้ไขได้ เฉพาะผู้ที่สร้างรายการนี้เท่านั้น">—</span>
                               )}
-                              {canEdit && isCommissioner && (
+                              {canManageCitizen && (
                                 <button onClick={() => setConfirmDelete({ type: 'fee', id: f.id, name: f.service_name })} className="bg-red-500/10 text-red-400 hover:bg-red-500/20 p-1.5 rounded-lg" title="ลบ"><Trash2 size={14} /></button>
                               )}
                             </div>
@@ -888,9 +1024,11 @@ export function CitizenManagementPage() {
                 <div>
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-sm font-semibold text-gray-400">ยานพาหนะในครอบครอง ({vehicles.length})</h3>
-                    <button onClick={openAddVehicle} className="btn-primary px-4 py-1.5 text-sm flex items-center gap-1.5">
-                      <Plus size={14} /> เพิ่มยานพาหนะ
-                    </button>
+                    {canManageCitizen && (
+                      <button onClick={openAddVehicle} className="btn-primary px-4 py-1.5 text-sm flex items-center gap-1.5">
+                        <Plus size={14} /> เพิ่มยานพาหนะ
+                      </button>
+                    )}
                   </div>
                   {vehicles.length === 0 ? (
                     <div className="card p-8 text-center">
@@ -917,12 +1055,17 @@ export function CitizenManagementPage() {
                                 <div className="text-gray-500 text-xs">
                                   หมวด: {VEHICLE_CATEGORY_LABELS[v.vehicle_category || 'personal'] || v.vehicle_category}
                                 </div>
+                                <div className="text-gray-500 text-xs">
+                                  ต่อทะเบียน: {getVehicleBitInfo(v).regDate} · หมดอายุ: {getVehicleBitInfo(v).expDate}
+                                </div>
                               </div>
                             </div>
-                            <div className="flex gap-1.5">
-                              <button onClick={() => openEditVehicle(v)} className="bg-navy-700 text-gray-400 hover:text-white p-1.5 rounded-lg"><Edit2 size={14} /></button>
-                              <button onClick={() => setConfirmDelete({ type: 'vehicle', id: v.id, name: v.license_plate })} className="bg-red-500/10 text-red-400 hover:bg-red-500/20 p-1.5 rounded-lg"><Trash2 size={14} /></button>
-                            </div>
+                            {canManageCitizen && (
+                              <div className="flex gap-1.5">
+                                <button onClick={() => openEditVehicle(v)} className="bg-navy-700 text-gray-400 hover:text-white p-1.5 rounded-lg"><Edit2 size={14} /></button>
+                                <button onClick={() => setConfirmDelete({ type: 'vehicle', id: v.id, name: v.license_plate })} className="bg-red-500/10 text-red-400 hover:bg-red-500/20 p-1.5 rounded-lg"><Trash2 size={14} /></button>
+                              </div>
+                            )}
                           </div>
                           {v.is_impounded && v.impound_reason && (
                             <div className="mt-2 pt-2 border-t border-blue-900/30 text-xs text-red-400">
@@ -941,9 +1084,11 @@ export function CitizenManagementPage() {
                 <div>
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-sm font-semibold text-gray-400">ใบอนุญาต ({licenses.length})</h3>
-                    <button onClick={openAddLicense} className="btn-primary px-4 py-1.5 text-sm flex items-center gap-1.5">
-                      <Plus size={14} /> เพิ่มใบอนุญาต
-                    </button>
+                    {canManageCitizen && (
+                      <button onClick={openAddLicense} className="btn-primary px-4 py-1.5 text-sm flex items-center gap-1.5">
+                        <Plus size={14} /> เพิ่มใบอนุญาต
+                      </button>
+                    )}
                   </div>
                   {licenses.length === 0 ? (
                     <div className="card p-8 text-center">
@@ -971,11 +1116,15 @@ export function CitizenManagementPage() {
                             </div>
                             <div className="flex items-center gap-2">
                               <LicenseStatusBadge status={l.status} />
-                              <button onClick={() => openEditLicense(l)} className="bg-navy-700 text-gray-400 hover:text-white p-1.5 rounded-lg"><Edit2 size={14} /></button>
-                              <button onClick={() => setConfirmDelete({ type: 'license', id: l.id, name: l.license_type })} className="bg-red-500/10 text-red-400 hover:bg-red-500/20 p-1.5 rounded-lg"><Trash2 size={14} /></button>
+                              {canManageCitizen && (
+                                <>
+                                  <button onClick={() => openEditLicense(l)} className="bg-navy-700 text-gray-400 hover:text-white p-1.5 rounded-lg"><Edit2 size={14} /></button>
+                                  <button onClick={() => setConfirmDelete({ type: 'license', id: l.id, name: l.license_type })} className="bg-red-500/10 text-red-400 hover:bg-red-500/20 p-1.5 rounded-lg"><Trash2 size={14} /></button>
+                                </>
+                              )}
                             </div>
                           </div>
-                          {l.notes && <div className="mt-2 pt-2 border-t border-blue-900/30 text-xs text-gray-500">{l.notes}</div>}
+                          {getDisplayNotes(l.notes) && <div className="mt-2 pt-2 border-t border-blue-900/30 text-xs text-gray-500">{getDisplayNotes(l.notes)}</div>}
                         </div>
                       ))}
                     </div>
@@ -1001,10 +1150,24 @@ export function CitizenManagementPage() {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-400 mb-1.5">สถานะบุคคล</label>
-              <div className="flex gap-2">
-                {(['normal', 'watched', 'suspended'] as CitizenStatus[]).map((s) => (
-                  <button key={s} type="button" onClick={() => setCitizenForm({ ...citizenForm, status: s })}
-                    className={'flex-1 py-2 rounded-lg text-sm font-medium transition-all ' + (citizenForm.status === s ? 'bg-amber-500 text-navy-900' : 'bg-navy-700 text-gray-400 hover:text-white')}>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(['normal', 'watched', 'suspended', 'banned'] as CitizenStatus[]).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setCitizenForm({ ...citizenForm, status: s })}
+                    className={'py-2 rounded-lg text-xs font-medium transition-all ' + (
+                      citizenForm.status === s
+                        ? (s === 'banned'
+                            ? 'bg-red-600 text-white font-bold shadow-md shadow-red-600/30'
+                            : s === 'suspended'
+                            ? 'bg-orange-500 text-navy-900 font-bold'
+                            : s === 'watched'
+                            ? 'bg-amber-500 text-navy-900 font-bold'
+                            : 'bg-emerald-500 text-navy-900 font-bold')
+                        : 'bg-navy-700 text-gray-400 hover:text-white'
+                    )}
+                  >
                     {CITIZEN_STATUS_LABELS[s]}
                   </button>
                 ))}
@@ -1201,14 +1364,84 @@ export function CitizenManagementPage() {
                 </button>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+
+            {/* Assigned officers (optional) */}
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                <Users size={12} className="inline mr-1" />
+                เจ้าหน้าที่รับเคส
+              </label>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {feeAssignedIds.map((oid) => {
+                  const o = officers.find((x) => x.id === oid);
+                  if (!o) return null;
+                  return (
+                    <span key={oid} className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/15 border border-blue-500/30 rounded text-xs text-blue-300">
+                      {o.name}
+                      <button type="button" onClick={() => setFeeAssignedIds((p) => p.filter((x) => x !== oid))} className="hover:text-red-400">
+                        <X size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
+                {feeAssignedIds.length === 0 && <span className="text-xs text-gray-500">ไม่ระบุ (เจ้าของเคส = user login)</span>}
+              </div>
+              <select
+                className="input-field text-sm"
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v && !feeAssignedIds.includes(v)) {
+                    setFeeAssignedIds((p) => [...p, v]);
+                  }
+                  e.target.value = '';
+                }}
+              >
+                <option value="">+ เพิ่มเจ้าหน้าที่</option>
+                {officers
+                  .filter((o) => !feeAssignedIds.includes(o.id))
+                  .map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name} ({o.rank})
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-medium text-gray-400 mb-1.5">วันที่ให้บริการ</label>
                 <input type="datetime-local" className="input-field" value={feeForm.service_date} onChange={(e) => setFeeForm({ ...feeForm, service_date: e.target.value })} />
               </div>
               <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">ชำระแล้ว (BC)</label>
+                <input
+                  type="number"
+                  className="input-field"
+                  placeholder="0"
+                  value={feeForm.paid_amount}
+                  onChange={(e) => {
+                    const paidVal = e.target.value;
+                    const numPaid = parseFloat(paidVal) || 0;
+                    const numAmount = parseFloat(feeForm.amount) || 0;
+                    const autoStatus = (numAmount > 0 && numPaid >= numAmount) ? 'paid' : (numPaid > 0 ? 'unpaid' : feeForm.status);
+                    setFeeForm({ ...feeForm, paid_amount: paidVal, status: autoStatus });
+                  }}
+                />
+              </div>
+              <div>
                 <label className="block text-xs font-medium text-gray-400 mb-1.5">สถานะ</label>
-                <select className="input-field" value={feeForm.status} onChange={(e) => setFeeForm({ ...feeForm, status: e.target.value as 'paid' | 'unpaid' })}>
+                <select
+                  className="input-field"
+                  value={feeForm.status}
+                  onChange={(e) => {
+                    const nextStatus = e.target.value as 'paid' | 'unpaid';
+                    if (nextStatus === 'paid' && (!feeForm.paid_amount || parseFloat(feeForm.paid_amount) <= 0)) {
+                      setFeeForm({ ...feeForm, status: nextStatus, paid_amount: feeForm.amount });
+                    } else {
+                      setFeeForm({ ...feeForm, status: nextStatus });
+                    }
+                  }}
+                >
                   <option value="unpaid">ค้างชำระ</option>
                   <option value="paid">ชำระแล้ว</option>
                 </select>
@@ -1261,6 +1494,58 @@ export function CitizenManagementPage() {
         </Modal>
       )}
 
+      {historyCitizen && (
+        <Modal title={`ประวัติเคสและการค้างชำระ — ${historyCitizen.roblox_username}`} onClose={() => setHistoryCitizen(null)} size="lg">
+          <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+            {getDebtExclusionMessage(historyCitizen.status) && (
+              <div className="flex items-start gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-300">
+                <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                <span>{getDebtExclusionMessage(historyCitizen.status)}</span>
+              </div>
+            )}
+            {allRecords.filter((r) => r.citizen_id === historyCitizen.id).length === 0 ? (
+              <div className="card p-8 text-center text-sm text-gray-500">ยังไม่มีประวัติเคสหรือค่าบริการ</div>
+            ) : (
+              allRecords
+                .filter((r) => r.citizen_id === historyCitizen.id)
+                .sort((a, b) => new Date(b.service_date || b.created_at).getTime() - new Date(a.service_date || a.created_at).getTime())
+                .map((record) => {
+                  const remaining = getDebtExclusionMessage(historyCitizen.status) ? 0 : getRemainingDebt(record);
+                  const paid = Math.min(Number(record.amount), Number(record.paid_amount ?? 0));
+                  return (
+                    <div key={record.id} className="card p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-white text-sm font-semibold truncate">{record.service_name}</div>
+                          <div className="text-xs text-gray-500 mt-1">{formatDate(record.service_date || record.created_at)} · เจ้าหน้าที่: {record.officer_name || '-'}</div>
+                        </div>
+                        <Badge variant={remaining <= 0 ? 'success' : paid > 0 ? 'warning' : 'danger'}>
+                          {remaining <= 0 ? 'ชำระแล้ว/ไม่นำมาคิด' : paid > 0 ? 'ชำระบางส่วน' : 'ค้างชำระ'}
+                        </Badge>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+                        <div className="bg-navy-900/50 rounded-lg p-2">
+                          <div className="text-[10px] text-gray-500">ยอดเต็ม</div>
+                          <div className="text-sm text-white font-semibold">{formatMoney(Number(record.amount))}</div>
+                        </div>
+                        <div className="bg-navy-900/50 rounded-lg p-2">
+                          <div className="text-[10px] text-gray-500">ชำระแล้ว</div>
+                          <div className="text-sm text-emerald-300 font-semibold">{formatMoney(paid)}</div>
+                        </div>
+                        <div className="bg-navy-900/50 rounded-lg p-2">
+                          <div className="text-[10px] text-gray-500">คงค้าง</div>
+                          <div className="text-sm text-amber-300 font-semibold">{formatMoney(remaining)}</div>
+                        </div>
+                      </div>
+                      {record.notes && <div className="mt-3 text-xs text-gray-400">{record.notes}</div>}
+                    </div>
+                  );
+                })
+            )}
+          </div>
+        </Modal>
+      )}
+
       {/* Delete Confirmation */}
       {confirmDelete && (
         <ConfirmDialog
@@ -1284,7 +1569,9 @@ export function CitizenManagementPage() {
 function CitizenStatusBadge({ status }: { status: CitizenStatus }) {
   if (status === 'normal') return <Badge variant="success">ปกติ</Badge>;
   if (status === 'watched') return <Badge variant="warning">เฝ้าระวัง</Badge>;
-  return <Badge variant="danger">ระงับสิทธิ์</Badge>;
+  if (status === 'suspended') return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-500/20 text-orange-400 border border-orange-500/30">ระงับสิทธิ์</span>;
+  if (status === 'banned') return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-red-600/30 text-red-300 border border-red-500/50">แบน</span>;
+  return <Badge variant="neutral">{status}</Badge>;
 }
 
 function LicenseStatusBadge({ status }: { status: string }) {
@@ -1293,6 +1580,36 @@ function LicenseStatusBadge({ status }: { status: string }) {
   if (status === 'suspended') return <Badge variant="warning">ถูกพักใช้</Badge>;
   if (status === 'revoked') return <Badge variant="danger">ถูกยกเลิก</Badge>;
   return <Badge variant="neutral">{status}</Badge>;
+}
+
+function getBitNoteValue(notes: string | null | undefined, label: string): string | null {
+  if (!notes?.includes('[BIT_DB_IMPORT]')) return null;
+  const line = notes
+    .split(/\r?\n/)
+    .find((entry) => entry.trim().startsWith(label + ':'));
+  const value = line?.slice(label.length + 1).trim();
+  return value || null;
+}
+
+function getDisplayNotes(notes: string | null | undefined): string {
+  if (!notes) return '';
+  return notes
+    .split(/\r?\n\r?\n/)
+    .filter((block) => !block.includes('[BIT_DB_IMPORT]'))
+    .join('\n\n')
+    .trim();
+}
+
+function getDriverLicenseLabel(citizen: Citizen, licenses: License[]): string {
+  if (licenses.some((license) => license.license_type === 'driver' && license.status === 'active')) return 'มี';
+  return getBitNoteValue(citizen.notes, 'สถานะใบขับขี่จาก BIT') ?? 'ไม่มี';
+}
+
+function getVehicleBitInfo(vehicle: Vehicle): { regDate: string; expDate: string } {
+  return {
+    regDate: getBitNoteValue(vehicle.notes, 'วันที่ต่อทะเบียน') ?? '-',
+    expDate: getBitNoteValue(vehicle.notes, 'วันหมดอายุทะเบียน') ?? '-',
+  };
 }
 
 function DetailItem({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

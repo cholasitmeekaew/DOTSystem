@@ -5,7 +5,7 @@ interface ModalProps {
   title: string;
   onClose: () => void;
   children: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }
 
 export function Modal({ title, onClose, children, size = 'md' }: ModalProps) {
@@ -15,19 +15,21 @@ export function Modal({ title, onClose, children, size = 'md' }: ModalProps) {
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  const widths = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl' };
+  const widths = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className={`modal-shell ${widths[size]}`}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-blue-900/40">
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
-            <X size={20} />
-          </button>
-        </div>
-        <div className="p-6">{children}</div>
+      <div className={`modal-shell ${widths[size]} max-h-[90vh] flex flex-col overflow-hidden`}>
+        {title && (
+          <div className="flex items-center justify-between px-6 py-4 border-b border-blue-900/40 flex-shrink-0">
+            <h2 className="text-lg font-semibold text-white">{title}</h2>
+            <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+              <X size={20} />
+            </button>
+          </div>
+        )}
+        <div className="p-6 overflow-y-auto overscroll-contain">{children}</div>
       </div>
     </div>
   );

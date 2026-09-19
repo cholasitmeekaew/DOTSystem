@@ -1,13 +1,21 @@
-import { useEffect, useState } from 'react';
-import { Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User, Users, Banknote, HandCoins, Download, Receipt,
+} from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { uploadImage, deleteImage } from '../../lib/storage';
-import { ServiceRecord, ServiceRate, ServiceType, Citizen } from '../../lib/types';
+import { ServiceRecord, ServiceRate, ServiceType, Citizen, Officer, RevenueConfig, ServicePayment, ClaimRecord } from '../../lib/types';
 import { useAuth } from '../../lib/AuthContext';
+import { useToast } from '../../hooks/use-toast';
 import { SERVICE_CATEGORIES } from './ServiceRatesPage';
 import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
+import {
+  fetchRevenueConfigs, assignRecordOfficers, recalculateRecord, getScopeForCategory, fetchAssignedOfficerIds,
+} from '../../lib/api/revenueSharing';
+import { submitClaim, translateClaimError, fetchOfficerClaims } from '../../lib/api/claimShare';
+import { toLocalDateTimeInputValue } from '../../lib/utils';
 
 export function ServiceFeesPage() {
   const { officer, isCommissioner } = useAuth();
@@ -23,7 +31,37 @@ export function ServiceFeesPage() {
   const [editRecord, setEditRecord] = useState<ServiceRecord | null>(null);
   const [deleteRecord, setDeleteRecord] = useState<ServiceRecord | null>(null);
   const [viewImage, setViewImage] = useState<string | null>(null);
+  // Revenue sharing state
+  const [officers, setOfficers] = useState<Officer[]>([]);
+  const [configs, setConfigs] = useState<RevenueConfig[]>([]);
+  const [assignedOfficerIds, setAssignedOfficerIds] = useState<string[]>([]);
+  const [assignedNames, setAssignedNames] = useState<Record<string, string>>({});
+  const [assignedOfficerMap, setAssignedOfficerMap] = useState<Record<string, string[]>>({});
   const [uploading, setUploading] = useState(false);
+  // Payment installment state
+  const [paymentsByRecord, setPaymentsByRecord] = useState<Record<string, ServicePayment[]>>({});
+  const [paymentRecord, setPaymentRecord] = useState<ServiceRecord | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentNotes, setPaymentNotes] = useState('');
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [receipt, setReceipt] = useState<{
+    recordId: string;
+    receiptNo: string;
+    at: string;
+    robloxUsername: string;
+    discordUsername: string;
+    serviceName: string;
+    serviceDate: string;
+    handlerName: string;
+    receivedBy: string;
+    total: number;
+    paidThisTime: number;
+    paidTotal: number;
+    remaining: number;
+    notes: string;
+  } | null>(null);
+  const [receiptDownloading, setReceiptDownloading] = useState(false);
+  const receiptCardRef = useRef<HTMLDivElement | null>(null);
 
   const [form, setForm] = useState({
     roblox_username: '',
@@ -34,11 +72,14 @@ export function ServiceFeesPage() {
     status: 'unpaid' as 'paid' | 'unpaid',
     service_type: 'normal' as ServiceType,
     notes: '',
-    service_date: new Date().toISOString().slice(0, 16),
+    service_date: toLocalDateTimeInputValue(new Date()),
     evidence_url: '' as string | null,
   });
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [evidencePreview, setEvidencePreview] = useState<string | null>(null);
+  const [officerClaims, setOfficerClaims] = useState<ClaimRecord[]>([]);
+  const [claimingRecord, setClaimingRecord] = useState<string | null>(null);
+  const { toast } = useToast();
 
   useEffect(() => {
     fetchAll();
@@ -53,22 +94,140 @@ export function ServiceFeesPage() {
     const citCh = supabase.channel('citizens_rt_fees')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'citizens' }, () => fetchCitizens())
       .subscribe();
-    return () => { supabase.removeChannel(recCh); supabase.removeChannel(rateCh); supabase.removeChannel(citCh); };
+    const payCh = supabase.channel('service_payments_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_payments' }, () => fetchAll())
+      .subscribe();
+    return () => { supabase.removeChannel(recCh); supabase.removeChannel(rateCh); supabase.removeChannel(citCh); supabase.removeChannel(payCh); };
   }, []);
 
+  useEffect(() => {
+    // Auth data may arrive after the page mounts; reload claims when the officer is ready.
+    loadOfficerClaims();
+  }, [officer?.id]);
+
   async function fetchAll() {
-    const [rec, rateData] = await Promise.all([
+    const [rec, rateData, offData, cfgs] = await Promise.all([
       supabase.from('service_records').select('*').order('service_date', { ascending: false }),
       supabase.from('service_rates').select('*').eq('is_active', true).order('name'),
+      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+      fetchRevenueConfigs(),
     ]);
-    setRecords(rec.data ?? []);
+    const recordsList = (rec.data ?? []) as ServiceRecord[];
+    setRecords(recordsList);
     setRates(rateData.data ?? []);
+    const officersList = (offData.data ?? []) as Officer[];
+    setOfficers(officersList);
+    setConfigs(cfgs);
+    // สร้าง lookup map และอ่านผู้ดูแลเคสผ่าน RPC ที่ใช้ได้กับ app login
+    const officerLookup: Record<string, string> = {};
+    for (const o of officersList) officerLookup[o.id] = o.name;
+    const assignedMap = await fetchAssignedOfficerIds(recordsList.map((r) => r.id));
+    const namesMap: Record<string, string> = {};
+    const officerIdMap: Record<string, string[]> = {};
+    for (const r of recordsList) {
+      const ids = assignedMap[r.id]?.length
+        ? assignedMap[r.id]
+        : (r.officer_id ? [r.officer_id] : []);
+      if (ids.length > 0) officerIdMap[r.id] = ids;
+      const names = ids.map((id) => officerLookup[id]).filter(Boolean).join(', ');
+      if (names) namesMap[r.id] = names;
+    }
+    setAssignedNames(namesMap);
+    setAssignedOfficerMap(officerIdMap);
+    // ดึงประวัติการชำระเงินของรายการทั้งหมด
+    const paymentsMap: Record<string, ServicePayment[]> = {};
+    if (recordsList.length > 0) {
+      const { data: payData } = await supabase
+        .from('service_payments')
+        .select('*')
+        .in('service_record_id', recordsList.map((r) => r.id))
+        .order('created_at', { ascending: false });
+      for (const p of (payData ?? []) as ServicePayment[]) {
+        if (!paymentsMap[p.service_record_id]) paymentsMap[p.service_record_id] = [];
+        paymentsMap[p.service_record_id].push(p);
+      }
+    }
+    setPaymentsByRecord(paymentsMap);
     setLoading(false);
   }
 
   async function fetchCitizens() {
     const { data } = await supabase.from('citizens').select('*').order('roblox_username', { ascending: true });
     setCitizens(data ?? []);
+  }
+
+  async function loadOfficerClaims() {
+    if (!officer) return;
+    try {
+      const claims = await fetchOfficerClaims(officer.id);
+      setOfficerClaims(claims);
+    } catch (e) {
+      console.warn('[loadOfficerClaims] error:', e);
+    }
+  }
+
+  function getRecordClaimScope(rec: ServiceRecord) {
+    const category = rec.service_category
+      ?? rates.find((rate) => rate.id === rec.service_rate_id)?.category
+      ?? rec.service_name;
+    return getScopeForCategory(category);
+  }
+
+  function isRecordClaimed(rec: ServiceRecord): boolean {
+    if (!officer) return false;
+    const period = (rec.service_date ?? '').slice(0, 7);
+    const scope = getRecordClaimScope(rec);
+    return officerClaims.some(
+      (c) => c.officer_id === officer.id && c.claim_period === period && c.scope === scope && c.status !== 'rejected',
+    );
+  }
+
+  function getRecordClaimStatus(rec: ServiceRecord): ClaimRecord['status'] | null {
+    if (!officer) return null;
+    const period = (rec.service_date ?? '').slice(0, 7);
+    const scope = getRecordClaimScope(rec);
+    return officerClaims.find(
+      (claim) => claim.officer_id === officer.id && claim.claim_period === period && claim.scope === scope,
+    )?.status ?? null;
+  }
+
+  function getClaimStatusLabel(status: ClaimRecord['status']): string {
+    return {
+      pending: 'รออนุมัติ',
+      approved: 'รอจ่ายเงิน',
+      rejected: 'ถูกปฏิเสธ',
+      paid: 'จ่ายแล้ว',
+    }[status];
+  }
+
+  async function handleClaimShare(rec: ServiceRecord) {
+    if (!officer) return;
+    const period = (rec.service_date ?? '').slice(0, 7);
+    const scope = getRecordClaimScope(rec);
+    setClaimingRecord(rec.id);
+    try {
+      const result = await submitClaim(officer.id, period, scope, officer.id);
+      if (result.success && result.record_count > 0) {
+        toast({
+          title: 'ส่งคำขอรับส่วนแบ่งสำเร็จ',
+          description: `ส่ง ${result.record_count} เคสในเดือน ${period} รวม ${result.total_amount.toLocaleString('th-TH')} BC · รอ Commissioner อนุมัติ`,
+        });
+        await loadOfficerClaims();
+      } else if (result.success) {
+        toast({
+          title: 'ยังไม่มีเคสที่รับส่วนแบ่งได้',
+          description: 'ตรวจสอบว่าสถานะชำระแล้วและมีการกำหนดเจ้าหน้าที่ดูแลเคสแล้ว',
+          variant: 'destructive',
+        });
+      } else {
+        toast({ title: 'ส่งคำขอไม่สำเร็จ', description: 'กรุณาลองใหม่อีกครั้ง', variant: 'destructive' });
+      }
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      toast({ title: 'เกิดข้อผิดพลาด', description: translateClaimError(err), variant: 'destructive' });
+    } finally {
+      setClaimingRecord(null);
+    }
   }
 
   const filteredCitizens = citizens.filter((c) => {
@@ -89,12 +248,13 @@ export function ServiceFeesPage() {
     setForm({
       roblox_username: '', discord_username: '', service_rate_id: '',
       service_name: '', amount: '', status: 'unpaid', service_type: 'normal', notes: '',
-      service_date: new Date().toISOString().slice(0, 16),
+      service_date: toLocalDateTimeInputValue(new Date()),
       evidence_url: null,
     });
     setEvidenceFile(null);
     setEvidencePreview(null);
     setSelectedCitizenId('');
+    setAssignedOfficerIds([]);
   }
 
   function handleEvidenceSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -109,6 +269,10 @@ export function ServiceFeesPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!officer) return;
+    if (assignedOfficerIds.length === 0) {
+      alert('กรุณาเลือกเจ้าหน้าที่รับเคสอย่างน้อย 1 คน');
+      return;
+    }
     setUploading(true);
 
     let evidenceUrl = editRecord?.evidence_url ?? null;
@@ -123,27 +287,48 @@ export function ServiceFeesPage() {
       evidenceUrl = null;
     }
 
+    const assignedNames = assignedOfficerIds
+      .map((id) => officers.find((o) => o.id === id)?.name)
+      .filter(Boolean)
+      .join(', ');
+
+    const amount = parseFloat(form.amount) || 0;
     const payload = {
       roblox_username: form.roblox_username,
       discord_username: form.discord_username,
       citizen_id: selectedCitizenId || null,
       service_rate_id: form.service_rate_id || null,
+      service_category: rates.find((rate) => rate.id === form.service_rate_id)?.category ?? null,
       service_name: form.service_name,
-      amount: parseFloat(form.amount) || 0,
+      amount,
       status: form.status,
       service_type: form.service_type,
-      officer_id: officer.id,
-      officer_name: officer.name,
+      officer_id: assignedOfficerIds[0] || officer.id,
+      officer_name: assignedNames || officer.name,
       notes: form.notes,
       evidence_url: evidenceUrl,
       service_date: new Date(form.service_date).toISOString(),
       updated_at: new Date().toISOString(),
     };
 
+    let recordId: string | null = null;
     if (editRecord) {
+      recordId = editRecord.id;
       await supabase.from('service_records').update(payload).eq('id', editRecord.id);
     } else {
-      await supabase.from('service_records').insert(payload);
+      const { data } = await supabase.from('service_records').insert(payload).select('id').single();
+      recordId = data?.id ?? null;
+    }
+
+    if (recordId) {
+      // assign officers
+      await assignRecordOfficers(recordId, assignedOfficerIds, officer.id);
+      // calculate revenue shares
+      const scope = getScopeForCategory(form.service_name);
+      const cfg = configs.find((c) => c.scope === scope);
+      if (cfg) {
+        await recalculateRecord(recordId, cfg.officer_share_percent);
+      }
     }
     setUploading(false);
     setShowAdd(false);
@@ -164,19 +349,25 @@ export function ServiceFeesPage() {
       status: rec.status,
       service_type: rec.service_type,
       notes: rec.notes,
-      service_date: new Date(rec.service_date).toISOString().slice(0, 16),
+      service_date: toLocalDateTimeInputValue(rec.service_date),
       evidence_url: rec.evidence_url ?? null,
     });
     setEvidenceFile(null);
     setEvidencePreview(rec.evidence_url ?? null);
     setShowAdd(true);
-  }
-
-  async function toggleStatus(rec: ServiceRecord) {
-    if (!isCommissioner && officer && rec.officer_id !== officer.id) return;
-    const newStatus = rec.status === 'paid' ? 'unpaid' : 'paid';
-    await supabase.from('service_records').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', rec.id);
-    setRecords((prev) => prev.map((r) => r.id === rec.id ? { ...r, status: newStatus } : r));
+    // Initialize with rec.officer_id if present
+    setAssignedOfficerIds(rec.officer_id ? [rec.officer_id] : []);
+    // โหลด assigned officers
+    supabase
+      .from('service_record_officers')
+      .select('officer_id')
+      .eq('service_record_id', rec.id)
+      .then((res: { data: { officer_id: string }[] | null }) => {
+        const rows = (res.data ?? []);
+        if (rows.length > 0) {
+          setAssignedOfficerIds(rows.map((r) => r.officer_id));
+        }
+      });
   }
 
   async function handleDelete() {
@@ -185,6 +376,122 @@ export function ServiceFeesPage() {
     await supabase.from('service_records').delete().eq('id', deleteRecord.id);
     setDeleteRecord(null);
     await fetchAll();
+  }
+
+  function getPaidAmount(rec: ServiceRecord) {
+    return rec.paid_amount ?? 0;
+  }
+
+  function getPaymentStatus(rec: ServiceRecord) {
+    const paid = getPaidAmount(rec);
+    if (paid >= rec.amount) return { label: 'ชำระแล้ว', variant: 'success' as const, key: 'paid' };
+    if (paid > 0) return { label: 'ชำระบางส่วน', variant: 'warning' as const, key: 'partial' };
+    return { label: 'ค้างชำระ', variant: 'danger' as const, key: 'unpaid' };
+  }
+
+  function openPaymentModal(rec: ServiceRecord) {
+    setPaymentRecord(rec);
+    setPaymentAmount('');
+    setPaymentNotes('');
+  }
+
+  async function submitPayment(e: React.FormEvent) {
+    e.preventDefault();
+    if (!officer || !paymentRecord) return;
+    const remaining = paymentRecord.amount - getPaidAmount(paymentRecord);
+    const amount = parseFloat(paymentAmount);
+    if (!amount || amount <= 0) {
+      alert('กรุณาระบุจำนวนเงินที่มากกว่า 0');
+      return;
+    }
+    if (amount > remaining) {
+      alert(`ยอดชำระต้องไม่เกินยอดคงเหลือ ${formatMoney(remaining)}`);
+      return;
+    }
+    setPaymentLoading(true);
+    const { error } = await supabase.rpc('record_service_payment', {
+      p_service_record_id: paymentRecord.id,
+      p_amount: amount,
+      p_officer_id: officer.id,
+      p_officer_name: officer.name,
+      p_notes: paymentNotes.trim() || null,
+      p_officer_rank: officer.rank,
+    });
+    setPaymentLoading(false);
+    if (error) {
+      alert('เกิดข้อผิดพลาด: ' + error.message);
+      return;
+    }
+    // เก็บข้อมูลใบเสร็จรายครั้งที่จ่าย (ก่อนล้าง state)
+    const paidBefore = getPaidAmount(paymentRecord);
+    const paidTotal = paidBefore + amount;
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    setReceipt({
+      recordId: paymentRecord.id,
+      receiptNo: `RCPT-${paymentRecord.id.slice(0, 8).toUpperCase()}-${stamp}`,
+      at: now.toISOString(),
+      robloxUsername: paymentRecord.roblox_username,
+      discordUsername: paymentRecord.discord_username,
+      serviceName: paymentRecord.service_name,
+      serviceDate: paymentRecord.service_date,
+      handlerName: assignedNames[paymentRecord.id] || paymentRecord.officer_name,
+      receivedBy: officer.name,
+      total: paymentRecord.amount,
+      paidThisTime: amount,
+      paidTotal,
+      remaining: Math.max(0, paymentRecord.amount - paidTotal),
+      notes: paymentNotes.trim(),
+    });
+    setPaymentRecord(null);
+    setPaymentAmount('');
+    setPaymentNotes('');
+    await fetchAll();
+  }
+
+  // เปิดใบเสร็จย้อนหลัง: ระบุ payment ได้ (ยอดครั้งนั้น + ยอดสะสมถึงครั้งนั้น)
+  // ถ้าไม่ระบุ payment จะใช้ยอดล่าสุดของบิล
+  function openReceiptForPayment(rec: ServiceRecord, payment?: ServicePayment | null) {
+    const payments = [...(paymentsByRecord[rec.id] ?? [])].sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    );
+    const target = payment ?? payments[payments.length - 1] ?? null;
+    const paidAll = getPaidAmount(rec);
+    let paidThisTime = paidAll;
+    let paidTotal = paidAll;
+    let at = rec.updated_at;
+    let receivedBy = rec.officer_name;
+    let notes = '';
+    if (target) {
+      paidThisTime = Number(target.amount) || 0;
+      at = target.created_at;
+      receivedBy = target.recorded_by_name || rec.officer_name;
+      notes = target.notes || '';
+      const idx = payments.findIndex((p) => p.id === target.id);
+      paidTotal = payments.slice(0, idx >= 0 ? idx + 1 : payments.length)
+        .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      // กันยอดสะสมเพี้ยนถ้าประวัติไม่ครบ (เช่น บิลเก่า) ให้ยึดยอดสะสมจริงของบิลเมื่อเป็นครั้งล่าสุด
+      if (!payment && paidTotal < paidAll) paidTotal = paidAll;
+      if (payment && paidTotal > paidAll) paidTotal = paidAll;
+    }
+    const d = new Date(at);
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+    setReceipt({
+      recordId: rec.id,
+      receiptNo: `RCPT-${rec.id.slice(0, 8).toUpperCase()}-${stamp}`,
+      at,
+      robloxUsername: rec.roblox_username,
+      discordUsername: rec.discord_username,
+      serviceName: rec.service_name,
+      serviceDate: rec.service_date,
+      handlerName: assignedNames[rec.id] || rec.officer_name,
+      receivedBy,
+      total: rec.amount,
+      paidThisTime,
+      paidTotal,
+      remaining: Math.max(0, rec.amount - paidTotal),
+      notes,
+    });
   }
 
   function handleRateSelect(rateId: string) {
@@ -208,6 +515,142 @@ export function ServiceFeesPage() {
     new Date(iso).toLocaleDateString('th-TH', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const formatMoney = (n: number) => n.toLocaleString('th-TH') + ' BC';
 
+  // วาดใบเสร็จลง canvas แล้วดาวน์โหลดเป็น PNG (ไม่พึ่ง html2canvas — กันปัญหา oklch ของ Tailwind v4)
+  async function downloadReceiptPng() {
+    if (!receipt) return;
+    setReceiptDownloading(true);
+    try {
+      const W = 760;
+      const H = 980;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('canvas unsupported');
+      // พื้นหลัง
+      ctx.fillStyle = '#0a1628';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(10, 10, W - 20, H - 20);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(10, 10, W - 20, 8);
+      ctx.fillRect(10, H - 18, W - 20, 8);
+
+      const cx = W / 2;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = 'bold 30px sans-serif';
+      ctx.fillText('กรมขนส่ง Bit Cities', cx, 90);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '20px sans-serif';
+      ctx.fillText('DEPARTMENT OF TRANSPORTATION', cx, 120);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.fillText('ใบเสร็จรับเงินค่าบริการ', cx, 160);
+
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(60, 185);
+      ctx.lineTo(W - 60, 185);
+      ctx.stroke();
+
+      ctx.textAlign = 'left';
+      ctx.font = '20px sans-serif';
+      const rows: [string, string][] = [
+        ['เลขที่ใบเสร็จ', receipt.receiptNo],
+        ['วันที่ชำระ', new Date(receipt.at).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })],
+        ['ประชาชน (Roblox)', receipt.robloxUsername || '-'],
+        ['ประชาชน (Discord)', receipt.discordUsername || '-'],
+        ['บริการ', receipt.serviceName],
+        ['วันที่ให้บริการ', receipt.serviceDate ? new Date(receipt.serviceDate).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' }) : '-'],
+        ['เจ้าหน้าที่รับเคส', receipt.handlerName || '-'],
+        ['ผู้รับเงิน', receipt.receivedBy || '-'],
+      ];
+      let y = 225;
+      for (const [k, v] of rows) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText(k, 60, y);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(String(v).slice(0, 42), 300, y);
+        y += 40;
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(60, y + 5);
+      ctx.lineTo(W - 60, y + 5);
+      ctx.stroke();
+      y += 50;
+
+      const money: [string, string, string][] = [
+        ['ยอดเต็ม', `${receipt.total.toLocaleString('th-TH')} BC`, '#ffffff'],
+        ['ชำระครั้งนี้', `${receipt.paidThisTime.toLocaleString('th-TH')} BC`, '#34d399'],
+        ['ชำระสะสม', `${receipt.paidTotal.toLocaleString('th-TH')} BC`, '#34d399'],
+        ['คงเหลือ', `${receipt.remaining.toLocaleString('th-TH')} BC`, receipt.remaining > 0 ? '#f87171' : '#34d399'],
+      ];
+      ctx.font = 'bold 22px sans-serif';
+      for (const [k, v, color] of money) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText(k, 60, y);
+        ctx.fillStyle = color;
+        ctx.textAlign = 'right';
+        ctx.fillText(v, W - 60, y);
+        ctx.textAlign = 'left';
+        y += 42;
+      }
+
+      if (receipt.notes) {
+        y += 10;
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '20px sans-serif';
+        ctx.fillText('หมายเหตุ', 60, y);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(receipt.notes.slice(0, 48), 300, y);
+      }
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#64748b';
+      ctx.font = '18px sans-serif';
+      ctx.fillText('ขอบคุณที่ใช้บริการ — เอกสารออกโดยระบบ DOT', cx, H - 60);
+
+      // ตราประทับทับใบเสร็จ (หมุน -15° ทับบริเวณยอดเงิน)
+      const stampColor = receipt.remaining <= 0 ? '#34d399' : '#f59e0b';
+      const stampText = receipt.remaining <= 0 ? 'ชำระแล้ว' : 'ชำระบางส่วน';
+      const stampSub = receipt.remaining <= 0 ? 'PAID ★ DOT' : 'PARTIAL ★ DOT';
+      ctx.save();
+      ctx.globalAlpha = 0.88;
+      ctx.translate(W - 200, y + 90);
+      ctx.rotate((-15 * Math.PI) / 180);
+      ctx.strokeStyle = stampColor;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(0, 0, 105, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 88, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = stampColor;
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 36px sans-serif';
+      ctx.fillText(stampText, 0, 5);
+      ctx.font = 'bold 19px sans-serif';
+      ctx.fillText(stampSub, 0, 38);
+      ctx.restore();
+
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${receipt.receiptNo}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      setReceiptDownloading(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -223,8 +666,6 @@ export function ServiceFeesPage() {
 
       {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3 mb-6 relative">
-        <span className="ph-corner ph-corner-tl" aria-hidden />
-        <span className="ph-corner ph-corner-br" aria-hidden />
         <div className="relative flex-1">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
           <input className="input-field pl-9" placeholder="ค้นหา Username หรือบริการ..." value={searchQ} onChange={(e) => setSearchQ(e.target.value)} />
@@ -237,6 +678,13 @@ export function ServiceFeesPage() {
           ))}
         </div>
       </div>
+
+      {!isCommissioner && (
+        <div className="mb-5 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-200">
+          <HandCoins size={15} className="mt-0.5 flex-shrink-0" />
+          <span>กด “รับส่วนแบ่ง” ในเคสที่ชำระแล้ว ระบบจะส่งเคสที่อยู่ในเดือนและประเภทเดียวกันให้ Commissioner อนุมัติพร้อมกัน</span>
+        </div>
+      )}
 
       {/* Table */}
       <div className="table-panel">
@@ -257,6 +705,8 @@ export function ServiceFeesPage() {
                   <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">วันที่</th>
                   <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">เจ้าหน้าที่</th>
                   <th className="text-right px-5 py-3 text-xs font-medium text-gray-500 uppercase">ยอด</th>
+                  <th className="text-right px-5 py-3 text-xs font-medium text-gray-500 uppercase">ชำระแล้ว</th>
+                  <th className="text-right px-5 py-3 text-xs font-medium text-gray-500 uppercase">ค้างชำระ</th>
                   <th className="text-center px-5 py-3 text-xs font-medium text-gray-500 uppercase">ประเภท</th>
                   <th className="text-center px-5 py-3 text-xs font-medium text-gray-500 uppercase">สถานะ</th>
                   <th className="text-center px-5 py-3 text-xs font-medium text-gray-500 uppercase">หลักฐาน</th>
@@ -275,19 +725,20 @@ export function ServiceFeesPage() {
                       {rec.notes && <div className="text-gray-500 text-xs">{rec.notes}</div>}
                     </td>
                     <td className="px-5 py-4 text-sm text-gray-400 whitespace-nowrap">{formatDate(rec.service_date)}</td>
-                    <td className="px-5 py-4 text-sm text-gray-400">{rec.officer_name}</td>
+                    <td className="px-5 py-4 text-sm text-gray-400">{assignedNames[rec.id] || rec.officer_name}</td>
                     <td className="px-5 py-4 text-right text-sm font-semibold text-white whitespace-nowrap">{formatMoney(rec.amount)}</td>
+                    <td className="px-5 py-4 text-right text-sm font-medium text-emerald-400 whitespace-nowrap">{formatMoney(getPaidAmount(rec))}</td>
+                    <td className="px-5 py-4 text-right text-sm font-medium text-red-400 whitespace-nowrap">{formatMoney(Math.max(0, rec.amount - getPaidAmount(rec)))}</td>
                     <td className="px-5 py-4 text-center">
                       <Badge variant={rec.service_type === 'impound' ? 'danger' : 'info'}>
                         {rec.service_type === 'impound' ? 'ยึด' : 'ปกติ'}
                       </Badge>
                     </td>
                     <td className="px-5 py-4 text-center">
-                      <button onClick={() => toggleStatus(rec)}>
-                        <Badge variant={rec.status === 'paid' ? 'success' : 'danger'}>
-                          {rec.status === 'paid' ? 'ชำระแล้ว' : 'ค้างชำระ'}
-                        </Badge>
-                      </button>
+                      {(() => {
+                        const ps = getPaymentStatus(rec);
+                        return <Badge variant={ps.variant}>{ps.label}</Badge>;
+                      })()}
                     </td>
                     <td className="px-5 py-4 text-center">
                       {rec.evidence_url ? (
@@ -305,18 +756,60 @@ export function ServiceFeesPage() {
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-1 justify-end">
                         {(() => {
+                          const assignedIds = assignedOfficerMap[rec.id] ?? (rec.officer_id ? [rec.officer_id] : []);
+                          const isMyRecord = officer && (rec.officer_id === officer.id || assignedIds.includes(officer.id));
+                          const showClaim = isMyRecord && rec.status === 'paid' && !isRecordClaimed(rec) && !isCommissioner;
+                          const claimStatus = isMyRecord && !isCommissioner ? getRecordClaimStatus(rec) : null;
                           const canEdit = isCommissioner || (officer && rec.officer_id === officer.id);
-                          if (!canEdit) return <span className="text-gray-600 text-xs" title="ไม่สามารถแก้ไขได้ เฉพาะผู้ที่สร้างรายการนี้เท่านั้น">—</span>;
                           return (
                             <>
-                              <button onClick={() => openEdit(rec)} className="p-1.5 rounded text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors" title="แก้ไข">
-                                <Edit2 size={14} />
-                              </button>
+                              {showClaim && (
+                                <button
+                                  onClick={() => handleClaimShare(rec)}
+                                  disabled={claimingRecord === rec.id}
+                                  className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors text-xs font-medium"
+                                  title="รับส่วนแบ่งเคสที่ชำระแล้วของเดือนและประเภทนี้"
+                                  aria-label="รับส่วนแบ่งเคส"
+                                >
+                                  {claimingRecord === rec.id ? (
+                                    <span className="inline-block w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                                  ) : (
+                                    <HandCoins size={16} />
+                                  )}
+                                  <span>รับส่วนแบ่ง</span>
+                                </button>
+                              )}
+                              {claimStatus && (
+                                <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[10px] font-medium whitespace-nowrap ${
+                                  claimStatus === 'pending' ? 'text-amber-300 bg-amber-500/10 border border-amber-500/20' :
+                                  claimStatus === 'approved' ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20' :
+                                  claimStatus === 'paid' ? 'text-blue-300 bg-blue-500/10 border border-blue-500/20' :
+                                  'text-red-300 bg-red-500/10 border border-red-500/20'
+                                }`}>
+                                  {getClaimStatusLabel(claimStatus)}
+                                </span>
+                              )}
+                              {isCommissioner && getPaidAmount(rec) < rec.amount && (
+                                <button onClick={() => openPaymentModal(rec)} className="p-1.5 rounded text-gray-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors" title="บันทึกการชำระเงิน">
+                                  <Banknote size={16} />
+                                </button>
+                              )}
+                              {getPaidAmount(rec) > 0 && (
+                                <button onClick={() => openReceiptForPayment(rec)} className="p-1.5 rounded text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors" title="ดูใบเสร็จย้อนหลัง">
+                                  <Receipt size={16} />
+                                </button>
+                              )}
+                              {canEdit && (
+                                <button onClick={() => openEdit(rec)} className="p-1.5 rounded text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors" title="แก้ไข">
+                                  <Edit2 size={14} />
+                                </button>
+                              )}
                               {isCommissioner && (
                                 <button onClick={() => setDeleteRecord(rec)} className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors" title="ลบ">
                                   <Trash2 size={14} />
                                 </button>
                               )}
+                              {!showClaim && !canEdit && <span className="text-gray-600 text-xs">—</span>}
                             </>
                           );
                         })()}
@@ -433,6 +926,49 @@ export function ServiceFeesPage() {
               </div>
             </div>
 
+            {/* เจ้าหน้าที่รับเคส (required) */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                <Users size={12} className="inline mr-1" />
+                เจ้าหน้าที่รับเคส * <span className="text-amber-400">(อย่างน้อย 1 คน)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {assignedOfficerIds.map((oid) => {
+                  const o = officers.find((x) => x.id === oid);
+                  if (!o) return null;
+                  return (
+                    <span key={oid} className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/15 border border-blue-500/30 rounded text-xs text-blue-300">
+                      {o.name}
+                      <button type="button" onClick={() => setAssignedOfficerIds((p) => p.filter((x) => x !== oid))} className="hover:text-red-400">
+                        <X size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
+                {assignedOfficerIds.length === 0 && <span className="text-xs text-gray-500">ยังไม่ได้เลือก</span>}
+              </div>
+              <select
+                className="input-field text-sm"
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v && !assignedOfficerIds.includes(v)) {
+                    setAssignedOfficerIds((p) => [...p, v]);
+                  }
+                  e.target.value = '';
+                }}
+              >
+                <option value="">+ เพิ่มเจ้าหน้าที่</option>
+                {officers
+                  .filter((o) => !assignedOfficerIds.includes(o.id))
+                  .map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name} ({o.rank})
+                    </option>
+                  ))}
+              </select>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">วันที่ให้บริการ</label>
@@ -496,6 +1032,120 @@ export function ServiceFeesPage() {
               <ImageIcon size={16} /> ดาวน์โหลดรูปภาพ
             </a>
           </div>
+        </Modal>
+      )}
+
+      {/* Payment Modal */}
+      {paymentRecord && (
+        <Modal title={`บันทึกการชำระเงิน — ${paymentRecord.service_name}`} onClose={() => setPaymentRecord(null)} size="md">
+          <form onSubmit={submitPayment} className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="card p-3 text-center">
+                <div className="text-xs text-gray-400">ยอดเต็ม</div>
+                <div className="text-lg font-bold text-white">{formatMoney(paymentRecord.amount)}</div>
+              </div>
+              <div className="card p-3 text-center">
+                <div className="text-xs text-gray-400">ชำระแล้ว</div>
+                <div className="text-lg font-bold text-emerald-400">{formatMoney(getPaidAmount(paymentRecord))}</div>
+              </div>
+              <div className="card p-3 text-center">
+                <div className="text-xs text-gray-400">ค้างชำระ</div>
+                <div className="text-lg font-bold text-red-400">{formatMoney(Math.max(0, paymentRecord.amount - getPaidAmount(paymentRecord)))}</div>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">จำนวนเงินที่ชำระครั้งนี้ (BC) *</label>
+              <input
+                type="number"
+                className="input-field"
+                placeholder="0"
+                value={paymentAmount}
+                onChange={(e) => setPaymentAmount(e.target.value)}
+                min={0.01}
+                step="0.01"
+                max={Math.max(0, paymentRecord.amount - getPaidAmount(paymentRecord))}
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">หมายเหตุ</label>
+              <textarea className="input-field" rows={2} placeholder="หมายเหตุการชำระเงิน..." value={paymentNotes} onChange={(e) => setPaymentNotes(e.target.value)} />
+            </div>
+            {paymentsByRecord[paymentRecord.id] && paymentsByRecord[paymentRecord.id].length > 0 && (
+              <div className="card p-3 space-y-2">
+                <h4 className="text-xs font-semibold text-white">ประวัติการชำระเงิน</h4>
+                {paymentsByRecord[paymentRecord.id].map((p) => (
+                  <div key={p.id} className="flex justify-between items-center gap-2 text-xs">
+                    <span className="text-gray-400 flex-1 min-w-0">{formatDate(p.created_at)} {p.recorded_by_name ? `— ${p.recorded_by_name}` : ''}</span>
+                    <span className="text-emerald-400 font-semibold whitespace-nowrap">{formatMoney(p.amount)}</span>
+                    <button
+                      type="button"
+                      onClick={() => openReceiptForPayment(paymentRecord, p)}
+                      className="p-1 rounded text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors flex-shrink-0"
+                      title="ดูใบเสร็จครั้งนี้"
+                    >
+                      <Receipt size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={() => setPaymentRecord(null)} className="btn-secondary flex-1">ยกเลิก</button>
+              <button type="submit" disabled={paymentLoading} className="btn-primary flex-1 disabled:opacity-50">
+                {paymentLoading ? 'กำลังบันทึก...' : 'บันทึกการชำระเงิน + ออกใบเสร็จ'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Receipt Modal — หลังจ่ายสำเร็จ / ดูย้อนหลัง ดาวน์โหลดเป็น PNG */}
+      {receipt && (
+        <Modal title="ใบเสร็จรับเงิน" onClose={() => setReceipt(null)} size="md">
+          <div ref={receiptCardRef} className="card p-5 border-amber-500/30 relative overflow-hidden">
+            {/* ตราประทับทับใบเสร็จ */}
+            <div className="pointer-events-none absolute right-4 bottom-16 -rotate-12 opacity-90">
+              <div className={`w-28 h-28 rounded-full border-4 flex flex-col items-center justify-center ${receipt.remaining <= 0 ? 'border-emerald-400/80' : 'border-amber-400/80'}`}>
+                <div className={`w-[5.5rem] h-[5.5rem] rounded-full border-2 flex flex-col items-center justify-center ${receipt.remaining <= 0 ? 'border-emerald-400/60' : 'border-amber-400/60'}`}>
+                  <span className={`text-sm font-black ${receipt.remaining <= 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {receipt.remaining <= 0 ? 'ชำระแล้ว' : 'ชำระบางส่วน'}
+                  </span>
+                  <span className={`text-[9px] font-bold tracking-widest ${receipt.remaining <= 0 ? 'text-emerald-400/80' : 'text-amber-400/80'}`}>
+                    {receipt.remaining <= 0 ? 'PAID ★ DOT' : 'PARTIAL ★ DOT'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="text-center mb-4">
+              <div className="text-amber-400 font-bold text-lg">กรมขนส่ง Bit Cities</div>
+              <div className="text-gray-500 text-[11px] tracking-widest">DEPARTMENT OF TRANSPORTATION</div>
+              <div className="text-white font-semibold text-sm mt-1">ใบเสร็จรับเงินค่าบริการ</div>
+              <div className="text-gray-500 text-xs mt-1 font-mono">{receipt.receiptNo}</div>
+            </div>
+            <div className="space-y-1.5 text-sm border-t border-blue-900/40 pt-3">
+              <div className="flex justify-between"><span className="text-gray-500">วันที่ชำระ</span><span className="text-white">{formatDate(receipt.at)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">ประชาชน</span><span className="text-white">{receipt.robloxUsername || '-'}{receipt.discordUsername ? ` (${receipt.discordUsername})` : ''}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">บริการ</span><span className="text-white">{receipt.serviceName}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">เจ้าหน้าที่รับเคส</span><span className="text-gray-300">{receipt.handlerName || '-'}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">ผู้รับเงิน</span><span className="text-gray-300">{receipt.receivedBy}</span></div>
+            </div>
+            <div className="mt-3 space-y-1.5 text-sm border-t border-blue-900/40 pt-3">
+              <div className="flex justify-between"><span className="text-gray-500">ยอดเต็ม</span><span className="text-white font-bold">{formatMoney(receipt.total)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">ชำระครั้งนี้</span><span className="text-emerald-400 font-bold">{formatMoney(receipt.paidThisTime)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">ชำระสะสม</span><span className="text-emerald-400 font-bold">{formatMoney(receipt.paidTotal)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">คงเหลือ</span><span className={`font-bold ${receipt.remaining > 0 ? 'text-red-400' : 'text-emerald-400'}`}>{formatMoney(receipt.remaining)}</span></div>
+              {receipt.notes && <div className="flex justify-between gap-4"><span className="text-gray-500 flex-shrink-0">หมายเหตุ</span><span className="text-gray-300 text-right break-words">{receipt.notes}</span></div>}
+            </div>
+          </div>
+          <div className="mt-4 flex gap-3">
+            <button type="button" onClick={() => setReceipt(null)} className="btn-secondary flex-1">ปิด</button>
+            <button type="button" onClick={downloadReceiptPng} disabled={receiptDownloading} className="btn-primary flex-1 disabled:opacity-50 flex items-center justify-center gap-2">
+              {receiptDownloading ? <span className="inline-block w-4 h-4 border-2 border-navy-900 border-t-transparent rounded-full animate-spin" /> : <Download size={16} />}
+              {receiptDownloading ? 'กำลังสร้างรูป...' : 'ดาวน์โหลดรูปใบเสร็จ (PNG)'}
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-600 mt-2 flex items-center gap-1.5"><Receipt size={12} /> ใบเสร็จออกแยกตามยอดที่จ่ายแต่ละครั้ง ไฟล์ชื่อตามเลขใบเสร็จ</p>
         </Modal>
       )}
 

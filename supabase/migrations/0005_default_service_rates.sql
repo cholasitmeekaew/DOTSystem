@@ -2,7 +2,9 @@
 -- Default service rates
 -- =============================================================
 
-insert into service_rates (id, name, description, price, category, is_active) values
+alter table service_rates add column if not exists rate_key text unique;
+
+insert into service_rates (rate_key, name, description, price, category, is_active) values
   ('rate_towing_std', 'บริการรถยกลากจูงทั่วไป', 'ยกรถเสีย กีดขวาง หรือเคลื่อนย้ายระยะใกล้-กลาง', 2000, 'vehicle_rescue', true),
   ('rate_towing_heavy', 'กู้ภัยยกรถกรณีอุบัติเหตุ / พลิกคว่ำ', 'ยกรถกรณีอุบัติเหตุรุนแรง ตกข้างทาง หรือพลิกคว่ำ', 4000, 'vehicle_rescue', true),
   ('rate_impound_release', 'ค่าธรรมเนียมปลดการยึดรถ / อายัด', 'ค่าธรรมเนียมถอนการอายัดและปล่อยรถออกจากที่กักเก็บ DOT', 5000, 'vehicle_rescue', true),
@@ -22,4 +24,4 @@ insert into service_rates (id, name, description, price, category, is_active) va
   ('rate_rescue_tow', 'บริการลากรถ', 'การเคลื่อนย้ายรถที่เสีย ขัดข้อง หรือประสบอุบัติเหตุ โดยใช้รถลากจูงนำรถไปยังจุดหมายที่กำหนด เช่น อู่ซ่อม ศูนย์บริการ หรือสถานที่ปลอดภัย', 150, 'vehicle_rescue', true),
   ('rate_rescue_suspect', 'บริการลากรถผู้ต้องหา (กรณีตำรวจจับกุม)', 'การประสานงานร่วมระหว่างเจ้าหน้าที่ตำรวจและ DOT ในการเข้ายกลากยานพาหนะของผู้ต้องหาในคดีต่างๆ ไปยังสถานที่จัดเก็บของทางราชการทันทีหลังการจับกุม เพื่อความปลอดภัยของทรัพย์สินและไม่กีดขวางการจราจร', 200, 'vehicle_rescue', true),
   ('rate_general_doc', 'ค่าธรรมเนียมคำร้องและเอกสารทั่วไป', 'ค่าบริการออกใบรับรอง เอกสาร และตรวจสอบประวัติ', 500, 'general', true)
-on conflict (id) do nothing;
+on conflict (rate_key) do nothing;

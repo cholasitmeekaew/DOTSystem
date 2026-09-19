@@ -26,6 +26,15 @@ export default defineConfig({
     },
     dedupe: ['react', 'react-dom'],
   },
+  server: {
+    port,
+    strictPort: true,
+    host: '0.0.0.0',
+    allowedHosts: true,
+    fs: {
+      strict: true,
+    },
+  },
   root: path.resolve(import.meta.dirname),
   build: {
     outDir: path.resolve(import.meta.dirname, 'dist/public'),
@@ -68,17 +77,9 @@ export default defineConfig({
           'lucide-icons': ['lucide-react'],
           'date-utils': ['date-fns', 'react-day-picker'],
           'html2canvas': ['html2canvas'],
+          'leaflet': ['leaflet'],
         },
       },
-    },
-  },
-  server: {
-    port,
-    strictPort: true,
-    host: '0.0.0.0',
-    allowedHosts: true,
-    fs: {
-      strict: true,
     },
   },
   preview: {
