@@ -317,12 +317,12 @@ function QuickBtn({ icon, label, sublabel, color, onClick }: { icon: ReactNode; 
   return (
     <button
       onClick={onClick}
-      className={`group flex items-center gap-3 px-5 py-4 rounded-xl font-semibold text-sm transition-all duration-200 btn-ripple hover-lift ${c.bg} ${c.text} ${c.shadow} ${c.ring}`}
+      className={`group w-full sm:w-auto flex items-center justify-center gap-3 px-5 py-4 rounded-xl font-semibold text-sm transition-all duration-200 btn-ripple hover-lift ${c.bg} ${c.text} ${c.shadow} ${c.ring}`}
     >
       <div className="w-10 h-10 rounded-lg bg-white/15 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform">
         {icon}
       </div>
-      <div className="text-left min-w-0">
+      <div className="text-center min-w-0">
         <div className="font-bold text-sm leading-tight">{label}</div>
         {sublabel && <div className={`text-[11px] font-normal ${c.subtext} leading-tight mt-0.5`}>{sublabel}</div>}
       </div>

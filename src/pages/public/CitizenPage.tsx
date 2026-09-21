@@ -410,7 +410,14 @@ export function CitizenPage() {
 
       {viewImage && (
         <Modal title="ดูรูปภาพ" onClose={() => setViewImage(null)} size="lg">
-          <div className="flex justify-center"><img src={viewImage} alt="รูปภาพ" className="max-w-full max-h-[60vh] rounded-lg object-contain" /></div>
+          <div className="flex justify-center anim-scaleIn">
+            <img
+              src={viewImage}
+              alt="รูปภาพ"
+              className="max-w-full max-h-[60vh] rounded-lg object-contain shadow-xl shadow-black/40 hover:scale-[1.01] transition-transform duration-300"
+            />
+          </div>
+          <p className="text-center text-xs text-gray-500 mt-3 anim-fadeIn">คลิกพื้นหลังหรือกด Esc เพื่อปิด</p>
         </Modal>
       )}
     </div>
@@ -697,8 +704,11 @@ function VehiclesTab({ vehicles, feeRecords, searched, vehicleIcon, formatDate, 
                   </p>
 
                   {v.is_impounded && v.image_url && (
-                    <button onClick={() => onViewImage(v.image_url!)} className="block w-full mb-4 rounded-lg overflow-hidden border border-red-500/20 bg-navy-900 hover:opacity-80 transition-opacity">
-                      <img src={v.image_url!} alt="ยานพาหนะที่ถูกยึด" className="w-full max-h-56 object-contain" />
+                    <button
+                      onClick={() => onViewImage(v.image_url!)}
+                      className="group block w-full mb-4 rounded-lg overflow-hidden border border-red-500/20 bg-navy-900 hover:border-red-500/40 hover:shadow-lg hover:shadow-red-500/10 transition-all duration-300 hover-lift"
+                    >
+                      <img src={v.image_url!} alt="ยานพาหนะที่ถูกยึด" className="w-full max-h-56 object-contain group-hover:scale-[1.03] transition-transform duration-500" />
                     </button>
                   )}
 
@@ -887,8 +897,11 @@ function FeesTab({ feeRecords, feeAssignedNames, totalUnpaid, totalPaid, formatD
                   <span className={'text-sm font-bold ' + (((rec.paid_amount ?? 0) >= rec.amount) ? 'text-emerald-400' : 'text-red-400')}>{formatMoney(Number(rec.amount))}</span>
                 </div>
                 {rec.evidence_url && (
-                  <button onClick={() => onViewImage(rec.evidence_url!)} className="block w-full mb-2 rounded-lg overflow-hidden border border-blue-900/40 bg-navy-900 hover:opacity-80 transition-opacity">
-                    <img src={rec.evidence_url!} alt="หลักฐาน" className="w-full max-h-40 object-cover" />
+                  <button
+                    onClick={() => onViewImage(rec.evidence_url!)}
+                    className="group block w-full mb-2 rounded-lg overflow-hidden border border-amber-500/20 bg-navy-900 hover:border-amber-500/40 hover:shadow-lg hover:shadow-amber-500/10 transition-all duration-300 hover-lift"
+                  >
+                    <img src={rec.evidence_url!} alt="หลักฐาน" className="w-full max-h-40 object-cover group-hover:scale-[1.04] transition-transform duration-500" />
                   </button>
                 )}
                 <div className="flex items-center justify-between text-xs text-gray-500">

@@ -566,7 +566,7 @@ export function OperationsPage() {
   const dutyEnabled = settings?.duty_system_enabled ?? true;
 
   return (
-    <div>
+    <div className="min-w-0 overflow-x-hidden">
       <PageHeader
         icon={<Shield size={26} />}
         title="ปฏิบัติการ"
@@ -588,7 +588,7 @@ export function OperationsPage() {
 
       {/* Commissioner Duty System Toggle — prominent */}
       {isCommissioner && (
-        <div className={`card p-5 mb-6 border-2 ${dutyEnabled ? 'border-emerald-500/30' : 'border-red-500/30'}`}>
+        <div className={`card p-3 sm:p-5 mb-4 sm:mb-6 border-2 ${dutyEnabled ? 'border-emerald-500/30' : 'border-red-500/30'}`}>
           <span className="ph-corner ph-corner-tl" aria-hidden />
           <span className="ph-corner ph-corner-br" aria-hidden />
           <div className="flex items-center justify-between gap-4">
@@ -624,9 +624,9 @@ export function OperationsPage() {
             <BarChart3 size={15} className="text-amber-400" />
             <h2 className="text-xs font-bold text-white tracking-wide">สถิติการปฏิบัติหน้าที่ — รวมทั้งกรม</h2>
           </div>
-          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="p-3 sm:p-4 grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
             {/* Duty Count Card */}
-            <div className="card overflow-hidden flex flex-col">
+            <div className="card overflow-hidden flex flex-col min-w-0">
               <div className="ph-panel-head flex items-center justify-between gap-2">
                 <span className="flex items-center gap-2">
                   <span className="ph-corner ph-corner-tl" aria-hidden />
@@ -690,7 +690,7 @@ export function OperationsPage() {
         </div>
       )}
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Clock In/Out Panel */}
         <div className="lg:col-span-1 space-y-4">
           <div className="section-panel">
@@ -816,18 +816,18 @@ export function OperationsPage() {
         {/* History Table */}
         <div className="lg:col-span-2">
           <div className="table-panel overflow-hidden">
-            <div className="px-5 py-4 border-b border-amber-500/15 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
+            <div className="px-3 sm:px-5 py-3 sm:py-4 border-b border-amber-500/15 flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap min-w-0">
                 <h2 className="text-sm font-semibold text-white">
                   {isCommissioner ? 'ประวัติการปฏิบัติหน้าที่ทั้งหมด' : 'ประวัติของฉัน'}
                 </h2>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 whitespace-nowrap">
                   {filteredDutyLogs.length} รายการ
                 </span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 whitespace-nowrap">
                   {reportCaseStats.reports} ฉบับ · {reportCaseStats.cases} เคส
                 </span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 whitespace-nowrap">
                   เดือนนี้ {reportCaseStats.monthCases} เคส
                 </span>
               </div>
