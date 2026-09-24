@@ -1,17 +1,18 @@
 import { useEffect, useState, useMemo } from 'react';
 import {
   Clock, DollarSign, CalendarDays, History, Zap, Search, ArrowUpDown, User, TrendingUp, Edit2, Save, X as XIcon,
-  HandCoins, Wallet, RefreshCw, AlertTriangle,
+  HandCoins, Wallet, RefreshCw, AlertTriangle, CheckCircle2,
 } from 'lucide-react';
 import { Modal } from './Modal';
 import { Badge } from './Badge';
 import { ClaimShareModal } from './ClaimShareModal';
 import { supabase } from '../lib/supabase';
 import {
-  DutyLog, ServiceRecord, OfficerLeave, Officer,
+  DutyLog, ServiceRecord, OfficerLeave, Officer, Citizen,
   DEPARTMENT_LABELS, LEAVE_TYPE_LABELS, LEAVE_STATUS_LABELS, LeaveStatus,
   ClaimRecord,
 } from '../lib/types';
+import { calculateRevenueAndDebtSummary, getRemainingDebt } from '../lib/citizenDebt';
 import {
   computeMonthlyIncome, loadOverrides, saveOverride, MonthlyIncome,
 } from '../lib/api/officerStats';
@@ -63,6 +64,7 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [records, setRecords] = useState<ServiceRecord[]>([]);
+  const [citizens, setCitizens] = useState<Pick<Citizen, 'id' | 'status' | 'roblox_username'>[]>([]);
   const [leaves, setLeaves] = useState<OfficerLeave[]>([]);
   const [recordOfficerCounts, setRecordOfficerCounts] = useState<Map<string, number>>(new Map());
   const [searchQ, setSearchQ] = useState('');
@@ -121,7 +123,14 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
       setRecords(myRecords);
       setLeaves((l.data ?? []) as OfficerLeave[]);
       setLoading(false);
+    }).catch(() => {
+      // โหลดหลักล้มเหลว — ปลด loading เพื่อไม่ให้ค้าง
+      setLoading(false);
     });
+    // ดึงรายชื่อประชาชนแยกต่างหาก — ล้มเหลวต้องไม่กระทบ modal เด็ดขาด
+    supabase.from('citizens').select('id, status, roblox_username').then(({ data }: { data: unknown }) => {
+      setCitizens((data ?? []) as Pick<Citizen, 'id' | 'status' | 'roblox_username'>[]);
+    }).catch(() => { /* คงยอดแบบไม่หักสถานะ */ });
     setOverrides(loadOverrides(officer.id));
   }, [officer]);
 
@@ -200,20 +209,28 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
     return computeMonthlyIncome(officer, dutyLogs, records, overrides, recordOfficerCounts);
   }, [officer, dutyLogs, records, overrides, recordOfficerCounts]);
 
+  // สูตรเดียวกับ Dashboard/สถิติหน่วยงาน: ชำระแล้วรวมยอดผ่อน, ค้าง = ยอดคงเหลือ, กันยอดแบน/ระงับออก
+  // (ต้องอยู่เหนือ early return — hook ห้ามอยู่หลัง return เด็ดขาด)
+  const debtSummary = useMemo(
+    () => calculateRevenueAndDebtSummary(records, citizens),
+    [records, citizens],
+  );
+
   if (!officer) return null;
 
   const activeLogs = dutyLogs.filter((d) => !d.deleted_at);
   const totalMinutes = activeLogs.reduce((sum, d) => sum + (d.duration_minutes ?? 0), 0);
-  const totalAmount = records.reduce((sum, r) => sum + r.amount, 0);
-  const unpaidAmount = records.filter((r) => r.status === 'unpaid').reduce((sum, r) => sum + r.amount, 0);
-  const paidCount = records.filter((r) => r.status === 'paid').length;
-  const unpaidCount = records.filter((r) => r.status === 'unpaid').length;
+  const paidTotal = debtSummary.paidTotal;
+  const unpaidTotal = debtSummary.unpaidTotal;
+  const paidCount = debtSummary.paidCount;
+  const unpaidCount = debtSummary.unpaidCount;
 
   const stats = [
     { icon: <Clock size={14} />, label: 'จำนวนเวร', value: activeLogs.length.toString(), color: 'text-blue-400 bg-blue-500/10 border-blue-500/20' },
     { icon: <Zap size={14} />, label: 'ชั่วโมงรวม', value: fmtDuration(totalMinutes), color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
     { icon: <DollarSign size={14} />, label: 'รายการบริการ', value: records.length.toString(), color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
-    { icon: <CalendarDays size={14} />, label: `ยอดรวม${unpaidAmount > 0 ? ` (ค้าง ${unpaidAmount.toLocaleString('th-TH')})` : ''}`, value: `${totalAmount.toLocaleString('th-TH')} BC`, color: 'text-pink-400 bg-pink-500/10 border-pink-500/20' },
+    { icon: <CheckCircle2 size={14} />, label: `ชำระแล้ว (${paidCount})`, value: `${paidTotal.toLocaleString('th-TH')} BC`, color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
+    { icon: <AlertTriangle size={14} />, label: `ค้างชำระ (${unpaidCount})`, value: `${unpaidTotal.toLocaleString('th-TH')} BC`, color: 'text-pink-400 bg-pink-500/10 border-pink-500/20' },
     { icon: <Wallet size={14} />, label: 'ยอดสะสมรอจ่าย', value: `${(officer.accumulated_share ?? 0).toLocaleString('th-TH')} BC`, color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
     { icon: <TrendingUp size={14} />, label: 'รายได้เฉลี่ย/เดือน', value: `${income.average.toLocaleString('th-TH', { maximumFractionDigits: 0 })} BC`, color: 'text-violet-400 bg-violet-500/10 border-violet-500/20' },
   ];
@@ -500,8 +517,8 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
           ) : (
             <>
               <div className="flex gap-2 mb-2">
-                <span className="text-[10px] text-gray-500">ชำระแล้ว: <span className="text-emerald-400 font-semibold">{paidCount}</span></span>
-                <span className="text-[10px] text-gray-500">ค้างชำระ: <span className="text-red-400 font-semibold">{unpaidCount}</span></span>
+                <span className="text-[10px] text-gray-500">ชำระแล้ว: <span className="text-emerald-400 font-semibold">{paidCount} ({paidTotal.toLocaleString('th-TH')} BC)</span></span>
+                <span className="text-[10px] text-gray-500">ค้างชำระ: <span className="text-red-400 font-semibold">{unpaidCount} ({unpaidTotal.toLocaleString('th-TH')} BC)</span></span>
               </div>
               {filteredRecords.map((r) => (
                 <div key={r.id} className="card p-3 flex items-center justify-between gap-3 flex-wrap">
@@ -512,7 +529,14 @@ export function OfficerHistoryModal({ officer, onClose }: Props) {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 whitespace-nowrap">
-                    <span className="text-white text-sm font-semibold">{r.amount.toLocaleString('th-TH')} BC</span>
+                    <div className="text-right">
+                      <span className="text-white text-sm font-semibold">{r.amount.toLocaleString('th-TH')} BC</span>
+                      {r.status !== 'paid' && Number(r.paid_amount ?? 0) > 0 && (
+                        <div className="text-[10px] text-gray-500">
+                          ชำระแล้ว {Number(r.paid_amount ?? 0).toLocaleString('th-TH')} · ค้าง {getRemainingDebt(r).toLocaleString('th-TH')}
+                        </div>
+                      )}
+                    </div>
                     <Badge variant={r.status === 'paid' ? 'success' : 'danger'}>{r.status === 'paid' ? 'ชำระแล้ว' : 'ค้างชำระ'}</Badge>
                   </div>
                 </div>

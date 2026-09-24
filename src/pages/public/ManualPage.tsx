@@ -31,7 +31,7 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
     const sections = document.querySelectorAll('[data-manual-section]');
     sections.forEach((s) => observer.observe(s));
     return () => observer.disconnect();
-  }, []);
+  }, [variant]);
 
   const scrollTo = (id: string) => {
     const el = document.getElementById(id);
@@ -49,14 +49,13 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
     <div className="bg-navy-900 min-h-[calc(100dvh-4rem)]">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
         <div className="grid lg:grid-cols-[260px_1fr] gap-6 lg:gap-8">
-          {/* TOC Sidebar — desktop sticky */}
-          <aside className="hidden lg:block">
-            <div className="sticky top-20">
+          {/* TOC Sidebar — desktop sticky (เกาะจอตอนเลื่อนลงมา) */}
+          <aside className="hidden lg:block self-start sticky top-[4.5rem] max-h-[calc(100dvh-6rem)] overflow-y-auto pr-2 scrollbar-thin">
               <div className="flex items-center gap-2 mb-3 text-amber-400">
                 <List size={16} />
                 <h2 className="text-sm font-semibold tracking-wider uppercase">สารบัญ</h2>
               </div>
-              <nav className="space-y-3 max-h-[calc(100dvh-8rem)] overflow-y-auto pr-2 scrollbar-thin">
+              <nav className="space-y-3">
                 {chapters.map((chapter) => (
                   <div key={chapter.id}>
                     <div className="text-xs font-bold text-white mb-1.5">
@@ -82,7 +81,6 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
                   </div>
                 ))}
               </nav>
-            </div>
           </aside>
 
           {/* Main content */}

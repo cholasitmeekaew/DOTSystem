@@ -73,7 +73,7 @@ export function OfficerLayout({ children, currentPage, onNavigate, onLogout }: P
   );
 
   return (
-    <div className="min-h-[100dvh] min-w-0 bg-navy-900 flex overflow-x-hidden">
+    <div className="min-h-[100dvh] min-w-0 bg-navy-900 flex overflow-x-clip">
       {/* Sidebar Overlay (mobile) */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={() => setSidebarOpen(false)} />
@@ -193,7 +193,7 @@ export function OfficerLayout({ children, currentPage, onNavigate, onLogout }: P
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 min-w-0 pb-8 overflow-x-hidden">
+        <main className="flex-1 min-w-0 pb-8 overflow-x-clip">
           <div className="w-full max-w-7xl mx-auto px-3 sm:px-4 lg:px-6 py-4">
             {children}
           </div>
