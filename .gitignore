@@ -21,3 +21,11 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+coverage
+supabase/.temp

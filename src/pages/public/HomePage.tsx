@@ -1,7 +1,7 @@
 import { useEffect, useState, ReactNode } from 'react';
 import {
   Truck, LogIn, FileText, ChevronRight,
-  Pin, AlertCircle, MessageSquare, Clock, User, Car,
+  Pin, AlertCircle, Clock, User, Car,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { Announcement, Officer, RANK_LABELS, DEPARTMENT_LABELS } from '../../lib/types';

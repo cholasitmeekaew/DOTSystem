@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useState } from 'react';
 import {
   Search, UserCog, Plus, Edit2, Trash2, Car, CreditCard, X,
-  AlertCircle, CheckCircle2, Lock, User, FileText, Clock, MapPin,
+  Lock, User, FileText, Clock,
   Bike, Truck as TowTruck, CarFront, Shield, Save, DollarSign, Eye, Upload,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
@@ -206,7 +206,7 @@ export function CitizenManagementPage() {
     const brandModel = v.brand_model || '';
     let brand = '';
     let model = '';
-    for (const [b, models] of Object.entries(VEHICLE_BRAND_MODELS)) {
+    for (const [b] of Object.entries(VEHICLE_BRAND_MODELS)) {
       if (brandModel.startsWith(b + ' ')) {
         brand = b;
         model = brandModel.slice(b.length + 1);

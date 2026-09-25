@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useState } from 'react';
 import {
   Search, User, AlertCircle, Clock, DollarSign, MessageSquare, Siren,
   FileText, CheckCircle2, Car, MapPin,

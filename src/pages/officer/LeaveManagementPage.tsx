@@ -12,11 +12,11 @@ import {
 import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 
-const STATUS_VARIANTS: Record<LeaveStatus, 'warning' | 'success' | 'danger' | 'default'> = {
+const STATUS_VARIANTS: Record<LeaveStatus, 'warning' | 'success' | 'danger' | 'neutral'> = {
   pending: 'warning',
   approved: 'success',
   rejected: 'danger',
-  cancelled: 'default',
+  cancelled: 'neutral',
 };
 
 const TYPE_COLORS: Record<LeaveType, string> = {

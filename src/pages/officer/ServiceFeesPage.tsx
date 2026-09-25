@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User } from 'lucide-react';
+import { Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { uploadImage, deleteImage } from '../../lib/storage';
 import { ServiceRecord, ServiceRate, ServiceType, Citizen } from '../../lib/types';

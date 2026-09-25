@@ -1,3 +1,7 @@
 {
-  "template": "bolt-vite-react-ts"
+  "template": "bolt-vite-react-ts",
+  "build": {
+    "command": "pnpm build",
+    "outputDirectory": "dist/public"
+  }
 }
