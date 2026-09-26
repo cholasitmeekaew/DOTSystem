@@ -68,6 +68,39 @@ export async function addOfficerPoints(
   return { officer: data as unknown as Officer, entry };
 }
 
+/**
+ * ลบประวัติคะแนน 1 รายการ (ตาม index ใน points_log ที่เก็บไว้)
+ * แล้วย้อนยอดคงเหลือกลับ (กันติดลบ) — ใช้เมื่อบันทึกผิด
+ */
+export async function deleteOfficerPointsLog(
+  officerId: string,
+  logIndex: number,
+): Promise<Officer> {
+  const { data: current, error: fetchErr } = await supabase
+    .from('officers')
+    .select('points, points_log')
+    .eq('id', officerId)
+    .single();
+  if (fetchErr) throw fetchErr;
+
+  const oldPoints = (current?.points as number) ?? 0;
+  const oldLog = ((current?.points_log as PointsLogEntry[]) ?? []).slice();
+  if (logIndex < 0 || logIndex >= oldLog.length) {
+    throw new Error('ไม่พบประวัติรายการนี้แล้ว');
+  }
+  const [removed] = oldLog.splice(logIndex, 1);
+  const newPoints = Math.max(0, oldPoints - (removed?.delta ?? 0));
+
+  const { data, error } = await supabase
+    .from('officers')
+    .update({ points: newPoints, points_log: oldLog })
+    .eq('id', officerId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as unknown as Officer;
+}
+
 export async function resetMonthlyPeriod(
   actorId: string,
   actorName: string,

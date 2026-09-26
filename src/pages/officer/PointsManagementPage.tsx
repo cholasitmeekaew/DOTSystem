@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Award, Search, Plus, Minus, X, History, RotateCcw, Trophy, TrendingUp, TrendingDown,
+  Award, Search, Plus, Minus, X, History, RotateCcw, Trophy, TrendingUp, TrendingDown, Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import {
@@ -8,7 +8,7 @@ import {
   POINTS_REWARDS, POINTS_PENALTIES, getPointsLevel,
 } from '../../lib/types';
 import { supabase } from '../../lib/supabase';
-import { addOfficerPoints, resetMonthlyPeriod } from '../../lib/api/points';
+import { addOfficerPoints, deleteOfficerPointsLog, resetMonthlyPeriod } from '../../lib/api/points';
 import { PageHeader } from '../../components/PageHeader';
 import { FadeIn } from '../../components/animations';
 
@@ -83,6 +83,17 @@ export function PointsManagementPage() {
       // refresh editing row จาก Supabase เพื่อเอา field อื่นๆ ครบ
       const { data } = await supabase.from('officers').select('*').eq('id', o.id).single();
       if (data) setEditing(data as unknown as Officer);
+    } catch (e) {
+      alert(`เกิดข้อผิดพลาด: ${(e as Error).message}`);
+    }
+  }
+
+  async function handleDeleteLog(o: Officer, logIndex: number) {
+    if (!confirm('ลบประวัติรายการนี้? ยอดคงเหลือจะถูกย้อนกลับตามค่าของรายการ')) return;
+    try {
+      const updated = await deleteOfficerPointsLog(o.id, logIndex);
+      await fetchAll();
+      setEditing(updated);
     } catch (e) {
       alert(`เกิดข้อผิดพลาด: ${(e as Error).message}`);
     }
@@ -181,6 +192,7 @@ export function PointsManagementPage() {
           actorName={actor?.name ?? 'ระบบ'}
           onClose={() => setEditing(null)}
           onAdd={handleAddPoints}
+          onDeleteLog={handleDeleteLog}
         />
       )}
     </div>
@@ -188,21 +200,33 @@ export function PointsManagementPage() {
 }
 
 function EditPointsModal({
-  officer, actorName, onClose, onAdd,
+  officer, actorName, onClose, onAdd, onDeleteLog,
 }: {
   officer: Officer;
   actorName: string;
   onClose: () => void;
   onAdd: (o: Officer, delta: number, reason: string) => Promise<void>;
+  onDeleteLog: (o: Officer, logIndex: number) => Promise<void>;
 }) {
   const [tab, setTab] = useState<'reward' | 'penalty' | 'custom'>('reward');
   const [preset, setPreset] = useState(POINTS_REWARDS[0].label);
   const [customDelta, setCustomDelta] = useState('');
+  // โหมดกำหนดเอง: เริ่มแบบไม่เลือกข้างไหน (บังคับเลือก ให้คะแนน / ลบคะแนน ทุกครั้ง)
+  const [customMode, setCustomMode] = useState<'none' | 'add' | 'deduct'>('none');
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [deletingIdx, setDeletingIdx] = useState<number | null>(null);
+
+  function switchTab(t: 'reward' | 'penalty' | 'custom') {
+    setTab(t);
+    if (t === 'custom') setCustomMode('none');
+  }
 
   const presets = tab === 'reward' ? POINTS_REWARDS : tab === 'penalty' ? POINTS_PENALTIES : [];
-  const selectedDelta = tab === 'custom' ? parseInt(customDelta || '0', 10) : (presets.find((p) => p.label === preset)?.delta ?? 0);
+  const customAmount = Math.abs(parseInt(customDelta || '0', 10) || 0);
+  const selectedDelta = tab === 'custom'
+    ? (customMode === 'add' ? customAmount : customMode === 'deduct' ? -customAmount : 0)
+    : (presets.find((p) => p.label === preset)?.delta ?? 0);
   const finalReason = tab === 'custom' ? reason.trim() : preset + (reason.trim() ? ` (${reason.trim()})` : '');
 
   const level = getPointsLevel(officer.points ?? 0);
@@ -212,7 +236,20 @@ function EditPointsModal({
   const newLevel = getPointsLevel(newPoints);
   const levelUp = newLevel.min > level.min;
 
+  async function handleDeleteEntry(storedIndex: number) {
+    setDeletingIdx(storedIndex);
+    try {
+      await onDeleteLog(officer, storedIndex);
+    } finally {
+      setDeletingIdx(null);
+    }
+  }
+
   async function handleSubmit() {
+    if (tab === 'custom' && customMode === 'none') {
+      alert('กรุณาเลือก ให้คะแนน หรือ ลบคะแนน ก่อน');
+      return;
+    }
     if (selectedDelta === 0) {
       alert('กรุณาระบุจำนวนคะแนนที่ไม่เป็น 0');
       return;
@@ -250,9 +287,9 @@ function EditPointsModal({
 
         {/* Tabs */}
         <div className="flex border-b border-blue-900/40 px-4 sm:px-5 flex-shrink-0">
-          <TabBtn active={tab === 'reward'} onClick={() => setTab('reward')} icon={<Plus size={14} />} color="emerald">เพิ่มคะแนน</TabBtn>
-          <TabBtn active={tab === 'penalty'} onClick={() => setTab('penalty')} icon={<Minus size={14} />} color="red">หักคะแนน</TabBtn>
-          <TabBtn active={tab === 'custom'} onClick={() => setTab('custom')} icon={<Award size={14} />} color="blue">กำหนดเอง</TabBtn>
+          <TabBtn active={tab === 'reward'} onClick={() => switchTab('reward')} icon={<Plus size={14} />} color="emerald">เพิ่มคะแนน</TabBtn>
+          <TabBtn active={tab === 'penalty'} onClick={() => switchTab('penalty')} icon={<Minus size={14} />} color="red">หักคะแนน</TabBtn>
+          <TabBtn active={tab === 'custom'} onClick={() => switchTab('custom')} icon={<Award size={14} />} color="blue">กำหนดเอง</TabBtn>
         </div>
 
         {/* Content */}
@@ -284,12 +321,40 @@ function EditPointsModal({
           ) : (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">คะแนน (ใส่เครื่องหมายลบได้)</label>
+                <label className="block text-xs text-gray-400 mb-1.5">ประเภท <span className="text-red-400">*</span></label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCustomMode(customMode === 'add' ? 'none' : 'add')}
+                    className={`flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border-2 text-sm font-semibold transition-all ${
+                      customMode === 'add'
+                        ? 'bg-emerald-500/15 border-emerald-500/60 text-emerald-300'
+                        : 'bg-navy-900 border-blue-900/40 text-gray-500 hover:border-emerald-500/40 hover:text-gray-300'
+                    }`}
+                  >
+                    <Plus size={15} /> ให้คะแนน
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCustomMode(customMode === 'deduct' ? 'none' : 'deduct')}
+                    className={`flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border-2 text-sm font-semibold transition-all ${
+                      customMode === 'deduct'
+                        ? 'bg-red-500/15 border-red-500/60 text-red-300'
+                        : 'bg-navy-900 border-blue-900/40 text-gray-500 hover:border-red-500/40 hover:text-gray-300'
+                    }`}
+                  >
+                    <Minus size={15} /> ลบคะแนน
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">จำนวนคะแนน</label>
                 <input
                   type="number"
+                  min={0}
                   value={customDelta}
                   onChange={(e) => setCustomDelta(e.target.value)}
-                  placeholder="เช่น 25 หรือ -15"
+                  placeholder="เช่น 25"
                   className="input-field"
                 />
               </div>
@@ -353,6 +418,9 @@ function EditPointsModal({
               <ul className="space-y-1 max-h-48 overflow-y-auto pr-1 scrollbar-thin">
                 {log.slice(0, 20).map((entry, i) => {
                   const positive = entry.delta > 0;
+                  // index ใน array ที่เก็บจริง (log แสดงแบบกลับด้าน)
+                  const storedIndex = (officer.points_log?.length ?? 0) - 1 - i;
+                  const deleting = deletingIdx === storedIndex;
                   return (
                     <li key={i} className="flex items-start gap-2 p-2 rounded bg-navy-900/40 text-xs">
                       <div className={`mt-0.5 w-6 h-6 rounded flex items-center justify-center flex-shrink-0 ${
@@ -371,6 +439,15 @@ function EditPointsModal({
                           {formatDate(entry.at)} · โดย {entry.by_name}
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteEntry(storedIndex)}
+                        disabled={deleting}
+                        className="p-1.5 rounded text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-colors flex-shrink-0 disabled:opacity-50"
+                        title="ลบประวัติรายการนี้ (ย้อนยอดคงเหลือ)"
+                      >
+                        <Trash2 size={13} className={deleting ? 'animate-pulse' : ''} />
+                      </button>
                     </li>
                   );
                 })}
