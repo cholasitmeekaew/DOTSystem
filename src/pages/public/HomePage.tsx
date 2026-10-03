@@ -7,6 +7,7 @@ import { supabase } from '../../lib/supabase';
 import { Announcement, Officer, RANK_LABELS, DEPARTMENT_LABELS } from '../../lib/types';
 
 import { LOGO_URL, type PublicPage } from '../../components/PublicLayout';
+import { ServerStatusCard } from '../../components/ServerStatusCard';
 
 interface Props {
   onNavigate: (page: PublicPage) => void;
@@ -120,6 +121,9 @@ export function HomePage({ onNavigate }: Props) {
           </div>
         </div>
       </section>
+
+      {/* Server Status */}
+      <ServerStatusCard />
 
       {/* On-Duty Officer ID Cards Grid */}
       <section className="max-w-7xl mx-auto px-6 py-14">
