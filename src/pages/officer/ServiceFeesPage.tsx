@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User, Users, Banknote, HandCoins, Download, Receipt, RefreshCw,
 } from 'lucide-react';
@@ -528,9 +528,20 @@ export function ServiceFeesPage() {
     }));
   }
 
+  // บิลเก็บชื่อผู้ใช้ ณ ตอนเปิดบิล — ถ้าประชาชนเปลี่ยนชื่อภายหลัง ให้ค้นหา/แสดงตามชื่อปัจจุบันที่ผูกอยู่
+  const citizenById = useMemo(() => {
+    const map: Record<string, Citizen> = {};
+    for (const c of citizens) map[c.id] = c;
+    return map;
+  }, [citizens]);
+
   const filtered = records.filter((r) => {
     const q = searchQ.toLowerCase();
-    const matchQ = !q || (r.roblox_username || '').toLowerCase().includes(q) || (r.discord_username || '').toLowerCase().includes(q) || (r.service_name || '').toLowerCase().includes(q);
+    const linked = r.citizen_id ? citizenById[r.citizen_id] : undefined;
+    const linkedText = linked
+      ? `${linked.roblox_username || ''} ${linked.discord_username || ''}`.toLowerCase()
+      : '';
+    const matchQ = !q || (r.roblox_username || '').toLowerCase().includes(q) || (r.discord_username || '').toLowerCase().includes(q) || (r.service_name || '').toLowerCase().includes(q) || linkedText.includes(q);
     const matchStatus = filterStatus === 'all' || r.status === filterStatus;
     return matchQ && matchStatus;
   });
@@ -743,11 +754,15 @@ export function ServiceFeesPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((rec) => (
+                {filtered.map((rec) => {
+                  const linkedCitizen = rec.citizen_id ? citizenById[rec.citizen_id] : undefined;
+                  const displayRoblox = linkedCitizen?.roblox_username || rec.roblox_username;
+                  const displayDiscord = linkedCitizen?.discord_username || rec.discord_username;
+                  return (
                   <tr key={rec.id} className="table-row">
                     <td className="px-5 py-4">
-                      {rec.roblox_username && <div className="text-white text-sm">{rec.roblox_username}</div>}
-                      {rec.discord_username && <div className="text-gray-400 text-xs">{rec.discord_username}</div>}
+                      {displayRoblox && <div className="text-white text-sm">{displayRoblox}</div>}
+                      {displayDiscord && <div className="text-gray-400 text-xs">{displayDiscord}</div>}
                     </td>
                     <td className="px-5 py-4">
                       <div className="text-white text-sm font-medium">{rec.service_name}</div>
@@ -845,7 +860,8 @@ export function ServiceFeesPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}
