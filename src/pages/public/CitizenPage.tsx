@@ -150,7 +150,20 @@ export function CitizenPage() {
     setCitizen((citizenRes.data as unknown as Citizen) ?? null);
     setVehicles(vRes.data ?? []);
     setLicenses(lRes.data ?? []);
-    const feeData = (fRes.data ?? []) as ServiceRecord[];
+    const foundCitizen = (citizenRes.data as unknown as Citizen) ?? null;
+    let feeData = (fRes.data ?? []) as ServiceRecord[];
+    // รวมบิลที่ผูก citizen_id ตรงกับประชาชนคนนี้ เพื่อให้แสดงค่าบริการ "ทั้งหมด"
+    if (foundCitizen?.id) {
+      const { data: byCitizen } = await supabase
+        .from('service_records')
+        .select('*')
+        .eq('citizen_id', foundCitizen.id);
+      const merged = new Map<string, ServiceRecord>();
+      for (const r of [...feeData, ...((byCitizen ?? []) as ServiceRecord[])]) merged.set(r.id, r);
+      feeData = [...merged.values()].sort(
+        (a, b) => new Date(b.service_date).getTime() - new Date(a.service_date).getTime(),
+      );
+    }
     setFeeRecords(feeData);
     setEmergencyReports(eRes.data ?? []);
     setComplaints(cRes.data ?? []);

@@ -516,7 +516,7 @@ export function ServiceFeesPage() {
 
   const filtered = records.filter((r) => {
     const q = searchQ.toLowerCase();
-    const matchQ = !q || r.roblox_username.toLowerCase().includes(q) || r.discord_username.toLowerCase().includes(q) || r.service_name.toLowerCase().includes(q);
+    const matchQ = !q || (r.roblox_username || '').toLowerCase().includes(q) || (r.discord_username || '').toLowerCase().includes(q) || (r.service_name || '').toLowerCase().includes(q);
     const matchStatus = filterStatus === 'all' || r.status === filterStatus;
     return matchQ && matchStatus;
   });

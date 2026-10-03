@@ -226,13 +226,31 @@ export function CitizenManagementPage() {
   }
 
   async function fetchFees(citizenId: string) {
-    const { data } = await supabase.from('service_records').select('*').eq('citizen_id', citizenId).order('service_date', { ascending: false });
-    setFeeRecords(data ?? []);
+    // แสดงค่าบริการ "ทั้งหมด" ของคนนี้ — รวมบิลที่ผูก citizen_id และบิลที่ตรงชื่อ Roblox
+    // (บิลที่เปิดจากหน้าค่าบริการโดยไม่ได้เลือกประชาชนจาก dropdown จะมี citizen_id เป็น null)
+    const citizen = selectedCitizen?.id === citizenId
+      ? selectedCitizen
+      : allCitizens.find((c) => c.id === citizenId);
+    const username = citizen?.roblox_username?.trim();
+    const [byId, byName] = await Promise.all([
+      supabase.from('service_records').select('*').eq('citizen_id', citizenId),
+      username
+        ? supabase.from('service_records').select('*').eq('roblox_username', username)
+        : Promise.resolve({ data: [] as ServiceRecord[] }),
+    ]);
+    const merged = new Map<string, ServiceRecord>();
+    for (const r of [...(byId.data ?? []), ...(byName.data ?? [])] as ServiceRecord[]) {
+      merged.set(r.id, r);
+    }
+    const data = [...merged.values()].sort(
+      (a, b) => new Date(b.service_date).getTime() - new Date(a.service_date).getTime(),
+    );
+    setFeeRecords(data);
     // ดึงชื่อ officers ที่ assign
     const officerLookup: Record<string, string> = {};
     for (const o of officers) officerLookup[o.id] = o.name;
     const namesMap: Record<string, string> = {};
-    await Promise.all(((data ?? []) as ServiceRecord[]).map(async (r: ServiceRecord) => {
+    await Promise.all(data.map(async (r: ServiceRecord) => {
       const names = await fetchAssignedOfficerNames(r.id, officerLookup);
       if (names) namesMap[r.id] = names;
     }));
