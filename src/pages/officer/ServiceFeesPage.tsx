@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User, Users, Banknote, HandCoins, Download, Receipt,
+  Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User, Users, Banknote, HandCoins, Download, Receipt, RefreshCw,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { uploadImage, deleteImage } from '../../lib/storage';
@@ -97,7 +97,21 @@ export function ServiceFeesPage() {
     const payCh = supabase.channel('service_payments_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'service_payments' }, () => fetchAll())
       .subscribe();
-    return () => { supabase.removeChannel(recCh); supabase.removeChannel(rateCh); supabase.removeChannel(citCh); supabase.removeChannel(payCh); };
+
+    // Realtime อาจไม่ทำงานในบางโปรเจกต์ — ดึงข้อมูลซ้ำเมื่อกลับมาโฟกัสแท็บ และทุก 30 วินาที
+    // เพื่อให้บิลที่เพิ่มจากหน้าจัดการประชาชนขึ้นครบโดยไม่ต้องรีเฟรชเอง
+    const onFocus = () => fetchAll();
+    const onVisibility = () => { if (document.visibilityState === 'visible') fetchAll(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    const interval = window.setInterval(fetchAll, 30000);
+
+    return () => {
+      supabase.removeChannel(recCh); supabase.removeChannel(rateCh); supabase.removeChannel(citCh); supabase.removeChannel(payCh);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -108,7 +122,7 @@ export function ServiceFeesPage() {
   async function fetchAll() {
     try {
       const [rec, rateData, offData, cfgs] = await Promise.all([
-        supabase.from('service_records').select('*').order('service_date', { ascending: false }),
+        supabase.from('service_records').select('*').order('service_date', { ascending: false }).limit(10000),
         supabase.from('service_rates').select('*').eq('is_active', true).order('name'),
         supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
         fetchRevenueConfigs(),
@@ -666,11 +680,16 @@ export function ServiceFeesPage() {
       <PageHeader
         icon={<DollarSign size={26} />}
         title="ค่าบริการ"
-        subtitle="จัดการรายการค่าบริการและหลักฐาน"
+        subtitle={`จัดการรายการค่าบริการและหลักฐาน · ทั้งหมด ${records.length.toLocaleString('th-TH')} รายการ`}
         actions={
-          <button onClick={() => { setEditRecord(null); resetForm(); setShowAdd(true); }} className="btn-primary flex items-center gap-2">
-            <Plus size={16} /> เพิ่มรายการ
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => fetchAll()} className="btn-secondary flex items-center gap-2" title="ดึงข้อมูลล่าสุด">
+              <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> รีเฟรช
+            </button>
+            <button onClick={() => { setEditRecord(null); resetForm(); setShowAdd(true); }} className="btn-primary flex items-center gap-2">
+              <Plus size={16} /> เพิ่มรายการ
+            </button>
+          </div>
         }
       />
 
