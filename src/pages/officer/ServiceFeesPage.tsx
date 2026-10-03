@@ -106,49 +106,54 @@ export function ServiceFeesPage() {
   }, [officer?.id]);
 
   async function fetchAll() {
-    const [rec, rateData, offData, cfgs] = await Promise.all([
-      supabase.from('service_records').select('*').order('service_date', { ascending: false }),
-      supabase.from('service_rates').select('*').eq('is_active', true).order('name'),
-      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
-      fetchRevenueConfigs(),
-    ]);
-    const recordsList = (rec.data ?? []) as ServiceRecord[];
-    setRecords(recordsList);
-    setRates(rateData.data ?? []);
-    const officersList = (offData.data ?? []) as Officer[];
-    setOfficers(officersList);
-    setConfigs(cfgs);
-    // สร้าง lookup map และอ่านผู้ดูแลเคสผ่าน RPC ที่ใช้ได้กับ app login
-    const officerLookup: Record<string, string> = {};
-    for (const o of officersList) officerLookup[o.id] = o.name;
-    const assignedMap = await fetchAssignedOfficerIds(recordsList.map((r) => r.id));
-    const namesMap: Record<string, string> = {};
-    const officerIdMap: Record<string, string[]> = {};
-    for (const r of recordsList) {
-      const ids = assignedMap[r.id]?.length
-        ? assignedMap[r.id]
-        : (r.officer_id ? [r.officer_id] : []);
-      if (ids.length > 0) officerIdMap[r.id] = ids;
-      const names = ids.map((id) => officerLookup[id]).filter(Boolean).join(', ');
-      if (names) namesMap[r.id] = names;
-    }
-    setAssignedNames(namesMap);
-    setAssignedOfficerMap(officerIdMap);
-    // ดึงประวัติการชำระเงินของรายการทั้งหมด
-    const paymentsMap: Record<string, ServicePayment[]> = {};
-    if (recordsList.length > 0) {
-      const { data: payData } = await supabase
-        .from('service_payments')
-        .select('*')
-        .in('service_record_id', recordsList.map((r) => r.id))
-        .order('created_at', { ascending: false });
-      for (const p of (payData ?? []) as ServicePayment[]) {
-        if (!paymentsMap[p.service_record_id]) paymentsMap[p.service_record_id] = [];
-        paymentsMap[p.service_record_id].push(p);
+    try {
+      const [rec, rateData, offData, cfgs] = await Promise.all([
+        supabase.from('service_records').select('*').order('service_date', { ascending: false }),
+        supabase.from('service_rates').select('*').eq('is_active', true).order('name'),
+        supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+        fetchRevenueConfigs(),
+      ]);
+      const recordsList = (rec.data ?? []) as ServiceRecord[];
+      setRecords(recordsList);
+      setRates(rateData.data ?? []);
+      const officersList = (offData.data ?? []) as Officer[];
+      setOfficers(officersList);
+      setConfigs(cfgs);
+      // สร้าง lookup map และอ่านผู้ดูแลเคสผ่าน RPC ที่ใช้ได้กับ app login
+      const officerLookup: Record<string, string> = {};
+      for (const o of officersList) officerLookup[o.id] = o.name;
+      const assignedMap = await fetchAssignedOfficerIds(recordsList.map((r) => r.id));
+      const namesMap: Record<string, string> = {};
+      const officerIdMap: Record<string, string[]> = {};
+      for (const r of recordsList) {
+        const ids = assignedMap[r.id]?.length
+          ? assignedMap[r.id]
+          : (r.officer_id ? [r.officer_id] : []);
+        if (ids.length > 0) officerIdMap[r.id] = ids;
+        const names = ids.map((id) => officerLookup[id]).filter(Boolean).join(', ');
+        if (names) namesMap[r.id] = names;
       }
+      setAssignedNames(namesMap);
+      setAssignedOfficerMap(officerIdMap);
+      // ดึงประวัติการชำระเงินของรายการทั้งหมด
+      const paymentsMap: Record<string, ServicePayment[]> = {};
+      if (recordsList.length > 0) {
+        const { data: payData } = await supabase
+          .from('service_payments')
+          .select('*')
+          .in('service_record_id', recordsList.map((r) => r.id))
+          .order('created_at', { ascending: false });
+        for (const p of (payData ?? []) as ServicePayment[]) {
+          if (!paymentsMap[p.service_record_id]) paymentsMap[p.service_record_id] = [];
+          paymentsMap[p.service_record_id].push(p);
+        }
+      }
+      setPaymentsByRecord(paymentsMap);
+    } catch (e) {
+      console.error('[ServiceFeesPage] fetchAll failed:', e);
+    } finally {
+      setLoading(false);
     }
-    setPaymentsByRecord(paymentsMap);
-    setLoading(false);
   }
 
   async function fetchCitizens() {
@@ -321,13 +326,18 @@ export function ServiceFeesPage() {
     }
 
     if (recordId) {
-      // assign officers
-      await assignRecordOfficers(recordId, assignedOfficerIds, officer.id);
-      // calculate revenue shares
-      const scope = getScopeForCategory(form.service_name);
-      const cfg = configs.find((c) => c.scope === scope);
-      if (cfg) {
-        await recalculateRecord(recordId, cfg.officer_share_percent);
+      try {
+        // assign officers
+        await assignRecordOfficers(recordId, assignedOfficerIds, officer.id);
+        // calculate revenue shares
+        const scope = getScopeForCategory(form.service_name);
+        const cfg = configs.find((c) => c.scope === scope);
+        if (cfg) {
+          await recalculateRecord(recordId, cfg.officer_share_percent);
+        }
+      } catch (e) {
+        // บันทึกบิลสำเร็จแล้ว — ห้ามให้การคำนวณส่วนแบ่งทำให้ modal ค้าง
+        console.warn('[ServiceFeesPage] revenue sharing skipped:', e);
       }
     }
     setUploading(false);

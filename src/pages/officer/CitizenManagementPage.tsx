@@ -521,6 +521,7 @@ export function CitizenManagementPage() {
       discord_username: selectedCitizen.discord_username || '',
       citizen_id: selectedCitizen.id,
       service_rate_id: feeForm.service_rate_id || null,
+      service_category: rates.find((r) => r.id === feeForm.service_rate_id)?.category ?? null,
       service_name: feeForm.service_name,
       amount,
       paid_amount,
@@ -542,10 +543,15 @@ export function CitizenManagementPage() {
       recordId = data?.id ?? null;
     }
     if (recordId) {
-      await assignRecordOfficers(recordId, feeAssignedIds, officer?.id ?? '');
-      const scope = getScopeForCategory(feeForm.service_name);
-      const cfg = revenueConfigs.find((c) => c.scope === scope);
-      if (cfg) await recalculateRecord(recordId, cfg.officer_share_percent);
+      try {
+        await assignRecordOfficers(recordId, feeAssignedIds, officer?.id ?? '');
+        const scope = getScopeForCategory(feeForm.service_name);
+        const cfg = revenueConfigs.find((c) => c.scope === scope);
+        if (cfg) await recalculateRecord(recordId, cfg.officer_share_percent);
+      } catch (e) {
+        // บันทึกบิลสำเร็จแล้ว — ห้ามให้การคำนวณส่วนแบ่งทำให้ modal ค้าง
+        console.warn('[CitizenManagementPage] revenue sharing skipped:', e);
+      }
     }
     setUploading(false);
     setShowFeeForm(false);

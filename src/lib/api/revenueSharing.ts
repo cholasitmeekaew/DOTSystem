@@ -189,20 +189,25 @@ export async function assignRecordOfficers(
 export async function fetchAssignedOfficerIds(recordIds: string[]): Promise<Record<string, string[]>> {
   if (recordIds.length === 0) return {};
 
-  const { data, error } = await supabase.rpc('list_service_record_officers', {
-    p_record_ids: recordIds,
-  });
+  try {
+    const { data, error } = await supabase.rpc('list_service_record_officers', {
+      p_record_ids: recordIds,
+    });
 
-  if (!error && data) {
-    const result: Record<string, string[]> = {};
-    for (const row of data as { service_record_id: string; officer_id: string }[]) {
-      if (!result[row.service_record_id]) result[row.service_record_id] = [];
-      result[row.service_record_id].push(row.officer_id);
+    if (!error && data) {
+      const result: Record<string, string[]> = {};
+      for (const row of data as { service_record_id: string; officer_id: string }[]) {
+        if (!result[row.service_record_id]) result[row.service_record_id] = [];
+        result[row.service_record_id].push(row.officer_id);
+      }
+      return result;
     }
-    return result;
+
+    if (error) console.warn('[fetchAssignedOfficerIds] RPC fallback:', error.message);
+  } catch (e) {
+    console.warn('[fetchAssignedOfficerIds] RPC unavailable, fallback:', e);
   }
 
-  if (error) console.warn('[fetchAssignedOfficerIds] RPC fallback:', error.message);
   const result: Record<string, string[]> = {};
   await Promise.all(recordIds.map(async (recordId) => {
     const response = await supabase
