@@ -7,6 +7,7 @@ const BUCKET_BY_FOLDER = {
   officers: 'officer-photos',
   evidence: 'evidence',
   vehicles: 'vehicles',
+  manual: 'manual',
 } as const;
 
 type Folder = keyof typeof BUCKET_BY_FOLDER;

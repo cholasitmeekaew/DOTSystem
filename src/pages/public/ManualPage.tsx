@@ -1,7 +1,21 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, BookOpen, List, ChevronUp, ExternalLink } from 'lucide-react';
+import { ArrowLeft, BookOpen, List, ChevronUp, ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { manualChapters } from '../../data/manualContent';
 import { citizenManualChapters } from '../../data/citizenManualContent';
+import { supabase } from '../../lib/supabase';
+import { uploadImage, deleteImage } from '../../lib/storage';
+import { useAuth } from '../../lib/AuthContext';
+import { Modal, ConfirmDialog } from '../../components/Modal';
+
+interface ManualItem {
+  id: string;
+  variant: 'officer' | 'citizen';
+  title: string;
+  content: string;
+  image_url: string | null;
+  created_by_name: string | null;
+  created_at: string;
+}
 
 interface Props {
   onBack?: () => void;
@@ -12,8 +26,79 @@ interface Props {
 
 export function ManualPage({ onBack, showBackButton = true, variant = 'officer' }: Props) {
   const chapters = variant === 'citizen' ? citizenManualChapters : manualChapters;
+  const { officer } = useAuth();
+  const [items, setItems] = useState<ManualItem[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [deleteItem, setDeleteItem] = useState<ManualItem | null>(null);
+  const [form, setForm] = useState({ title: '', content: '' });
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
   const [activeId, setActiveId] = useState<string>(chapters[0]?.sections[0]?.id ?? '');
   const [tocOpen, setTocOpen] = useState(false);
+
+  useEffect(() => {
+    fetchItems();
+  }, [variant]);
+
+  async function fetchItems() {
+    const { data } = await supabase
+      .from('manual_items')
+      .select('*')
+      .eq('variant', variant)
+      .order('created_at', { ascending: true });
+    setItems((data ?? []) as unknown as ManualItem[]);
+  }
+
+  function openAdd() {
+    setForm({ title: '', content: '' });
+    setImagePreview(null);
+    setImageFile(null);
+    setShowForm(true);
+  }
+
+  function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageFile(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setImagePreview(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!officer || !form.title.trim()) return;
+    setSaving(true);
+    let imageUrl: string | null = null;
+    if (imageFile) {
+      imageUrl = await uploadImage(imageFile, 'manual');
+      if (!imageUrl) alert('อัปโหลดรูปไม่สำเร็จ — รายการจะไม่แนบรูป');
+    }
+    await supabase.from('manual_items').insert({
+      variant,
+      title: form.title.trim(),
+      content: form.content.trim(),
+      image_url: imageUrl,
+      created_by: officer.id,
+      created_by_name: officer.name,
+      created_at: new Date().toISOString(),
+    });
+    setSaving(false);
+    setShowForm(false);
+    setForm({ title: '', content: '' });
+    setImagePreview(null);
+    setImageFile(null);
+    await fetchItems();
+  }
+
+  async function handleDelete() {
+    if (!deleteItem) return;
+    if (deleteItem.image_url) deleteImage(deleteItem.image_url);
+    await supabase.from('manual_items').delete().eq('id', deleteItem.id);
+    setDeleteItem(null);
+    await fetchItems();
+  }
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -126,11 +211,20 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
                 <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-amber-500/10 border-2 border-amber-500/30 flex items-center justify-center flex-shrink-0">
                   <BookOpen size={28} className="text-amber-400" />
                 </div>
-                <div>
+                <div className="flex-1">
                   <p className="text-xs text-amber-500 font-semibold tracking-widest mb-1">DEPARTMENT OF TRANSPORTATION</p>
                   <h1 className="text-2xl sm:text-3xl font-black text-white mb-1">คู่มือกรมขนส่ง</h1>
                   <p className="text-sm text-gray-400">{variant === 'citizen' ? 'คู่มือการใช้บริการสำหรับประชาชน · DOT System' : 'คู่มือระเบียบการปฏิบัติราชการ · DOT System'}</p>
                 </div>
+                {officer && (
+                  <button
+                    onClick={openAdd}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-navy-900 font-semibold text-sm rounded-lg flex-shrink-0"
+                  >
+                    <Plus size={16} />
+                    เพิ่มรายการ
+                  </button>
+                )}
               </div>
             </header>
 
@@ -169,6 +263,52 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
                 </section>
               ))}
 
+              {/* รายการที่เพิ่มเอง (Custom items) */}
+              {(items.length > 0 || officer) && (
+                <section>
+                  <h2 className="text-xl sm:text-2xl font-bold text-white mb-4 pb-2 border-b border-blue-900/40">
+                    รายการเพิ่มเติม
+                  </h2>
+                  {items.length === 0 ? (
+                    <p className="text-gray-500 text-sm">ยังไม่มีรายการเพิ่มเติม — กด "เพิ่มรายการ" เพื่อเพิ่มหัวข้อและแนบรูป</p>
+                  ) : (
+                    <div className="space-y-5">
+                      {items.map((item) => (
+                        <article key={item.id} className="manual-section relative">
+                          <div className="flex items-start justify-between gap-3">
+                            <h3 className="text-base sm:text-lg font-semibold text-amber-400 mb-2.5">
+                              {item.title}
+                            </h3>
+                            {officer && (
+                              <button
+                                onClick={() => setDeleteItem(item)}
+                                className="text-red-400 hover:text-red-300 p-1 flex-shrink-0"
+                                title="ลบรายการ"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </div>
+                          {item.content && (
+                            <p className="text-sm text-gray-300 whitespace-pre-wrap mb-3">{item.content}</p>
+                          )}
+                          {item.image_url && (
+                            <img
+                              src={item.image_url}
+                              alt={item.title}
+                              className="max-h-72 w-auto max-w-full object-contain rounded-lg border border-blue-900/40"
+                            />
+                          )}
+                          {item.created_by_name && (
+                            <p className="text-xs text-gray-500 mt-2">โดย {item.created_by_name}</p>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+
               {/* Back to top */}
               <div className="flex items-center justify-center gap-3 pt-6 border-t border-blue-900/40">
                 <button
@@ -193,6 +333,63 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
           <ArrowLeft size={16} />
           กลับ
         </button>
+      )}
+
+      {/* Add item modal */}
+      {showForm && (
+        <Modal title="เพิ่มรายการคู่มือ" onClose={() => setShowForm(false)} size="md">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">หัวข้อ</label>
+              <input
+                className="w-full bg-navy-900 border border-blue-900/50 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                placeholder="ชื่อรายการ"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">รายละเอียด</label>
+              <textarea
+                className="w-full bg-navy-900 border border-blue-900/50 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 min-h-[120px]"
+                value={form.content}
+                onChange={(e) => setForm({ ...form, content: e.target.value })}
+                placeholder="เนื้อหา..."
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">แนบรูปภาพ (ไม่บังคับ)</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageSelect}
+                className="text-sm text-gray-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-navy-700 file:text-amber-400"
+              />
+              {imagePreview && (
+                <img src={imagePreview} alt="preview" className="mt-3 max-h-48 rounded-lg border border-blue-900/40" />
+              )}
+            </div>
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-navy-900 font-semibold rounded-lg"
+            >
+              {saving ? 'กำลังบันทึก...' : 'เพิ่มรายการ'}
+            </button>
+          </form>
+        </Modal>
+      )}
+
+      {deleteItem && (
+        <ConfirmDialog
+          title="ลบรายการ"
+          message={`ต้องการลบรายการ "${deleteItem.title}" ใช่หรือไม่?`}
+          confirmLabel="ลบ"
+          danger
+          onConfirm={handleDelete}
+          onCancel={() => setDeleteItem(null)}
+        />
       )}
 
       <a

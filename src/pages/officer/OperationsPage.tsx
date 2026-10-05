@@ -395,6 +395,49 @@ export function OperationsPage() {
       performed_by_name: officer.name,
       details: {},
     });
+
+    if (!newValue) {
+      // ปิดระบบเวร → บังคับทุกคนที่กำลังเข้าเวรให้ออกเวรทันที
+      const { data: activeOfficers } = await supabase
+        .from('officers')
+        .select('id, name, is_on_duty')
+        .eq('status', 'active');
+      const onDuty = (activeOfficers ?? []).filter(
+        (o: any) => o.is_on_duty === true || o.is_on_duty === 'true',
+      ) as { id: string; name: string }[];
+      const now = new Date();
+      for (const o of onDuty) {
+        const { data: activeLog } = await supabase
+          .from('duty_logs')
+          .select('*')
+          .eq('officer_id', o.id)
+          .is('clock_out', null)
+          .is('deleted_at', null)
+          .maybeSingle();
+        if (activeLog) {
+          const dur = Math.round((now.getTime() - new Date(activeLog.clock_in).getTime()) / 60000);
+          await supabase.from('duty_logs').update({
+            clock_out: now.toISOString(),
+            duration_minutes: dur,
+            forced_by: officer.id,
+            forced_by_name: officer.name,
+            checkout_method: 'forced',
+          }).eq('id', activeLog.id);
+        }
+        await supabase.from('officers').update({ is_on_duty: false, updated_at: now.toISOString() }).eq('id', o.id);
+      }
+      if (onDuty.length > 0) {
+        await supabase.from('audit_logs').insert({
+          action: 'FORCE_CHECKOUT_ALL',
+          target_type: 'system',
+          performed_by: officer.id,
+          performed_by_name: officer.name,
+          details: { count: onDuty.length },
+        });
+      }
+      await fetchData();
+      if (isCommissioner) await fetchAllLogs();
+    }
   }
 
   async function clockIn() {
