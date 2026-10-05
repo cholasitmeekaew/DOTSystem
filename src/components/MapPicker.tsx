@@ -9,17 +9,24 @@ export interface MapPickerValue {
   zoom: number;
 }
 
-/** Bounds ของภาพ ERLC bitmap ในระบบพิกัดโลก (south, west → north, east) */
-export const MAP_BOUNDS: L.LatLngBoundsLiteral = [
-  [13.5, 100.3],
-  [14.0, 100.9],
-];
+/** แผนที่จาก erlc-tools.com map-api (summer) */
+const MAP_STYLE = {
+  bounds: [[0, 0], [29700, 29700]] as L.LatLngBoundsLiteral,
+  center: [14850, 14850] as L.LatLngTuple,
+  minZoom: 1,
+  maxZoom: 5,
+  maxLevel: 5,
+  tileSize: 990,
+  url: 'https://erlc-tools.com/map-tiles/summer/z{z}/{x}_{y}.webp',
+} as const;
 
-const MAP_CENTER: L.LatLngTuple = [13.75, 100.6];
-
-const MIN_ZOOM = 11;
-const MAX_ZOOM = 17;
-const DEFAULT_ZOOM = 13;
+function makeCrs(maxLevel: number) {
+  return L.Util.extend({}, L.CRS.Simple, {
+    scale: (zoom: number) => Math.pow(2, zoom - maxLevel),
+    // y ไม่กลับด้าน — ให้พิกัด lat เพิ่มลงล่างตามแถวของ tile (row-major)
+    transformation: (L as any).transformation(1, 0, 1, 0),
+  }) as L.CRS;
+}
 
 interface MapPickerProps {
   value: MapPickerValue | null;
@@ -70,40 +77,51 @@ export function MapPicker({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const [coordLabel, setCoordLabel] = useState<string>(
-    value ? `📍 ${value.lat.toFixed(5)}, ${value.lng.toFixed(5)}` : 'ยังไม่ได้ปักหมุด',
+    value ? `📍 ${value.lat.toFixed(0)}, ${value.lng.toFixed(0)}` : 'ยังไม่ได้ปักหมุด',
   );
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    const style = MAP_STYLE;
 
-    const initialZoom = value?.zoom ?? DEFAULT_ZOOM;
+    const initialZoom = value?.zoom ?? (style.maxLevel - 1);
     const map = L.map(el, {
-      crs: L.CRS.EPSG3857,
+      crs: makeCrs(style.maxLevel),
       zoomControl: false,
       attributionControl: false,
-      minZoom: MIN_ZOOM,
-      maxZoom: MAX_ZOOM,
-      maxBounds: MAP_BOUNDS,
-      maxBoundsViscosity: 1.0,
+      minZoom: style.minZoom,
+      maxZoom: style.maxZoom,
       zoomSnap: 0.25,
-      wheelPxPerZoomLevel: 120,
+      wheelPxPerZoomLevel: 90,
       dragging: interactive,
-      doubleClickZoom: false,
-      scrollWheelZoom: false,
-      touchZoom: false,
+      doubleClickZoom: interactive,
+      scrollWheelZoom: true,
+      touchZoom: true,
       boxZoom: false,
       keyboard: interactive,
     });
     mapRef.current = map;
 
-    L.imageOverlay(MAP_IMAGE_URL, MAP_BOUNDS).addTo(map);
+    L.tileLayer(style.url, {
+      tileSize: style.tileSize,
+      minZoom: style.minZoom,
+      maxZoom: style.maxZoom,
+      maxNativeZoom: style.maxLevel,
+      bounds: style.bounds,
+      noWrap: true,
+      errorTileUrl: '',
+    }).addTo(map);
+
+    // พื้นหลังเข้มรองรับกระเบื้องที่ไม่มี (ขอบแผนที่)
+    map.getContainer().style.background = '#0a1628';
 
     if (value) {
-      map.setView([value.lat, value.lng], initialZoom);
+      const z = Math.min(Math.max(value.zoom, style.minZoom), style.maxZoom);
+      map.setView([value.lat, value.lng], z);
       markerRef.current = L.marker([value.lat, value.lng], { icon: createPinIcon() }).addTo(map);
     } else {
-      map.setView(MAP_CENTER, initialZoom);
+      map.setView(style.center, style.maxLevel - 1);
     }
 
     if (interactive) {
@@ -146,7 +164,7 @@ export function MapPicker({
       } else {
         markerRef.current.setLatLng([value.lat, value.lng]);
       }
-      setCoordLabel(`📍 ${value.lat.toFixed(5)}, ${value.lng.toFixed(5)}`);
+      setCoordLabel(`📍 ${value.lat.toFixed(0)}, ${value.lng.toFixed(0)}`);
     } else if (markerRef.current) {
       map.removeLayer(markerRef.current);
       markerRef.current = null;
@@ -157,22 +175,18 @@ export function MapPicker({
   function handleReset() {
     const map = mapRef.current;
     if (!map) return;
-    map.setView(MAP_CENTER, DEFAULT_ZOOM);
+    map.setView(MAP_STYLE.center, MAP_STYLE.maxLevel - 1);
     if (value) {
-      onChangeRef.current({ ...value, zoom: DEFAULT_ZOOM });
+      onChangeRef.current({ ...value, zoom: MAP_STYLE.maxLevel - 1 });
     }
   }
 
   function handleZoomIn() {
-    const map = mapRef.current;
-    if (!map) return;
-    map.zoomIn();
+    mapRef.current?.zoomIn();
   }
 
   function handleZoomOut() {
-    const map = mapRef.current;
-    if (!map) return;
-    map.zoomOut();
+    mapRef.current?.zoomOut();
   }
 
   function handleClearPin() {
@@ -222,7 +236,7 @@ export function MapPicker({
       </div>
       {interactive && showControls && (
         <p className="text-[10px] text-gray-500 text-center">
-          คลิกเพื่อปักหมุด · ลากเพื่อเลื่อน · ใช้ปุ่ม +/- ซูม
+          คลิกเพื่อปักหมุด · ลากเพื่อเลื่อน · เลื่อนเมาส์วงล้อหรือ +/- เพื่อซูม
         </p>
       )}
     </div>
@@ -244,8 +258,9 @@ export function MapPreview({ value, height = 160 }: { value: MapPickerValue; hei
     function init() {
       if (!el || map) return;
       if (el.clientWidth === 0 || el.clientHeight === 0) return;
+      const style = MAP_STYLE;
       map = L.map(el, {
-        crs: L.CRS.EPSG3857,
+        crs: makeCrs(style.maxLevel),
         zoomControl: false,
         attributionControl: false,
         dragging: false,
@@ -254,11 +269,23 @@ export function MapPreview({ value, height = 160 }: { value: MapPickerValue; hei
         touchZoom: false,
         boxZoom: false,
         keyboard: false,
+        minZoom: style.minZoom,
+        maxZoom: style.maxZoom,
+        maxBounds: style.bounds,
+        maxBoundsViscosity: 1.0,
       });
       mapRef.current = map;
-      L.imageOverlay(MAP_IMAGE_URL, MAP_BOUNDS).addTo(map);
-      map.fitBounds(MAP_BOUNDS, { padding: [0, 0] });
-      map.setView([value.lat, value.lng], value.zoom);
+      L.tileLayer(style.url, {
+        tileSize: style.tileSize,
+        minZoom: style.minZoom,
+        maxZoom: style.maxZoom,
+        maxNativeZoom: style.maxLevel,
+        bounds: style.bounds,
+        noWrap: true,
+      }).addTo(map);
+      map.fitBounds(style.bounds, { padding: [0, 0] });
+      const z = Math.min(Math.max(value.zoom, style.minZoom), style.maxZoom);
+      map.setView([value.lat, value.lng], z);
       L.marker([value.lat, value.lng], { icon: createSmallPinIcon(), interactive: false }).addTo(map);
     }
 
@@ -291,5 +318,3 @@ export function MapPreview({ value, height = 160 }: { value: MapPickerValue; hei
     />
   );
 }
-
-export const MAP_IMAGE_URL = 'https://robloxbot-team.sirv.com/privately/ER%3ALC/erlc-bitmap.png';

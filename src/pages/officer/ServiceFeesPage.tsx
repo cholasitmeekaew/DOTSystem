@@ -556,45 +556,111 @@ export function ServiceFeesPage() {
     setReceiptDownloading(true);
     try {
       const W = 760;
-      const H = 980;
+      const H = 1040;
       const canvas = document.createElement('canvas');
       canvas.width = W;
       canvas.height = H;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('canvas unsupported');
-      // พื้นหลัง
-      ctx.fillStyle = '#0a1628';
+
+      const roundRect = (x: number, y: number, w: number, h: number, r: number) => {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      };
+
+      // พื้นหลังแบบไล่เฉด
+      const bg = ctx.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, '#0d1b30');
+      bg.addColorStop(1, '#081222');
+      ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
+
+      // กรอบคู่ + แถบสีบน/ล่าง
       ctx.strokeStyle = '#f59e0b';
       ctx.lineWidth = 4;
-      ctx.strokeRect(10, 10, W - 20, H - 20);
+      roundRect(10, 10, W - 20, H - 20, 16);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+      ctx.lineWidth = 1.5;
+      roundRect(20, 20, W - 40, H - 40, 10);
+      ctx.stroke();
       ctx.fillStyle = '#f59e0b';
       ctx.fillRect(10, 10, W - 20, 8);
       ctx.fillRect(10, H - 18, W - 20, 8);
 
       const cx = W / 2;
       ctx.textAlign = 'center';
-      ctx.fillStyle = '#fbbf24';
-      ctx.font = 'bold 30px sans-serif';
-      ctx.fillText('กรมขนส่ง Bit Cities', cx, 90);
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '20px sans-serif';
-      ctx.fillText('DEPARTMENT OF TRANSPORTATION', cx, 120);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 26px sans-serif';
-      ctx.fillText('ใบเสร็จรับเงินค่าบริการ', cx, 160);
 
-      ctx.strokeStyle = '#334155';
+      // โลโก้ + ตราสัญลักษณ์
+      const logo = new Image();
+      logo.src = '/logo.png';
+      await new Promise<void>((resolve) => {
+        logo.onload = () => {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(cx, 80, 34, 0, Math.PI * 2);
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(logo, cx - 34, 46, 68, 68);
+          ctx.restore();
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(cx, 80, 34, 0, Math.PI * 2);
+          ctx.stroke();
+          resolve();
+        };
+        logo.onerror = () => {
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(cx, 80, 28, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = '#fbbf24';
+          ctx.font = "bold 20px 'Noto Sans Thai', 'Inter', sans-serif";
+          ctx.fillText('DOT', cx, 88);
+          resolve();
+        };
+      });
+
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = "bold 30px 'Noto Sans Thai', 'Inter', sans-serif";
+      ctx.fillText('กรมขนส่ง Bit Cities', cx, 140);
+      ctx.fillStyle = '#8b98ab';
+      ctx.font = "16px 'Noto Sans Thai', 'Inter', sans-serif";
+      ctx.fillText('D E P A R T M E N T   O F   T R A N S P O R T A T I O N', cx, 168);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = "bold 26px 'Noto Sans Thai', 'Inter', sans-serif";
+      ctx.fillText('ใบเสร็จรับเงินค่าบริการ', cx, 208);
+
+      // ป้ายเลขที่ใบเสร็จแบบแคปซูล
+      ctx.font = '15px monospace';
+      const noW = ctx.measureText(receipt.receiptNo).width + 48;
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
+      roundRect(cx - noW / 2, 226, noW, 32, 16);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+      ctx.lineWidth = 1;
+      roundRect(cx - noW / 2, 226, noW, 32, 16);
+      ctx.stroke();
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText(receipt.receiptNo, cx, 247);
+
+      ctx.strokeStyle = '#263449';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(60, 185);
-      ctx.lineTo(W - 60, 185);
+      ctx.moveTo(60, 282);
+      ctx.lineTo(W - 60, 282);
       ctx.stroke();
 
       ctx.textAlign = 'left';
-      ctx.font = '20px sans-serif';
+      ctx.font = "19px 'Noto Sans Thai', 'Inter', sans-serif";
       const rows: [string, string][] = [
-        ['เลขที่ใบเสร็จ', receipt.receiptNo],
         ['วันที่ชำระ', new Date(receipt.at).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })],
         ['ประชาชน (Roblox)', receipt.robloxUsername || '-'],
         ['ประชาชน (Discord)', receipt.discordUsername || '-'],
@@ -603,76 +669,89 @@ export function ServiceFeesPage() {
         ['เจ้าหน้าที่รับเคส', receipt.handlerName || '-'],
         ['ผู้รับเงิน', receipt.receivedBy || '-'],
       ];
-      let y = 225;
-      for (const [k, v] of rows) {
-        ctx.fillStyle = '#94a3b8';
-        ctx.fillText(k, 60, y);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(String(v).slice(0, 42), 300, y);
+      let y = 318;
+      rows.forEach(([k, v], i) => {
+        if (i % 2 === 0) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
+          roundRect(50, y - 24, W - 100, 34, 6);
+          ctx.fill();
+        }
+        ctx.fillStyle = '#8b98ab';
+        ctx.fillText(k, 70, y);
+        ctx.fillStyle = '#f1f5f9';
+        ctx.fillText(String(v).slice(0, 40), 300, y);
         y += 40;
-      }
+      });
 
-      ctx.beginPath();
-      ctx.moveTo(60, y + 5);
-      ctx.lineTo(W - 60, y + 5);
+      // แผงยอดเงิน
+      const panelY = y + 16;
+      const panelH = 210;
+      ctx.fillStyle = '#101d33';
+      roundRect(50, panelY, W - 100, panelH, 12);
+      ctx.fill();
+      ctx.strokeStyle = '#263449';
+      ctx.lineWidth = 1;
+      roundRect(50, panelY, W - 100, panelH, 12);
       ctx.stroke();
-      y += 50;
 
       const money: [string, string, string][] = [
-        ['ยอดเต็ม', `${receipt.total.toLocaleString('th-TH')} BC`, '#ffffff'],
+        ['ยอดเต็ม', `${receipt.total.toLocaleString('th-TH')} BC`, '#f1f5f9'],
         ['ชำระครั้งนี้', `${receipt.paidThisTime.toLocaleString('th-TH')} BC`, '#34d399'],
         ['ชำระสะสม', `${receipt.paidTotal.toLocaleString('th-TH')} BC`, '#34d399'],
         ['คงเหลือ', `${receipt.remaining.toLocaleString('th-TH')} BC`, receipt.remaining > 0 ? '#f87171' : '#34d399'],
       ];
-      ctx.font = 'bold 22px sans-serif';
+      y = panelY + 42;
+      ctx.font = "bold 21px 'Noto Sans Thai', 'Inter', sans-serif";
       for (const [k, v, color] of money) {
-        ctx.fillStyle = '#94a3b8';
-        ctx.fillText(k, 60, y);
+        ctx.fillStyle = '#8b98ab';
+        ctx.textAlign = 'left';
+        ctx.fillText(k, 80, y);
         ctx.fillStyle = color;
         ctx.textAlign = 'right';
-        ctx.fillText(v, W - 60, y);
-        ctx.textAlign = 'left';
+        ctx.fillText(v, W - 80, y);
         y += 42;
       }
+      ctx.textAlign = 'left';
 
+      let noteY = panelY + panelH + 40;
       if (receipt.notes) {
-        y += 10;
-        ctx.fillStyle = '#94a3b8';
-        ctx.font = '20px sans-serif';
-        ctx.fillText('หมายเหตุ', 60, y);
+        ctx.fillStyle = '#8b98ab';
+        ctx.font = "18px 'Noto Sans Thai', 'Inter', sans-serif";
+        ctx.fillText('หมายเหตุ', 70, noteY);
         ctx.fillStyle = '#e2e8f0';
-        ctx.fillText(receipt.notes.slice(0, 48), 300, y);
+        ctx.fillText(receipt.notes.slice(0, 44), 200, noteY);
+        noteY += 34;
       }
 
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#64748b';
-      ctx.font = '18px sans-serif';
-      ctx.fillText('ขอบคุณที่ใช้บริการ — เอกสารออกโดยระบบ DOT', cx, H - 60);
-
-      // ตราประทับทับใบเสร็จ (หมุน -15° ทับบริเวณยอดเงิน)
+      // ตราประทับ (หมุน -15°)
       const stampColor = receipt.remaining <= 0 ? '#34d399' : '#f59e0b';
       const stampText = receipt.remaining <= 0 ? 'ชำระแล้ว' : 'ชำระบางส่วน';
       const stampSub = receipt.remaining <= 0 ? 'PAID ★ DOT' : 'PARTIAL ★ DOT';
       ctx.save();
-      ctx.globalAlpha = 0.88;
-      ctx.translate(W - 200, y + 90);
+      ctx.globalAlpha = 0.9;
+      ctx.translate(W - 140, H - 155);
       ctx.rotate((-15 * Math.PI) / 180);
       ctx.strokeStyle = stampColor;
-      ctx.lineWidth = 5;
+      ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(0, 0, 105, 0, Math.PI * 2);
+      ctx.arc(0, 0, 78, 0, Math.PI * 2);
       ctx.stroke();
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(0, 0, 88, 0, Math.PI * 2);
+      ctx.arc(0, 0, 65, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = stampColor;
       ctx.textAlign = 'center';
-      ctx.font = 'bold 36px sans-serif';
-      ctx.fillText(stampText, 0, 5);
-      ctx.font = 'bold 19px sans-serif';
-      ctx.fillText(stampSub, 0, 38);
+      ctx.font = "bold 26px 'Noto Sans Thai', 'Inter', sans-serif";
+      ctx.fillText(stampText, 0, 2);
+      ctx.font = "bold 14px 'Noto Sans Thai', 'Inter', sans-serif";
+      ctx.fillText(stampSub, 0, 28);
       ctx.restore();
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#64748b';
+      ctx.font = "16px 'Noto Sans Thai', 'Inter', sans-serif";
+      ctx.fillText('ขอบคุณที่ใช้บริการ — เอกสารออกโดยระบบ DOT', 60, H - 48);
 
       const url = canvas.toDataURL('image/png');
       const a = document.createElement('a');
