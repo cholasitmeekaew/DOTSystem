@@ -53,8 +53,12 @@ create index if not exists officers_generation_idx on officers (generation)
   where generation is not null;
 
 -- ---------- 4) RLS ----------
--- ตารางอ้างอิง (label ของรุ่น) เป็นข้อมูลสาธารณะ เพื่อให้หน้าทำเนียบบุคลากร
--- (หน้าสาธารณะ ยังไม่ login) อ่านได้ — การเขียนจำกัดที่หัวหน้ากรม
+-- หมายเหตุสำคัญ: ระบบนี้ไม่ได้ login ผ่าน Supabase Auth แต่ใช้ตาราง officers
+-- ตรวจสิทธิ์เอง (ดู src/lib/AuthContext.tsx) ดังนั้น current_rank() ซึ่งอิง auth.uid()
+-- จะคืน NULL เสมอ และ policy ที่ใช้ current_rank() จะไม่มีวันผ่าน
+-- → ใช้แนวทางเดียวกับ migration 0024 (storage) และ 0026 (manual_items):
+--    "การกันสิทธิ์ทำที่ชั้นแอป" — ตารางนี้เก็บแค่ป้ายชื่อ (label) ของรุ่น
+--    ซึ่งเป็นข้อมูลสาธารณะ ไม่มีข้อมูลส่วนตัวหรือข้อมูลรับรอง
 alter table officer_generations enable row level security;
 
 drop policy if exists "officer_generations read" on officer_generations;
@@ -62,10 +66,11 @@ create policy "officer_generations read" on officer_generations
   for select using (true);
 
 drop policy if exists "officer_generations commissioner write" on officer_generations;
-create policy "officer_generations commissioner write" on officer_generations
+drop policy if exists "officer_generations write" on officer_generations;
+create policy "officer_generations write" on officer_generations
   for all
-  using (current_rank() = 'commissioner')
-  with check (current_rank() = 'commissioner');
+  using (true)
+  with check (true);
 
 -- ---------- 5) Realtime ----------
 -- ให้หน้าจัดการเจ้าหน้าที่เห็นการเปลี่ยนแปลงรุ่นแบบเรียลไทม์

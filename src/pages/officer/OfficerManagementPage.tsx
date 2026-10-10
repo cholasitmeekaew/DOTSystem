@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, ReactNode } from 'react';
 import {
   Plus, Edit2, Trash2, Users, Shield, ShieldOff, Key, Search, Upload, X,
   Tag, History, Zap, Check, ChevronUp, ChevronDown, GripVertical, ListOrdered,
-  Layers, Wrench, Sparkles, Loader2,
+  Layers, Wrench, Sparkles, Loader2, AlertCircle,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { hashPassword } from '../../lib/crypto';
@@ -25,6 +25,26 @@ import { OfficerHistoryModal } from '../../components/OfficerHistoryModal';
 import { PageHeader } from '../../components/PageHeader';
 
 type ActionType = 'suspend' | 'activate' | 'delete' | 'reset';
+
+/**
+ * แปลงข้อความ error จาก Supabase ให้เป็นคำแนะนำที่ actionable
+ * เคสที่พบบ่อยที่สุดคือ migration ยังไม่ถูก apply
+ */
+function describeSchemaError(error: { code?: string; message?: string }, target: string): string {
+  const code = error.code ?? '';
+  const msg = error.message ?? '';
+
+  if (code === '42P01' || /does not exist|not found in the schema|schema cache/i.test(msg)) {
+    return `ยังไม่ได้สร้าง ${target} ในฐานข้อมูล — กรุณารัน migration 0027 (supabase db push) แล้วรีเฟรชหน้านี้`;
+  }
+  if (code === '42703' || /column .* does not exist/i.test(msg)) {
+    return `ยังไม่ได้เพิ่มคอลัมน์ที่จำเป็นในตาราง officers — กรุณารัน migration 0027 (supabase db push) แล้วรีเฟรชหน้านี้`;
+  }
+  if (code === '42501' || /row-level security|permission denied/i.test(msg)) {
+    return `ฐานข้อมูลปฏิเสธการเขียน (${target}) — ตรวจสอบ RLS policy หรือสิทธิ์ของผู้ใช้`;
+  }
+  return `ทำงานกับ ${target} ไม่สำเร็จ: ${msg || code || 'ไม่ทราบสาเหตุ'}`;
+}
 
 export function OfficerManagementPage() {
   const { officer: currentOfficer } = useAuth();
@@ -53,6 +73,7 @@ export function OfficerManagementPage() {
   const [editingGen, setEditingGen] = useState<OfficerGenerationRecord | null>(null);
   const [genForm, setGenForm] = useState({ label: '', generation_key: '', sort_order: 0, is_trainee: false });
   const [genError, setGenError] = useState<string | null>(null);
+  const [schemaIssue, setSchemaIssue] = useState<string | null>(null);
 
   // Sort / filter / reorder state
   const [sortMode, setSortMode] = useState<PersonnelSortMode>('manual');
@@ -202,11 +223,17 @@ export function OfficerManagementPage() {
   }
 
   async function fetchGenerations() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('officer_generations')
       .select('*')
       .order('sort_order');
-    setGenerations(data ?? []);
+    if (error) {
+      setGenerations([]);
+      setSchemaIssue(describeSchemaError(error, 'ตาราง officer_generations'));
+      return;
+    }
+    setSchemaIssue(null);
+    setGenerations(((data ?? []) as unknown as OfficerGenerationRecord[]) ?? []);
   }
 
   /* ---------- ดัชนีข้อมูลอ้างอิง (ใช้ร่วมกับหน้าทำเนียบบุคลากร) ---------- */
@@ -322,7 +349,8 @@ export function OfficerManagementPage() {
         is_trainee: genForm.is_trainee,
         updated_at: new Date().toISOString(),
       }).eq('id', editingGen.id);
-      if (error) { setGenError(`แก้ไขรุ่นไม่สำเร็จ: ${error.message}`); return; }
+      if (error) { setGenError(describeSchemaError(error, 'ตาราง officer_generations')); return; }
+      setSchemaIssue(null);
     } else {
       const { error } = await supabase.from('officer_generations').insert({
         label,
@@ -332,11 +360,14 @@ export function OfficerManagementPage() {
         is_active: true,
       });
       if (error) {
-        setGenError(error.code === '23505'
-          ? 'รหัสรุ่นนี้ถูกใช้แล้ว กรุณาใช้รหัสอื่น'
-          : `เพิ่มรุ่นไม่สำเร็จ: ${error.message}`);
+        if (error.code === '23505') {
+          setGenError('รหัสรุ่นนี้ถูกใช้แล้ว กรุณาใช้รหัสอื่น');
+        } else {
+          setGenError(describeSchemaError(error, 'ตาราง officer_generations'));
+        }
         return;
       }
+      setSchemaIssue(null);
     }
     setShowGenForm(false);
     setEditingGen(null);
@@ -351,7 +382,13 @@ export function OfficerManagementPage() {
       ? `ต้องการลบรุ่น "${g.label}" ใช่หรือไม่?\n\nเจ้าหน้าที่ ${affected} คนจะยังคงมีรุ่นนี้อยู่ แต่จะแสดงเป็น "${g.label}" เฉย ๆ`
       : `ต้องการลบรุ่น "${g.label}" ใช่หรือไม่?`;
     if (!confirm(msg)) return;
-    await supabase.from('officer_generations').delete().eq('id', g.id);
+    const { error } = await supabase.from('officer_generations').delete().eq('id', g.id);
+    if (error) {
+      setGenError(describeSchemaError(error, 'ตาราง officer_generations'));
+      return;
+    }
+    setSchemaIssue(null);
+    setGenError(null);
     await fetchGenerations();
   }
 
@@ -750,6 +787,27 @@ export function OfficerManagementPage() {
       )}
 
       {/* =============== Generation Management =============== */}
+      {schemaIssue && (
+        <div className="card p-4 mb-6 border-red-500/40 bg-red-500/[0.06] flex items-start gap-3">
+          <AlertCircle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-red-300 mb-1">ยังใช้ฟีเจอร์ "รุ่น" ไม่ได้</p>
+            <p className="text-xs text-gray-400 leading-relaxed">{schemaIssue}</p>
+            <p className="text-[11px] text-gray-500 mt-1.5">
+              ระบบนี้เชื่อมต่อ Supabase จริง (ดู <code className="text-amber-400/80">.env</code>) — ถ้ากำลังทดลองแบบออฟไลน์
+              ให้ตั้ง <code className="text-amber-400/80">VITE_USE_MOCK=true</code> แล้วรีเฟรช
+            </p>
+          </div>
+        </div>
+      )}
+
+      {genError && !showGenForm && (
+        <div className="card p-3 mb-6 border-red-500/40 bg-red-500/[0.06] flex items-start gap-2.5">
+          <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-red-300 leading-relaxed">{genError}</p>
+        </div>
+      )}
+
       {showGenForm && (
         <div className="card p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
