@@ -1,16 +1,23 @@
-import { useEffect, useState, ReactNode } from 'react';
+import { useEffect, useMemo, useState, ReactNode } from 'react';
 import {
   Plus, Edit2, Trash2, Users, Shield, ShieldOff, Key, Search, Upload, X,
-  Tag, History, Zap, Check,
+  Tag, History, Zap, Check, ChevronUp, ChevronDown, GripVertical, ListOrdered,
+  Layers, Wrench, Sparkles, Loader2,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { hashPassword } from '../../lib/crypto';
 import { uploadImage } from '../../lib/storage';
 import {
-  Officer, OfficerRank, OfficerRankRecord, Department,
+  Officer, OfficerRank, OfficerRankRecord, OfficerGenerationRecord, Department,
   RANK_LABELS, DEPARTMENT_LABELS, DEPARTMENTS, COMMISSIONER_RANK,
-  SERVICE_CATEGORIES,
+  SERVICE_CATEGORIES, GENERATION_UNSET_LABEL,
 } from '../../lib/types';
+import {
+  buildPersonnelIndex, sortOfficers, matchesOfficerSearch,
+  filterByDepartment, filterByGeneration, nextSortOrder,
+  PERSONNEL_SORT_OPTIONS, UNGROUPED_KEY,
+  type PersonnelSortMode,
+} from '../../lib/personnelOrder';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
@@ -40,6 +47,21 @@ export function OfficerManagementPage() {
   const [rankForm, setRankForm] = useState({ label: '', rank_key: '', sort_order: 0 });
   const [editingRank, setEditingRank] = useState<OfficerRankRecord | null>(null);
 
+  // Generation (รุ่น) management state
+  const [generations, setGenerations] = useState<OfficerGenerationRecord[]>([]);
+  const [showGenForm, setShowGenForm] = useState(false);
+  const [editingGen, setEditingGen] = useState<OfficerGenerationRecord | null>(null);
+  const [genForm, setGenForm] = useState({ label: '', generation_key: '', sort_order: 0, is_trainee: false });
+  const [genError, setGenError] = useState<string | null>(null);
+
+  // Sort / filter / reorder state
+  const [sortMode, setSortMode] = useState<PersonnelSortMode>('manual');
+  const [genFilter, setGenFilter] = useState('');
+  const [deptFilter, setDeptFilter] = useState('');
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; pos: 'before' | 'after' } | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
+
   // Wizard state (เพิ่มเจ้าหน้าที่แบบ step-by-step)
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
@@ -52,6 +74,7 @@ export function OfficerManagementPage() {
     department: 'traffic_management' as Department,
     duty_rate: 0,
     service_category: '' as string,
+    generation: '' as string,
   });
   const [wizardPhotoPreview, setWizardPhotoPreview] = useState<string | null>(null);
   const [wizardPhotoFile, setWizardPhotoFile] = useState<File | null>(null);
@@ -69,6 +92,7 @@ export function OfficerManagementPage() {
       department: 'traffic_management',
       duty_rate: 0,
       service_category: '',
+      generation: '',
     });
     setWizardPhotoPreview(null);
     setWizardPhotoFile(null);
@@ -84,6 +108,7 @@ export function OfficerManagementPage() {
       department: t.department,
       duty_rate: t.duty_rate ?? 0,
       service_category: t.service_category ?? '',
+      generation: t.generation ?? '',
     }));
   }
 
@@ -115,6 +140,8 @@ export function OfficerManagementPage() {
         department: wizardForm.department,
         duty_rate: wizardForm.duty_rate,
         service_category: wizardForm.service_category || null,
+        generation: wizardForm.generation || null,
+        sort_order: nextSortOrder(officers),
         status: 'active',
         is_on_duty: false,
         photo_url,
@@ -148,9 +175,11 @@ export function OfficerManagementPage() {
     rank: 'officer' as OfficerRank,
     department: 'traffic_management' as Department,
     duty_rate: 0,
+    generation: '',
+    sort_order: 0,
   });
 
-  useEffect(() => { fetchAll(); fetchRanks(); }, []);
+  useEffect(() => { fetchAll(); fetchRanks(); fetchGenerations(); }, []);
 
   async function fetchAll() {
     setLoading(true);
@@ -158,6 +187,7 @@ export function OfficerManagementPage() {
       .from('officers')
       .select('*')
       .neq('status', 'deleted')
+      .order('sort_order')
       .order('name');
     setOfficers(data ?? []);
     setLoading(false);
@@ -170,6 +200,35 @@ export function OfficerManagementPage() {
       .order('sort_order');
     setRanks(data ?? []);
   }
+
+  async function fetchGenerations() {
+    const { data } = await supabase
+      .from('officer_generations')
+      .select('*')
+      .order('sort_order');
+    setGenerations(data ?? []);
+  }
+
+  /* ---------- ดัชนีข้อมูลอ้างอิง (ใช้ร่วมกับหน้าทำเนียบบุคลากร) ---------- */
+  const personnelIndex = useMemo(
+    () => buildPersonnelIndex(ranks, generations),
+    [ranks, generations],
+  );
+
+  /** ลำดับที่แสดงผลจริงในตาราง (หลังคิด sortMode ที่เลือกไว้) */
+  const ordered = useMemo(
+    () => sortOfficers(officers, sortMode, personnelIndex),
+    [officers, sortMode, personnelIndex],
+  );
+
+  /** แถวที่แสดงหลังกรอง (คงลำดับตาม `ordered`) */
+  const visibleRows = useMemo(() => {
+    const list = filterByGeneration(filterByDepartment(ordered, deptFilter), genFilter);
+    return list.filter((o) => matchesOfficerSearch(o, searchQ, personnelIndex));
+  }, [ordered, deptFilter, genFilter, searchQ, personnelIndex]);
+
+  const hasActiveFilter = !!(searchQ.trim() || deptFilter || genFilter);
+  const activeGenerations = personnelIndex.activeGenerations;
 
   async function handleRankSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -222,10 +281,198 @@ export function OfficerManagementPage() {
     setShowRankForm(true);
   }
 
+  /* =============== จัดการ "รุ่น" (Generation) =============== */
+
+  function openAddGen() {
+    setEditingGen(null);
+    setGenError(null);
+    setGenForm({
+      label: '',
+      generation_key: '',
+      sort_order: generations.length + 1,
+      is_trainee: generations.length === 0,
+    });
+    setShowGenForm(true);
+  }
+
+  function openEditGen(g: OfficerGenerationRecord) {
+    setEditingGen(g);
+    setGenError(null);
+    setGenForm({
+      label: g.label,
+      generation_key: g.generation_key ?? '',
+      sort_order: g.sort_order,
+      is_trainee: g.is_trainee,
+    });
+    setShowGenForm(true);
+  }
+
+  async function handleGenSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const label = genForm.label.trim();
+    if (!label) { setGenError('กรุณากรอกชื่อรุ่น'); return; }
+    const key = genForm.generation_key.trim() || label.replace(/\s+/g, '_');
+    setGenError(null);
+
+    if (editingGen) {
+      const { error } = await supabase.from('officer_generations').update({
+        label,
+        generation_key: key,
+        sort_order: genForm.sort_order,
+        is_trainee: genForm.is_trainee,
+        updated_at: new Date().toISOString(),
+      }).eq('id', editingGen.id);
+      if (error) { setGenError(`แก้ไขรุ่นไม่สำเร็จ: ${error.message}`); return; }
+    } else {
+      const { error } = await supabase.from('officer_generations').insert({
+        label,
+        generation_key: key,
+        sort_order: genForm.sort_order,
+        is_trainee: genForm.is_trainee,
+        is_active: true,
+      });
+      if (error) {
+        setGenError(error.code === '23505'
+          ? 'รหัสรุ่นนี้ถูกใช้แล้ว กรุณาใช้รหัสอื่น'
+          : `เพิ่มรุ่นไม่สำเร็จ: ${error.message}`);
+        return;
+      }
+    }
+    setShowGenForm(false);
+    setEditingGen(null);
+    setGenForm({ label: '', generation_key: '', sort_order: 0, is_trainee: false });
+    await fetchGenerations();
+  }
+
+  async function deleteGen(g: OfficerGenerationRecord) {
+    const key = (g.generation_key ?? g.label ?? '').trim();
+    const affected = officers.filter((o) => (o.generation ?? '').trim() === key).length;
+    const msg = affected > 0
+      ? `ต้องการลบรุ่น "${g.label}" ใช่หรือไม่?\n\nเจ้าหน้าที่ ${affected} คนจะยังคงมีรุ่นนี้อยู่ แต่จะแสดงเป็น "${g.label}" เฉย ๆ`
+      : `ต้องการลบรุ่น "${g.label}" ใช่หรือไม่?`;
+    if (!confirm(msg)) return;
+    await supabase.from('officer_generations').delete().eq('id', g.id);
+    await fetchGenerations();
+  }
+
+  /* =============== จัดลำดับรายชื่อ (sort_order) =============== */
+
+  /**
+   * บันทึกลำดับใหม่
+   * - nextVisible คือลำดับใหม่ของ "แถวที่มองเห็น" (หลังกรอง)
+   * - ตำแหน่งช่องของแถวที่มองเห็นจะถูกแทนที่ตามลำดับใหม่
+   *   โดยแถวที่ถูกกรองออกจะยังอยู่ที่เดิม (ไม่ถูกไปเหวี่ยง)
+   */
+  async function commitReorder(nextVisible: Officer[]) {
+    if (nextVisible.length === 0) return;
+
+    const visibleIds = new Set(nextVisible.map((o) => o.id));
+    const slots: number[] = [];
+    ordered.forEach((o, i) => { if (visibleIds.has(o.id)) slots.push(i); });
+    if (slots.length !== nextVisible.length) return;
+
+    const nextFull = [...ordered];
+    slots.forEach((slot, i) => { nextFull[slot] = nextVisible[i]; });
+
+    const stamped = nextFull.map((o, i) => ({ ...o, sort_order: i + 1 }));
+    const changes = stamped
+      .map((o) => ({ id: o.id, sort_order: o.sort_order ?? 1 }))
+      .filter((c, i) => (nextFull[i].sort_order ?? 0) !== c.sort_order);
+
+    if (changes.length === 0) return;
+
+    // optimistic update
+    const snapshot = officers;
+    setOfficers(stamped);
+    setSavingOrder(true);
+    try {
+      const results = await Promise.all(
+        changes.map((c) =>
+          supabase.from('officers')
+            .update({ sort_order: c.sort_order, updated_at: new Date().toISOString() })
+            .eq('id', c.id),
+        ),
+      );
+      const failed = results.find((r) => r.error);
+      if (failed?.error) throw failed.error;
+    } catch (err) {
+      setOfficers(snapshot);
+      alert(`บันทึกลำดับไม่สำเร็จ: ${(err as Error).message}`);
+    } finally {
+      setSavingOrder(false);
+    }
+  }
+
+  function moveRow(id: string, direction: -1 | 1) {
+    const list = [...visibleRows];
+    const i = list.findIndex((o) => o.id === id);
+    const j = i + direction;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    commitReorder(list);
+  }
+
+  /** เขียน sort_order ใหม่ทั้งหมดเป็น 1..N ตามลำดับที่แสดงอยู่ (ปรับลำดับให้ต่อเนื่อง) */
+  function normalizeOrder() {
+    if (!confirm('จัดลำดับใหม่ให้ต่อเนื่อง 1..N ตามลำดับที่แสดงอยู่ใช่หรือไม่?')) return;
+    commitReorder([...visibleRows]);
+  }
+
+  /* ---------- Drag & Drop ---------- */
+
+  function handleDragStart(e: React.DragEvent<HTMLButtonElement>, id: string) {
+    setDragId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
+    const row = e.currentTarget.closest('tr');
+    if (row) e.dataTransfer.setDragImage(row, 40, 20);
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLTableRowElement>, o: Officer) {
+    if (!dragId || dragId === o.id) { setDropTarget(null); return; }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    setDropTarget({ id: o.id, pos });
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLTableRowElement>, target: Officer) {
+    e.preventDefault();
+    const srcId = dragId ?? e.dataTransfer.getData('text/plain');
+    const pos = dropTarget?.pos ?? 'before';
+    setDragId(null);
+    setDropTarget(null);
+    if (!srcId || srcId === target.id) return;
+
+    const moving = visibleRows.find((o) => o.id === srcId);
+    if (!moving) return;
+    const rest = visibleRows.filter((o) => o.id !== srcId);
+    const at = rest.findIndex((o) => o.id === target.id);
+    if (at < 0) return;
+
+    const nextVisible = [...rest.slice(0, pos === 'before' ? at : at + 1), moving, ...rest.slice(pos === 'before' ? at : at + 1)];
+    commitReorder(nextVisible);
+  }
+
+  function handleDragEnd() {
+    setDragId(null);
+    setDropTarget(null);
+  }
+
   function openAdd() {
     setEditItem(null);
     const defaultRank = ranks[0]?.rank_key ?? 'officer';
-    setForm({ username: '', password: '', name: '', rank: defaultRank, department: 'traffic_management', duty_rate: 0 });
+    setForm({
+      username: '',
+      password: '',
+      name: '',
+      rank: defaultRank,
+      department: 'traffic_management',
+      duty_rate: 0,
+      generation: '',
+      sort_order: nextSortOrder(officers),
+    });
     setPhotoPreview(null);
     setPhotoFile(null);
     setShowForm(true);
@@ -240,6 +487,8 @@ export function OfficerManagementPage() {
       rank: item.rank,
       department: item.department,
       duty_rate: item.duty_rate ?? 0,
+      generation: item.generation ?? '',
+      sort_order: item.sort_order ?? 0,
     });
     setPhotoPreview(item.photo_url ?? null);
     setPhotoFile(null);
@@ -267,6 +516,10 @@ export function OfficerManagementPage() {
     }
 
     const dutyRateVal = Number(form.duty_rate) || 0;
+    const generationVal = form.generation.trim() || null;
+    const sortOrderVal = Number.isFinite(Number(form.sort_order))
+      ? Number(form.sort_order)
+      : nextSortOrder(officers);
 
     if (editItem) {
       const update: Partial<Officer> & { updated_at: string } = {
@@ -274,6 +527,8 @@ export function OfficerManagementPage() {
         rank: form.rank,
         department: form.department,
         duty_rate: dutyRateVal,
+        generation: generationVal,
+        sort_order: sortOrderVal,
         photo_url: photoUrl,
         updated_at: new Date().toISOString(),
       };
@@ -301,6 +556,8 @@ export function OfficerManagementPage() {
         rank: form.rank,
         department: form.department,
         duty_rate: dutyRateVal,
+        generation: generationVal,
+        sort_order: sortOrderVal,
         photo_url: photoUrl,
         status: 'active',
         is_on_duty: false,
@@ -354,11 +611,6 @@ export function OfficerManagementPage() {
     await fetchAll();
   }
 
-  const filtered = officers.filter((o) => {
-    const q = searchQ.toLowerCase();
-    return !q || o.name.toLowerCase().includes(q) || o.username.toLowerCase().includes(q);
-  });
-
   const rankBadge = (rank: OfficerRank) => {
     const rankRecord = ranks.find(r => r.rank_key === rank || r.label === rank);
     const label = rankRecord?.label ?? RANK_LABELS[rank] ?? rank;
@@ -367,6 +619,25 @@ export function OfficerManagementPage() {
     }
     if (rankRecord?.sort_order === 2) return <Badge variant="info">{label}</Badge>;
     return <Badge variant="neutral">{label}</Badge>;
+  };
+
+  /** ป้ายรุ่น — สีฟ้าเมื่อเป็นกลุ่มพนักงานทดลองงาน */
+  const generationCell = (o: Officer) => {
+    const key = (o.generation ?? '').trim();
+    if (!key) return <span className="text-[11px] text-gray-600">—</span>;
+    const trainee = personnelIndex.isTrainee(key);
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border ${
+          trainee
+            ? 'bg-sky-500/10 text-sky-300 border-sky-500/40'
+            : 'bg-navy-700 text-gray-300 border-blue-900/60'
+        }`}
+      >
+        {personnelIndex.genLabel(key)}
+        {trainee && <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />}
+      </span>
+    );
   };
 
   const statusBadge = (status: string) => {
@@ -399,6 +670,9 @@ export function OfficerManagementPage() {
             </button>
             <button onClick={openAddRank} className="btn-secondary flex items-center gap-2">
               <Tag size={16} /> จัดการตำแหน่ง
+            </button>
+            <button onClick={openAddGen} className="btn-secondary flex items-center gap-2" title="จัดการรุ่น / กลุ่มพนักงานทดลองงาน">
+              <Layers size={16} /> จัดการรุ่น
             </button>
             <button onClick={openWizard} className="btn-secondary flex items-center gap-2">
               <Plus size={16} /> เพิ่มด้วย Wizard
@@ -475,12 +749,198 @@ export function OfficerManagementPage() {
         </div>
       )}
 
-      {/* Search */}
-      <div className="card relative mb-6 max-w-sm overflow-hidden">
+      {/* =============== Generation Management =============== */}
+      {showGenForm && (
+        <div className="card p-5 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Layers size={15} className="text-amber-400" />
+              {editingGen ? 'แก้ไขรุ่น' : 'เพิ่มรุ่นใหม่'}
+            </h2>
+            <button
+              onClick={() => { setShowGenForm(false); setEditingGen(null); setGenError(null); }}
+              className="text-gray-500 hover:text-white"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <form onSubmit={handleGenSubmit} className="flex flex-wrap gap-3 items-end">
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-xs text-gray-400 mb-1">ชื่อรุ่น *</label>
+              <input
+                className="input-field"
+                placeholder="เช่น รุ่นที่ 4"
+                value={genForm.label}
+                onChange={(e) => setGenForm({ ...genForm, label: e.target.value })}
+                autoFocus
+              />
+            </div>
+            <div className="w-40">
+              <label className="block text-xs text-gray-400 mb-1">รหัสรุ่น</label>
+              <input
+                className="input-field font-mono"
+                placeholder="เช่น 4"
+                value={genForm.generation_key}
+                onChange={(e) => setGenForm({ ...genForm, generation_key: e.target.value })}
+              />
+              <p className="text-[10px] text-gray-600 mt-1">เว้นว่างไว้ = ใช้ชื่อรุ่นแทน</p>
+            </div>
+            <div className="w-28">
+              <label className="block text-xs text-gray-400 mb-1">ลำดับ</label>
+              <input
+                type="number"
+                className="input-field font-mono"
+                value={genForm.sort_order}
+                onChange={(e) => setGenForm({ ...genForm, sort_order: parseInt(e.target.value) || 0 })}
+              />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer select-none pb-2.5">
+              <input
+                type="checkbox"
+                checked={genForm.is_trainee}
+                onChange={(e) => setGenForm({ ...genForm, is_trainee: e.target.checked })}
+                className="w-4 h-4 accent-amber-500"
+              />
+              <span className="text-xs text-gray-300">กลุ่มพนักงานทดลองงาน</span>
+            </label>
+            <button type="submit" className="btn-primary px-5">
+              {editingGen ? 'บันทึก' : 'เพิ่ม'}
+            </button>
+          </form>
+          {genError && (
+            <p className="text-xs text-red-400 mt-3 flex items-center gap-1.5">
+              <X size={12} /> {genError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Existing Generations List */}
+      {generations.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-6">
+          {generations.map((g) => {
+            const key = (g.generation_key ?? g.label ?? '').trim();
+            const count = officers.filter((o) => (o.generation ?? '').trim() === key).length;
+            return (
+              <div
+                key={g.id}
+                className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 ${
+                  g.is_trainee
+                    ? 'bg-sky-500/10 border-sky-500/30'
+                    : 'bg-navy-800 border-amber-500/15'
+                }`}
+              >
+                <span className="text-xs text-gray-500">#{g.sort_order}</span>
+                <span className="text-sm text-white font-medium">{g.label}</span>
+                <span className="text-[10px] font-mono text-gray-500">{count} คน</span>
+                {g.is_trainee && (
+                  <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                    ทดลองงาน
+                  </span>
+                )}
+                <button onClick={() => openEditGen(g)} className="text-blue-400 hover:bg-blue-500/10 p-1 rounded">
+                  <Edit2 size={11} />
+                </button>
+                <button onClick={() => deleteGen(g)} className="text-red-400 hover:bg-red-500/10 p-1 rounded">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Toolbar: search + sort + filters */}
+      <div className="card relative mb-6 overflow-hidden">
         <span className="ph-corner ph-corner-tl" aria-hidden />
         <span className="ph-corner ph-corner-br" aria-hidden />
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-        <input className="input-field pl-9" placeholder="ค้นหาชื่อหรือ Username..." value={searchQ} onChange={(e) => setSearchQ(e.target.value)} />
+        <div className="p-3 flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              className="input-field pl-9"
+              placeholder="ค้นหาชื่อ, Username, ตำแหน่ง, แผนก, รุ่น..."
+              value={searchQ}
+              onChange={(e) => setSearchQ(e.target.value)}
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <ListOrdered size={14} className="text-amber-500/80" />
+            <select
+              className="select-field !w-auto !py-1.5 !px-2 !text-xs"
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as PersonnelSortMode)}
+              title="ลำดับที่ใช้แสดงผลในตาราง (ลากเพื่อจัดลำดับได้ตามลำดับนี้)"
+            >
+              {PERSONNEL_SORT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <Layers size={14} className="text-sky-400/80" />
+            <select
+              className="select-field !w-auto !py-1.5 !px-2 !text-xs"
+              value={genFilter}
+              onChange={(e) => setGenFilter(e.target.value)}
+            >
+              <option value="">ทุกรุ่น</option>
+              <option value={UNGROUPED_KEY}>— ไม่ระบุรุ่น —</option>
+              {activeGenerations.map((g) => {
+                const key = (g.generation_key ?? g.label ?? '').trim();
+                if (!key) return null;
+                return <option key={g.id} value={key}>{g.label}</option>;
+              })}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <Wrench size={14} className="text-amber-500/80" />
+            <select
+              className="select-field !w-auto !py-1.5 !px-2 !text-xs"
+              value={deptFilter}
+              onChange={(e) => setDeptFilter(e.target.value)}
+            >
+              <option value="">ทุกแผนก</option>
+              {DEPARTMENTS.map((d) => (
+                <option key={d} value={d}>{DEPARTMENT_LABELS[d]}</option>
+              ))}
+            </select>
+          </div>
+
+          {hasActiveFilter && (
+            <button
+              onClick={() => { setSearchQ(''); setGenFilter(''); setDeptFilter(''); }}
+              className="text-[11px] text-gray-400 hover:text-amber-400 transition-colors"
+            >
+              ล้างตัวกรอง
+            </button>
+          )}
+        </div>
+
+        {/* แถบบอกวิธีจัดลำดับ */}
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-t border-blue-900/40 bg-navy-900/40">
+          <GripVertical size={13} className="text-gray-500" />
+          <span className="text-[11px] text-gray-400">
+            ลากที่ไอคอนจับ หรือกดปุ่ม <ChevronUp size={11} className="inline" /> / <ChevronDown size={11} className="inline" />
+            เพื่อจัดลำดับความสำคัญ — ลำดับที่บันทึกจะถูกใช้ในหน้า<strong className="text-amber-400 font-semibold"> ทำเนียบบุคลากร</strong>
+          </span>
+          {savingOrder && (
+            <span className="text-[11px] text-amber-400 flex items-center gap-1">
+              <Loader2 size={11} className="animate-spin" /> กำลังบันทึก...
+            </span>
+          )}
+          <div className="flex-1" />
+          <button
+            onClick={normalizeOrder}
+            className="text-[11px] text-gray-400 hover:text-amber-400 transition-colors flex items-center gap-1"
+            title="เขียน sort_order ใหม่เป็น 1..N ตามลำดับปัจจุบัน"
+          >
+            <Sparkles size={11} /> จัดลำดับใหม่ 1..N
+          </button>
+        </div>
       </div>
 
       {/* Table */}
@@ -488,72 +948,162 @@ export function OfficerManagementPage() {
         <div className="overflow-x-auto">
           {loading ? (
             <div className="p-8 text-center text-gray-500 text-sm">กำลังโหลด...</div>
-          ) : filtered.length === 0 ? (
+          ) : visibleRows.length === 0 ? (
             <div className="p-12 text-center">
               <Users size={36} className="text-gray-600 mx-auto mb-2" />
               <p className="text-gray-400 text-sm">ไม่พบเจ้าหน้าที่</p>
+              {hasActiveFilter && (
+                <button
+                  onClick={() => { setSearchQ(''); setGenFilter(''); setDeptFilter(''); }}
+                  className="btn-secondary mt-4 inline-flex"
+                >
+                  ล้างตัวกรอง
+                </button>
+              )}
             </div>
           ) : (
-            <table className="w-full">
+            <table className="w-full min-w-[860px]">
               <thead className="table-header-gold">
                 <tr className="border-b border-amber-500/15">
-                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">ชื่อ / Username</th>
-                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">ตำแหน่ง</th>
-                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">แผนก</th>
-                  <th className="text-center px-5 py-3 text-xs font-medium text-gray-500 uppercase">สถานะ</th>
-                  <th className="text-center px-5 py-3 text-xs font-medium text-gray-500 uppercase">เวร</th>
-                  <th className="px-5 py-3 text-xs font-medium text-gray-500 uppercase text-right">จัดการ</th>
+                  <th className="w-10 text-center">ลาก</th>
+                  <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">ลำดับ</th>
+                  <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">ชื่อ / Username</th>
+                  <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">ตำแหน่ง</th>
+                  <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">แผนก</th>
+                  <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">รุ่น</th>
+                  <th className="text-center px-3 py-3 text-xs font-medium text-gray-500 uppercase">สถานะ</th>
+                  <th className="text-center px-3 py-3 text-xs font-medium text-gray-500 uppercase">เวร</th>
+                  <th className="px-3 py-3 text-xs font-medium text-gray-500 uppercase text-right">จัดการ</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((o) => (
-                  <tr key={o.id} className={`table-row ${o.id === currentOfficer?.id ? 'bg-amber-500/5' : ''}`}>
-                    <td className="px-5 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full overflow-hidden bg-blue-900 flex items-center justify-center flex-shrink-0">
-                          {o.photo_url ? (
-                            <img src={o.photo_url} alt={o.name} className="w-full h-full object-cover" />
-                          ) : (
-                            <span className="text-amber-400 font-bold text-sm">{o.name.charAt(0).toUpperCase()}</span>
+                {visibleRows.map((o, i) => {
+                  const isDragging = dragId === o.id;
+                  const dropPos = dropTarget?.id === o.id ? dropTarget.pos : null;
+                  return (
+                    <tr
+                      key={o.id}
+                      onDragOver={(e) => handleDragOver(e, o)}
+                      onDrop={(e) => handleDrop(e, o)}
+                      className={`table-row transition-opacity ${
+                        o.id === currentOfficer?.id ? 'bg-amber-500/5' : ''
+                      } ${isDragging ? 'opacity-40' : ''} ${
+                        dropPos === 'before' ? 'border-t-2 border-t-amber-400' : ''
+                      } ${dropPos === 'after' ? 'border-b-2 border-b-amber-400' : ''}`}
+                    >
+                      {/* ไอคอนจับลาก */}
+                      <td className="px-2 py-3 text-center">
+                        <button
+                          type="button"
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, o.id)}
+                          onDragEnd={handleDragEnd}
+                          title="ลากเพื่อจัดลำดับ"
+                          aria-label={`ลากเพื่อจัดลำดับ ${o.name}`}
+                          className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-amber-400 transition-colors"
+                        >
+                          <GripVertical size={16} />
+                        </button>
+                      </td>
+
+                      {/* ลำดับ + ปุ่มเลื่อน */}
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-mono text-gray-500 w-6 text-center">
+                            {o.sort_order ?? '—'}
+                          </span>
+                          <div className="flex flex-col">
+                            <button
+                              onClick={() => moveRow(o.id, -1)}
+                              disabled={i === 0}
+                              title="เลื่อนขึ้น"
+                              className="text-gray-500 hover:text-amber-400 disabled:opacity-20 disabled:hover:text-gray-500 transition-colors leading-none"
+                            >
+                              <ChevronUp size={13} />
+                            </button>
+                            <button
+                              onClick={() => moveRow(o.id, 1)}
+                              disabled={i === visibleRows.length - 1}
+                              title="เลื่อนลง"
+                              className="text-gray-500 hover:text-amber-400 disabled:opacity-20 disabled:hover:text-gray-500 transition-colors leading-none"
+                            >
+                              <ChevronDown size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* ชื่อ / Username */}
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg overflow-hidden bg-navy-700 border border-blue-900/60 flex items-center justify-center flex-shrink-0">
+                            {o.photo_url ? (
+                              <img src={o.photo_url} alt={o.name} className="w-full h-full object-cover" loading="lazy" />
+                            ) : (
+                              <span className="text-amber-400 font-bold text-sm">
+                                {o.name.charAt(0).toUpperCase()}
+                              </span>
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-white text-sm font-medium truncate flex items-center gap-1.5">
+                              {o.id === currentOfficer?.id && (
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex-shrink-0">
+                                  คุณ
+                                </span>
+                              )}
+                              <span className="truncate">{o.name}</span>
+                            </div>
+                            <div className="text-gray-500 text-[11px] font-mono truncate">@{o.username}</div>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="px-3 py-3">{rankBadge(o.rank)}</td>
+
+                      <td className="px-3 py-3 text-sm text-gray-400">
+                        <div className="text-white truncate">{DEPARTMENT_LABELS[o.department]}</div>
+                        <div className="text-[11px] text-amber-400/80 font-mono">
+                          {(o.duty_rate ?? 0).toLocaleString('th-TH')} BC/ชม.
+                        </div>
+                      </td>
+
+                      <td className="px-3 py-3">{generationCell(o)}</td>
+
+                      <td className="px-3 py-3 text-center">{statusBadge(o.status)}</td>
+
+                      <td className="px-3 py-3 text-center">
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${o.is_on_duty ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-600 bg-gray-600/10'}`}>
+                          {o.is_on_duty ? '● ปฏิบัติ' : '○ ว่าง'}
+                        </span>
+                      </td>
+
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-1 justify-end">
+                          <ActionBtn icon={<History size={13} />} label="ประวัติ" color="green" onClick={() => setHistoryOfficer(o)} />
+                          <ActionBtn icon={<Edit2 size={13} />} label="แก้ไข" color="blue" onClick={() => openEdit(o)} />
+                          <ActionBtn icon={<Key size={13} />} label="รีเซ็ต PW" color="amber" onClick={() => setConfirmAction({ type: 'reset', target: o })} />
+                          {o.status === 'active'
+                            ? <ActionBtn icon={<ShieldOff size={13} />} label="ระงับ" color="red" onClick={() => setConfirmAction({ type: 'suspend', target: o })} />
+                            : <ActionBtn icon={<Shield size={13} />} label="เปิด" color="green" onClick={() => setConfirmAction({ type: 'activate', target: o })} />
+                          }
+                          {o.id !== currentOfficer?.id && (
+                            <ActionBtn icon={<Trash2 size={13} />} label="ลบ" color="darkred" onClick={() => setConfirmAction({ type: 'delete', target: o })} />
                           )}
                         </div>
-                        <div>
-                          <div className="text-white text-sm font-medium">{o.name}</div>
-                          <div className="text-gray-500 text-xs font-mono">@{o.username}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-5 py-4">{rankBadge(o.rank)}</td>
-                    <td className="px-5 py-4 text-sm text-gray-400">
-                      <div className="text-white">{DEPARTMENT_LABELS[o.department]}</div>
-                      <div className="text-[11px] text-amber-400/80 font-mono">{(o.duty_rate ?? 0).toLocaleString('th-TH')} BC/ชม.</div>
-                    </td>
-                    <td className="px-5 py-4 text-center">{statusBadge(o.status)}</td>
-                    <td className="px-5 py-4 text-center">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${o.is_on_duty ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-600 bg-gray-600/10'}`}>
-                        {o.is_on_duty ? '● ปฏิบัติ' : '○ ว่าง'}
-                      </span>
-                    </td>
-                    <td className="px-5 py-4">
-                      <div className="flex items-center gap-1 justify-end">
-                        <ActionBtn icon={<History size={13} />} label="ประวัติ" color="green" onClick={() => setHistoryOfficer(o)} />
-                        <ActionBtn icon={<Edit2 size={13} />} label="แก้ไข" color="blue" onClick={() => openEdit(o)} />
-                        <ActionBtn icon={<Key size={13} />} label="รีเซ็ต PW" color="amber" onClick={() => setConfirmAction({ type: 'reset', target: o })} />
-                        {o.status === 'active'
-                          ? <ActionBtn icon={<ShieldOff size={13} />} label="ระงับ" color="red" onClick={() => setConfirmAction({ type: 'suspend', target: o })} />
-                          : <ActionBtn icon={<Shield size={13} />} label="เปิด" color="green" onClick={() => setConfirmAction({ type: 'activate', target: o })} />
-                        }
-                        {o.id !== currentOfficer?.id && (
-                          <ActionBtn icon={<Trash2 size={13} />} label="ลบ" color="darkred" onClick={() => setConfirmAction({ type: 'delete', target: o })} />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
         </div>
+        {hasActiveFilter && visibleRows.length > 0 && (
+          <div className="px-4 py-2.5 border-t border-blue-900/40 text-[11px] text-gray-500">
+            แสดง {visibleRows.length} จาก {officers.length} คน — การจัดลำดับจะไม่กระทบเจ้าหน้าที่ที่ถูกกรองออก
+          </div>
+        )}
       </div>
 
       {/* Add/Edit Modal */}
@@ -622,6 +1172,33 @@ export function OfficerManagementPage() {
               <select className="input-field" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value as Department })}>
                 {DEPARTMENTS.map((d) => <option key={d} value={d}>{DEPARTMENT_LABELS[d]}</option>)}
               </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">รุ่น (Generation)</label>
+                <select className="input-field" value={form.generation} onChange={(e) => setForm({ ...form, generation: e.target.value })}>
+                  <option value="">{GENERATION_UNSET_LABEL}</option>
+                  {generations.map((g) => {
+                    const key = (g.generation_key ?? g.label ?? '').trim();
+                    if (!key) return null;
+                    return (
+                      <option key={g.id} value={key}>
+                        {g.label}{g.is_trainee ? ' (ทดลองงาน)' : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">ลำดับการแสดงผล</label>
+                <input
+                  type="number"
+                  className="input-field font-mono"
+                  value={form.sort_order}
+                  onChange={(e) => setForm({ ...form, sort_order: parseInt(e.target.value) || 0 })}
+                />
+                <p className="text-[10px] text-gray-500 mt-1">ยิ่งน้อยยิ่งขึ้นก่อน (ใช้ในหน้าทำเนียบบุคลากร)</p>
+              </div>
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">อัตราค่าขึ้นเวร (Duty Rate / BC ต่อชั่วโมง)</label>
@@ -706,6 +1283,7 @@ export function OfficerManagementPage() {
                 <div className="card p-3 text-xs text-gray-400 space-y-1">
                   <div>ตำแหน่ง: <span className="text-white">{wizardTemplate.rank}</span></div>
                   <div>แผนก: <span className="text-white">{DEPARTMENT_LABELS[wizardTemplate.department]}</span></div>
+                  <div>รุ่น: <span className="text-white">{personnelIndex.genLabel(wizardTemplate.generation)}</span></div>
                   <div>ค่าขึ้นเวร: <span className="text-white">{wizardTemplate.duty_rate ?? 0} BC/ชม.</span></div>
                   <div>หมวดบริการ: <span className="text-white">{wizardTemplate.service_category || '—'}</span></div>
                 </div>
@@ -784,6 +1362,24 @@ export function OfficerManagementPage() {
                     {SERVICE_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                   </select>
                 </div>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">รุ่น (Generation)</label>
+                <select className="input-field" value={wizardForm.generation} onChange={(e) => setWizardForm({ ...wizardForm, generation: e.target.value })}>
+                  <option value="">{GENERATION_UNSET_LABEL}</option>
+                  {generations.map((g) => {
+                    const key = (g.generation_key ?? g.label ?? '').trim();
+                    if (!key) return null;
+                    return (
+                      <option key={g.id} value={key}>
+                        {g.label}{g.is_trainee ? ' (ทดลองงาน)' : ''}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  เลือกรุ่นเพื่อจัดกลุ่ม/ค้นหาได้ง่ายขึ้นในหน้าทำเนียบบุคลากร
+                </p>
               </div>
               <div className="card p-3 text-xs text-amber-300 bg-amber-500/10 border-amber-500/30">
                 90% ของค่าบริการที่เจ้าหน้าที่คนนี้บันทึก จะเข้าแผนก <strong>{DEPARTMENT_LABELS[wizardForm.department]}</strong>

@@ -217,6 +217,11 @@ export const seedData: JsonDb = {
     { label: 'ผู้คุมสอบกรมขนส่ง', rank_key: 'inspector', sort_order: 2, is_active: true, created_at: NOW, updated_at: NOW },
     { label: 'พนักงาน', rank_key: 'officer', sort_order: 3, is_active: true, created_at: NOW, updated_at: NOW },
   ],
+  officer_generations: [
+    { id: '00000000-0000-0000-0000-000000001001', label: 'รุ่นที่ 1', generation_key: '1', sort_order: 1, is_trainee: true, is_active: true, created_at: NOW, updated_at: NOW },
+    { id: '00000000-0000-0000-0000-000000001002', label: 'รุ่นที่ 2', generation_key: '2', sort_order: 2, is_trainee: false, is_active: true, created_at: NOW, updated_at: NOW },
+    { id: '00000000-0000-0000-0000-000000001003', label: 'รุ่นที่ 3', generation_key: '3', sort_order: 3, is_trainee: false, is_active: true, created_at: NOW, updated_at: NOW },
+  ],
   officers: [
     {
       id: '00000000-0000-0000-0000-000000000001',
@@ -228,6 +233,8 @@ export const seedData: JsonDb = {
       status: 'active',
       is_on_duty: false,
       photo_url: null,
+      generation: null,
+      sort_order: 1,
       created_at: NOW,
       updated_at: NOW,
     },

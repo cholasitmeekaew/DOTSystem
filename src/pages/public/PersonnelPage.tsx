@@ -1,35 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Users, Search, Shield, Briefcase, Wrench, Zap, TrafficCone, AlertCircle, X, Clock, DollarSign, Calendar } from 'lucide-react';
+import {
+  Users, Search, Shield, Briefcase, Wrench, Zap, TrafficCone, AlertCircle, X,
+  Clock, DollarSign, Calendar, LayoutList, LayoutGrid, ArrowUpDown, Layers, Users2,
+} from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { Officer, Department, DEPARTMENT_LABELS, RANK_LABELS, DutyLog, ServiceRecord } from '../../lib/types';
+import {
+  Officer, OfficerRankRecord, OfficerGenerationRecord, Department,
+  DEPARTMENT_LABELS, RANK_LABELS, DEPARTMENTS, DutyLog, ServiceRecord,
+} from '../../lib/types';
+import {
+  buildPersonnelIndex, sortOfficers, groupOfficers, matchesOfficerSearch,
+  filterByDepartment, filterByGeneration, countBy,
+  PERSONNEL_SORT_OPTIONS, PERSONNEL_GROUP_OPTIONS,
+  type PersonnelSortMode, type PersonnelGroupMode,
+} from '../../lib/personnelOrder';
 import { FadeIn, Stagger, StaggerItem, Skeleton } from '../../components/animations';
 import { Modal } from '../../components/Modal';
 
-const RANK_ORDER: Record<string, number> = {
-  commissioner: 1,
-  inspector: 2,
-  officer: 3,
-};
-
+/* ---------- สีประจำตำแหน่ง ---------- */
 const RANK_COLORS: Record<string, { text: string; bg: string; border: string; glow: string }> = {
-  commissioner: {
-    text: 'text-amber-400',
-    bg: 'bg-amber-500/10',
-    border: 'border-amber-500/40',
-    glow: 'shadow-amber-500/20',
-  },
-  inspector: {
-    text: 'text-blue-400',
-    bg: 'bg-blue-500/10',
-    border: 'border-blue-500/40',
-    glow: 'shadow-blue-500/20',
-  },
-  officer: {
-    text: 'text-emerald-400',
-    bg: 'bg-emerald-500/10',
-    border: 'border-emerald-500/40',
-    glow: 'shadow-emerald-500/20',
-  },
+  commissioner: { text: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/40', glow: 'shadow-amber-500/20' },
+  inspector: { text: 'text-blue-400', bg: 'bg-blue-500/10', border: 'border-blue-500/40', glow: 'shadow-blue-500/20' },
+  officer: { text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/40', glow: 'shadow-emerald-500/20' },
 };
 
 const DEPARTMENT_ICONS: Record<Department, React.ReactNode> = {
@@ -40,60 +32,85 @@ const DEPARTMENT_ICONS: Record<Department, React.ReactNode> = {
   emergency_assistance: <AlertCircle size={14} />,
 };
 
-const DEPARTMENT_ORDER: Department[] = [
-  'civil_maintenance',
-  'vehicle_rescue',
-  'electrical',
-  'traffic_management',
-  'emergency_assistance',
-];
+/** สีประจำแผนก (ใช้ในหัวตารางรายการ) */
+const DEPARTMENT_ACCENT: Record<string, string> = {
+  civil_maintenance: 'text-amber-300',
+  vehicle_rescue: 'text-sky-300',
+  electrical: 'text-yellow-300',
+  traffic_management: 'text-violet-300',
+  emergency_assistance: 'text-rose-300',
+};
 
+/* ---------- หน้าหลัก ---------- */
 export function PersonnelPage() {
   const [officers, setOfficers] = useState<Officer[]>([]);
+  const [ranks, setRanks] = useState<OfficerRankRecord[]>([]);
+  const [generations, setGenerations] = useState<OfficerGenerationRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [sortMode, setSortMode] = useState<PersonnelSortMode>('manual');
+  const [groupMode, setGroupMode] = useState<PersonnelGroupMode>('rank');
+  const [deptFilter, setDeptFilter] = useState('');
+  const [genFilter, setGenFilter] = useState('');
+  const [view, setView] = useState<'list' | 'grid'>('list');
   const [selectedOfficer, setSelectedOfficer] = useState<Officer | null>(null);
 
   useEffect(() => {
-    supabase
-      .from('officers')
-      .select('*')
-      .eq('status', 'active')
-      .order('name')
-      .then(({ data }: { data: Record<string, unknown>[] | null }) => {
-        setOfficers((data as unknown as Officer[]) ?? []);
-        setLoading(false);
-      });
+    let cancelled = false;
+    async function load() {
+      const [officerRes, rankRes, genRes] = await Promise.all([
+        supabase.from('officers').select('*').eq('status', 'active'),
+        supabase.from('officer_ranks').select('*').order('sort_order'),
+        supabase.from('officer_generations').select('*').order('sort_order'),
+      ]);
+      if (cancelled) return;
+      setOfficers(((officerRes.data ?? []) as unknown as Officer[]) ?? []);
+      setRanks(((rankRes.data ?? []) as unknown as OfficerRankRecord[]) ?? []);
+      setGenerations(((genRes.data ?? []) as unknown as OfficerGenerationRecord[]) ?? []);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return officers
-      .filter((o) => {
-        if (!q) return true;
-        return (
-          o.name.toLowerCase().includes(q) ||
-          (RANK_LABELS[o.rank] ?? o.rank).toLowerCase().includes(q) ||
-          (DEPARTMENT_LABELS[o.department] ?? o.department).toLowerCase().includes(q)
-        );
-      })
-      .sort((a, b) => (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99) || a.name.localeCompare(b.name, 'th'));
-  }, [officers, search]);
+  const index = useMemo(() => buildPersonnelIndex(ranks, generations), [ranks, generations]);
 
-  const groupedByDept = useMemo(() => {
-    const map: Record<string, Officer[]> = {};
-    for (const o of filtered) {
-      if (!map[o.department]) map[o.department] = [];
-      map[o.department].push(o);
-    }
-    return map;
-  }, [filtered]);
+  const filtered = useMemo(() => {
+    return sortOfficers(
+      filterByGeneration(
+        filterByDepartment(officers, deptFilter),
+        genFilter,
+      ),
+      sortMode,
+      index,
+    ).filter((o) => matchesOfficerSearch(o, search, index));
+  }, [officers, deptFilter, genFilter, sortMode, search, index]);
+
+  const groups = useMemo(
+    () => groupOfficers(filtered, groupMode, sortMode, index),
+    [filtered, groupMode, sortMode, index],
+  );
+
+  const deptCounts = useMemo(() => countBy(officers, (o) => o.department), [officers]);
+  const genCounts = useMemo(
+    () => countBy(officers, (o) => (o.generation ?? '').trim()),
+    [officers],
+  );
+  const genLabelOf = (key: string) => index.genLabel(key || null);
 
   const onDutyCount = officers.filter((o) => o.is_on_duty).length;
+  const traineeCount = officers.filter((o) => index.isTrainee(o.generation)).length;
+
+  const resetFilters = () => {
+    setSearch('');
+    setDeptFilter('');
+    setGenFilter('');
+  };
+  const hasFilter = !!search || !!deptFilter || !!genFilter;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10">
-      {/* Header */}
+      {/* ---------- Header ---------- */}
       <FadeIn className="text-center mb-8">
         <div className="inline-flex w-16 h-16 bg-amber-500/10 border-2 border-amber-500/30 rounded-2xl items-center justify-center mb-4 anim-float">
           <Users size={30} className="text-amber-400" />
@@ -105,47 +122,183 @@ export function PersonnelPage() {
           รายชื่อเจ้าหน้าที่กรมขนส่ง Bit Cities — Department of Transportation
         </p>
         {!loading && (
-          <div className="inline-flex items-center gap-3 mt-4 text-xs text-gray-500">
+          <div className="inline-flex flex-wrap items-center justify-center gap-x-3 gap-y-1 mt-4 text-xs text-gray-500">
             <span>ทั้งหมด <span className="text-amber-400 font-bold">{officers.length}</span> คน</span>
             <span className="text-blue-900">•</span>
             <span className="text-emerald-400">กำลังปฏิบัติหน้าที่ {onDutyCount} คน</span>
+            {traineeCount > 0 && (
+              <>
+                <span className="text-blue-900">•</span>
+                <span className="text-sky-300">ทดลองงาน {traineeCount} คน</span>
+              </>
+            )}
           </div>
         )}
       </FadeIn>
 
-      {/* Search */}
-      <FadeIn delay={0.05} className="mb-8">
-        <div className="card p-4 flex items-center gap-3 hover-lift max-w-2xl mx-auto">
-          <Search size={18} className="text-gray-500 flex-shrink-0" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="ค้นหาชื่อ, ตำแหน่ง, แผนก..."
-            className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-500 text-sm"
-          />
-          {search && (
-            <button
-              onClick={() => setSearch('')}
-              className="text-xs text-gray-500 hover:text-white"
-            >
-              ล้าง
-            </button>
+      {/* ---------- Toolbar ---------- */}
+      <FadeIn delay={0.05} className="mb-6">
+        <div className="card p-4 space-y-3">
+          <span className="ph-corner ph-corner-tl" aria-hidden />
+          <span className="ph-corner ph-corner-br" aria-hidden />
+
+          {/* แถวที่ 1 — ค้นหา + สลับมุมมอง */}
+          <div className="flex items-center gap-3">
+            <Search size={18} className="text-gray-500 flex-shrink-0" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="ค้นหาชื่อ, @username, ตำแหน่ง, แผนก, รุ่น..."
+              className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-500 text-sm"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="text-xs text-gray-500 hover:text-white">
+                ล้าง
+              </button>
+            )}
+            <div className="gold-toggle flex-shrink-0">
+              <button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')} title="มุมมองรายการ">
+                <LayoutList size={12} className="inline mr-1" />รายการ
+              </button>
+              <button className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')} title="มุมมองการ์ด">
+                <LayoutGrid size={12} className="inline mr-1" />การ์ด
+              </button>
+            </div>
+          </div>
+
+          {/* แถวที่ 2 — เรียง / จัดกลุ่ม / ตัวกรอง */}
+          <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-blue-900/40">
+            <div className="flex items-center gap-1.5">
+              <ArrowUpDown size={13} className="text-amber-500/80" />
+              <label className="text-[11px] text-gray-400">เรียงตาม</label>
+              <select
+                className="select-field !w-auto !py-1 !px-2 !text-xs"
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as PersonnelSortMode)}
+              >
+                {PERSONNEL_SORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Layers size={13} className="text-amber-500/80" />
+              <label className="text-[11px] text-gray-400">จัดกลุ่ม</label>
+              <select
+                className="select-field !w-auto !py-1 !px-2 !text-xs"
+                value={groupMode}
+                onChange={(e) => setGroupMode(e.target.value as PersonnelGroupMode)}
+              >
+                {PERSONNEL_GROUP_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Users2 size={13} className="text-amber-500/80" />
+              <label className="text-[11px] text-gray-400">รุ่น</label>
+              <select
+                className="select-field !w-auto !py-1 !px-2 !text-xs"
+                value={genFilter}
+                onChange={(e) => setGenFilter(e.target.value)}
+              >
+                <option value="">ทุกรุ่น</option>
+                {index.activeGenerations.map((g) => {
+                  const key = (g.generation_key ?? g.label ?? '').trim();
+                  if (!key) return null;
+                  return (
+                    <option key={g.id} value={key}>
+                      {g.label} ({genCounts[key] ?? 0})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Wrench size={13} className="text-amber-500/80" />
+              <label className="text-[11px] text-gray-400">แผนก</label>
+              <select
+                className="select-field !w-auto !py-1 !px-2 !text-xs"
+                value={deptFilter}
+                onChange={(e) => setDeptFilter(e.target.value)}
+              >
+                <option value="">ทุกแผนก</option>
+                {DEPARTMENTS.map((d) => (
+                  <option key={d} value={d}>
+                    {DEPARTMENT_LABELS[d]} ({deptCounts[d] ?? 0})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {hasFilter && (
+              <button
+                onClick={resetFilters}
+                className="ml-auto text-[11px] text-gray-400 hover:text-amber-400 transition-colors"
+              >
+                ล้างตัวกรองทั้งหมด
+              </button>
+            )}
+          </div>
+
+          {/* แถวที่ 3 — ชิปตัวกรองด่วน */}
+          {(index.activeGenerations.length > 0 || DEPARTMENTS.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-3 border-t border-blue-900/40">
+              <button
+                onClick={() => setGenFilter('')}
+                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${
+                  genFilter === ''
+                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/50'
+                    : 'bg-navy-800 text-gray-400 border-blue-900/60 hover:text-white hover:border-amber-500/40'
+                }`}
+              >
+                ทุกรุ่น ({officers.length})
+              </button>
+              {index.activeGenerations.map((g) => {
+                const key = (g.generation_key ?? g.label ?? '').trim();
+                if (!key) return null;
+                const active = genFilter === key;
+                return (
+                  <button
+                    key={g.id}
+                    onClick={() => setGenFilter(active ? '' : key)}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all flex items-center gap-1 ${
+                      active
+                        ? 'bg-sky-500/15 text-sky-300 border-sky-500/50'
+                        : 'bg-navy-800 text-gray-400 border-blue-900/60 hover:text-white hover:border-sky-500/40'
+                    }`}
+                  >
+                    {g.is_trainee && <span className="w-1.5 h-1.5 rounded-full bg-sky-400 anim-pulse" />}
+                    {g.label} ({genCounts[key] ?? 0})
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
       </FadeIn>
 
-      {/* Content */}
+      {/* ---------- เนื้อหา ---------- */}
       {loading ? (
         <FadeIn>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-              <div key={i} className="card p-4 space-y-3">
-                <Skeleton variant="circle" width={64} height={64} className="mx-auto" />
-                <Skeleton variant="text" className="mx-auto" width="70%" />
-                <Skeleton variant="text" className="mx-auto" width="50%" height={10} />
-              </div>
-            ))}
+          <div className="table-panel">
+            <div className="p-6 space-y-3">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <Skeleton variant="circle" width={40} height={40} />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton variant="text" width="35%" />
+                    <Skeleton variant="text" width="20%" height={10} />
+                  </div>
+                  <Skeleton variant="text" width={110} />
+                  <Skeleton variant="text" width={90} />
+                </div>
+              ))}
+            </div>
           </div>
         </FadeIn>
       ) : filtered.length === 0 ? (
@@ -155,27 +308,46 @@ export function PersonnelPage() {
               <Search size={26} className="text-gray-500" />
             </div>
             <p className="text-white font-semibold mb-1">
-              {search ? 'ไม่พบบุคลากรที่ค้นหา' : 'ยังไม่มีข้อมูลบุคลากร'}
+              {hasFilter ? 'ไม่พบบุคลากรที่ค้นหา' : 'ยังไม่มีข้อมูลบุคลากร'}
             </p>
             <p className="text-gray-400 text-sm">
-              {search ? 'ลองเปลี่ยนคำค้นหา' : 'หัวหน้ากรมสามารถเพิ่มเจ้าหน้าที่ได้ที่เมนู "จัดการเจ้าหน้าที่"'}
+              {hasFilter
+                ? 'ลองเปลี่ยนคำค้นหา หรือล้างตัวกรอง'
+                : 'หัวหน้ากรมสามารถเพิ่มเจ้าหน้าที่ได้ที่เมนู "จัดการเจ้าหน้าที่"'}
             </p>
+            {hasFilter && (
+              <button onClick={resetFilters} className="btn-secondary mt-4 inline-flex">
+                ล้างตัวกรองทั้งหมด
+              </button>
+            )}
           </div>
         </FadeIn>
-      ) : (
+      ) : view === 'grid' ? (
         <div className="space-y-10">
-          {DEPARTMENT_ORDER.map((dept) => {
-            const list = groupedByDept[dept];
-            if (!list || list.length === 0) return null;
-            return (
-              <DepartmentSection
-                key={dept}
-                dept={dept}
-                officers={list}
-                onSelect={setSelectedOfficer}
-              />
-            );
-          })}
+          {groups.map((g) => (
+            <DepartmentSection
+              key={g.key}
+              title={g.label}
+              count={g.count}
+              trainee={g.trainee}
+              officers={g.officers}
+              genLabelOf={genLabelOf}
+              onSelect={setSelectedOfficer}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {groups.map((g) => (
+            <PersonnelListGroup
+              key={g.key}
+              group={g}
+              index={index}
+              showHeader={groupMode !== 'none'}
+              genLabelOf={genLabelOf}
+              onSelect={setSelectedOfficer}
+            />
+          ))}
         </div>
       )}
 
@@ -188,6 +360,7 @@ export function PersonnelPage() {
       {selectedOfficer && (
         <OfficerDetailModal
           officer={selectedOfficer}
+          genLabel={genLabelOf(selectedOfficer.generation ?? '')}
           onClose={() => setSelectedOfficer(null)}
         />
       )}
@@ -195,34 +368,266 @@ export function PersonnelPage() {
   );
 }
 
-function DepartmentSection({
-  dept,
-  officers,
+/* =============================================================
+ * หัวกลุ่ม (ใช้ตอนจัดกลุ่ม) — ธีม Dark & Gold
+ * ============================================================= */
+function GroupHeader({
+  title,
+  count,
+  trainee,
+  icon,
+}: {
+  title: string;
+  count: number;
+  trainee?: boolean;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div className="section-bar" style={{ borderRadius: '0.75rem 0.75rem 0 0' }}>
+      <span className="section-bar-icon">{icon ?? <Users size={14} />}</span>
+      <span className="section-bar-title">{title}</span>
+      <span className="text-[10px] font-mono text-gray-500">{count} คน</span>
+      {trainee && (
+        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/40">
+          ทดลองงาน
+        </span>
+      )}
+      <div className="flex-1 h-px bg-gradient-to-r from-amber-500/30 to-transparent ml-1" />
+    </div>
+  );
+}
+
+/* =============================================================
+ * มุมมองรายการ (List View) — หลักของหน้านี้
+ * ============================================================= */
+function PersonnelListGroup({
+  group,
+  index,
+  showHeader,
+  genLabelOf,
   onSelect,
 }: {
-  dept: Department;
-  officers: Officer[];
+  group: { key: string; label: string; count: number; trainee: boolean; officers: Officer[] };
+  index: ReturnType<typeof buildPersonnelIndex>;
+  showHeader: boolean;
+  genLabelOf: (key: string) => string;
   onSelect: (o: Officer) => void;
 }) {
-  const color = RANK_COLORS[officers[0].rank] ?? RANK_COLORS.officer;
+  const headerIcon =
+    group.key === 'rank'
+      ? <Shield size={14} />
+      : group.key === 'department'
+        ? <Wrench size={14} />
+        : group.key === 'generation'
+          ? <Layers size={14} />
+          : undefined;
+
+  return (
+    <section>
+      {showHeader && (
+        <GroupHeader
+          title={group.label}
+          count={group.count}
+          trainee={group.trainee}
+          icon={headerIcon}
+        />
+      )}
+      <div
+        className="table-panel"
+        style={showHeader ? { borderTopLeftRadius: 0, borderTopRightRadius: 0 } : undefined}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px]">
+            <thead className="table-header-gold">
+              <tr>
+                <th className="w-[38%]">เจ้าหน้าที่</th>
+                <th>ตำแหน่ง</th>
+                <th>แผนก / ฝ่าย</th>
+                <th>รุ่น</th>
+                <th className="!text-right">สถานะ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.officers.map((o, i) => (
+                <OfficerListRow
+                  key={o.id}
+                  officer={o}
+                  index={index}
+                  ordinal={i + 1}
+                  genLabel={genLabelOf(o.generation ?? '')}
+                  onSelect={onSelect}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function OfficerListRow({
+  officer,
+  index,
+  ordinal,
+  genLabel,
+  onSelect,
+}: {
+  officer: Officer;
+  index: ReturnType<typeof buildPersonnelIndex>;
+  ordinal: number;
+  genLabel: string;
+  onSelect: (o: Officer) => void;
+}) {
+  const color = RANK_COLORS[officer.rank] ?? RANK_COLORS.officer;
+  const isCommissioner = officer.rank === 'commissioner';
+  const isTrainee = index.isTrainee(officer.generation);
+  const hasGeneration = !!(officer.generation ?? '').trim();
+  const deptAccent = DEPARTMENT_ACCENT[officer.department] ?? 'text-gray-300';
+
+  return (
+    <tr
+      onClick={() => onSelect(officer)}
+      className={`table-row cursor-pointer group ${
+        isCommissioner ? 'bg-amber-500/[0.04]' : ''
+      }`}
+    >
+      {/* เจ้าหน้าที่ */}
+      <td className="px-4 py-2.5">
+        <div className="flex items-center gap-3">
+          {/* ลำดับ */}
+          <span className="text-[11px] font-mono text-gray-600 w-6 text-right flex-shrink-0 group-hover:text-amber-500/70 transition-colors">
+            {String(ordinal).padStart(2, '0')}
+          </span>
+
+          {/* รูปโปรไฟล์เล็ก */}
+          <div
+            className={`relative w-10 h-10 rounded-lg overflow-hidden bg-navy-700 border flex items-center justify-center flex-shrink-0 transition-colors ${
+              isCommissioner ? 'border-amber-500/40' : 'border-blue-900/60 group-hover:border-amber-500/40'
+            }`}
+          >
+            {officer.photo_url ? (
+              <img src={officer.photo_url} alt={officer.name} className="w-full h-full object-cover" loading="lazy" />
+            ) : (
+              <span className={`font-bold text-sm ${color.text}`}>
+                {officer.name.charAt(0).toUpperCase()}
+              </span>
+            )}
+            {/* จุดสถานะเวรบนมุมรูป */}
+            <span
+              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-navy-900 ${
+                officer.is_on_duty ? 'bg-emerald-400 anim-pulse' : 'bg-gray-600'
+              }`}
+              title={officer.is_on_duty ? 'กำลังปฏิบัติหน้าที่' : 'ว่าง'}
+            />
+          </div>
+
+          <div className="min-w-0">
+            <div className="text-white text-sm font-semibold truncate flex items-center gap-1.5">
+              {isCommissioner && <Shield size={12} className="text-amber-400 flex-shrink-0" />}
+              <span className="truncate">{officer.name}</span>
+            </div>
+            <div className="text-gray-500 text-[11px] font-mono truncate">@{officer.username}</div>
+          </div>
+        </div>
+      </td>
+
+      {/* ตำแหน่ง */}
+      <td className="px-4 py-2.5">
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border ${color.bg} ${color.text} ${color.border}`}
+        >
+          {officer.rank === 'commissioner' && <Shield size={10} />}
+          {officer.rank === 'inspector' && <Briefcase size={10} />}
+          {index.rankLabel(officer.rank)}
+        </span>
+      </td>
+
+      {/* แผนก */}
+      <td className="px-4 py-2.5">
+        <div className={`flex items-center gap-1.5 text-[12px] font-medium ${deptAccent}`}>
+          {DEPARTMENT_ICONS[officer.department]}
+          <span className="truncate">{index.deptLabel(officer.department)}</span>
+        </div>
+      </td>
+
+      {/* รุ่น */}
+      <td className="px-4 py-2.5">
+        {hasGeneration ? (
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border ${
+              isTrainee
+                ? 'bg-sky-500/10 text-sky-300 border-sky-500/40'
+                : 'bg-navy-700 text-gray-300 border-blue-900/60'
+            }`}
+          >
+            {genLabel}
+            {isTrainee && <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />}
+          </span>
+        ) : (
+          <span className="text-[11px] text-gray-600">—</span>
+        )}
+      </td>
+
+      {/* สถานะ */}
+      <td className="px-4 py-2.5 text-right">
+        <span
+          className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
+            officer.is_on_duty ? 'text-emerald-400' : 'text-gray-500'
+          }`}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${officer.is_on_duty ? 'bg-emerald-400 anim-pulse' : 'bg-gray-600'}`} />
+          {officer.is_on_duty ? 'ปฏิบัติหน้าที่' : 'ว่าง'}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+/* =============================================================
+ * มุมมองการ์ด (Grid) — คงของเดิมไว้เป็นตัวเลือกรอง
+ * ============================================================= */
+function DepartmentSection({
+  title,
+  count,
+  trainee,
+  officers,
+  genLabelOf,
+  onSelect,
+}: {
+  title: string;
+  count: number;
+  trainee: boolean;
+  officers: Officer[];
+  genLabelOf: (key: string) => string;
+  onSelect: (o: Officer) => void;
+}) {
+  const color = RANK_COLORS[officers[0]?.rank] ?? RANK_COLORS.officer;
   return (
     <section>
       <FadeIn className="flex items-center gap-3 mb-4">
         <div className={`w-10 h-10 rounded-xl ${color.bg} border ${color.border} flex items-center justify-center ${color.text}`}>
-          {DEPARTMENT_ICONS[dept]}
+          <Users size={16} />
         </div>
         <div>
-          <h2 className={`text-lg font-bold ${color.text}`}>
-            {DEPARTMENT_LABELS[dept] ?? dept}
-          </h2>
-          <p className="text-xs text-gray-500">{officers.length} คน</p>
+          <h2 className={`text-lg font-bold ${color.text}`}>{title}</h2>
+          <p className="text-xs text-gray-500">{count} คน</p>
         </div>
+        {trainee && (
+          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/40">
+            ทดลองงาน
+          </span>
+        )}
         <div className="flex-1 h-px bg-gradient-to-r from-blue-900/50 to-transparent ml-2" />
       </FadeIn>
       <Stagger className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
         {officers.map((o) => (
           <StaggerItem key={o.id}>
-            <PersonnelCard officer={o} onClick={() => onSelect(o)} />
+            <PersonnelCard
+              officer={o}
+              genLabel={genLabelOf(o.generation ?? '')}
+              onClick={() => onSelect(o)}
+            />
           </StaggerItem>
         ))}
       </Stagger>
@@ -230,7 +635,7 @@ function DepartmentSection({
   );
 }
 
-function PersonnelCard({ officer, onClick }: { officer: Officer; onClick: () => void }) {
+function PersonnelCard({ officer, genLabel, onClick }: { officer: Officer; genLabel: string; onClick: () => void }) {
   const color = RANK_COLORS[officer.rank] ?? RANK_COLORS.officer;
   const isCommissioner = officer.rank === 'commissioner';
 
@@ -242,7 +647,6 @@ function PersonnelCard({ officer, onClick }: { officer: Officer; onClick: () => 
       }`}
       style={{ aspectRatio: '3 / 4.5' }}
     >
-      {/* Background image */}
       <div className="absolute inset-0 bg-navy-800">
         {officer.photo_url ? (
           <img
@@ -259,10 +663,8 @@ function PersonnelCard({ officer, onClick }: { officer: Officer; onClick: () => 
         )}
       </div>
 
-      {/* Top gradient (subtle) */}
       <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/40 to-transparent pointer-events-none" />
 
-      {/* Bottom gradient (info area) */}
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-navy-900 via-navy-900/95 to-transparent pt-12 pb-3 px-3">
         <div className="flex items-center gap-1.5 mb-1">
           <div className={`w-1.5 h-1.5 rounded-full ${officer.is_on_duty ? 'bg-emerald-400 anim-pulse' : 'bg-gray-500'}`} />
@@ -277,9 +679,11 @@ function PersonnelCard({ officer, onClick }: { officer: Officer; onClick: () => 
         <p className="text-gray-300 text-[10px] truncate mt-0.5 drop-shadow">
           {DEPARTMENT_LABELS[officer.department] ?? officer.department}
         </p>
+        {!!(officer.generation ?? '').trim() && (
+          <p className="text-sky-300/90 text-[10px] truncate mt-0.5 drop-shadow">{genLabel}</p>
+        )}
       </div>
 
-      {/* Commissioner crown bar */}
       {isCommissioner && (
         <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-transparent via-amber-500 to-transparent" />
       )}
@@ -287,7 +691,18 @@ function PersonnelCard({ officer, onClick }: { officer: Officer; onClick: () => 
   );
 }
 
-function OfficerDetailModal({ officer, onClose }: { officer: Officer; onClose: () => void }) {
+/* =============================================================
+ * Modal รายละเอียดเจ้าหน้าที่ (คงเดิม + เพิ่มข้อมูลรุ่น)
+ * ============================================================= */
+function OfficerDetailModal({
+  officer,
+  genLabel,
+  onClose,
+}: {
+  officer: Officer;
+  genLabel: string;
+  onClose: () => void;
+}) {
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [services, setServices] = useState<ServiceRecord[]>([]);
   const [emergencyCount, setEmergencyCount] = useState(0);
@@ -394,15 +809,26 @@ function OfficerDetailModal({ officer, onClose }: { officer: Officer; onClose: (
             </span>
           </div>
           <h2 className="text-2xl font-bold text-white mb-1">{officer.name}</h2>
-          <div className={`inline-flex items-center gap-1.5 ${color.bg} ${color.text} border ${color.border} px-2.5 py-1 rounded-full text-xs font-semibold`}>
-            {officer.rank === 'commissioner' && <Shield size={12} />}
-            {officer.rank === 'inspector' && <Briefcase size={12} />}
-            {RANK_LABELS[officer.rank] ?? officer.rank}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={`inline-flex items-center gap-1.5 ${color.bg} ${color.text} border ${color.border} px-2.5 py-1 rounded-full text-xs font-semibold`}>
+              {officer.rank === 'commissioner' && <Shield size={12} />}
+              {officer.rank === 'inspector' && <Briefcase size={12} />}
+              {RANK_LABELS[officer.rank] ?? officer.rank}
+            </span>
+            {!!(officer.generation ?? '').trim() && (
+              <span className="inline-flex items-center gap-1 bg-navy-700 text-gray-300 border border-blue-900/60 px-2.5 py-1 rounded-full text-xs font-semibold">
+                <Layers size={12} className="text-sky-400" />
+                {genLabel}
+              </span>
+            )}
           </div>
-          <p className="text-gray-300 text-sm mt-2 flex items-center gap-1.5">
-            {DEPARTMENT_ICONS[officer.department]}
-            {DEPARTMENT_LABELS[officer.department] ?? officer.department}
-          </p>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-gray-300 text-sm">
+            <span className="flex items-center gap-1.5">
+              {DEPARTMENT_ICONS[officer.department]}
+              {DEPARTMENT_LABELS[officer.department] ?? officer.department}
+            </span>
+            <span className="text-gray-600 font-mono text-xs">@{officer.username}</span>
+          </div>
         </div>
 
         {/* Quick stats */}

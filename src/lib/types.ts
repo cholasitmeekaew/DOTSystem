@@ -39,6 +39,23 @@ export interface Officer {
   service_category?: string | null;
   // Claim share accumulator (optional — column added in migration 0009)
   accumulated_share?: number;
+  // Generation / batch (optional — column added in migration 0027)
+  generation?: string | null;
+  // Manual display priority set by the commissioner (optional — column added in migration 0027)
+  sort_order?: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** ตารางอ้างอิง "รุ่น" (Generation) — migration 0027 */
+export interface OfficerGenerationRecord {
+  id: string;
+  label: string;
+  generation_key: string | null;
+  sort_order: number;
+  /** true = กลุ่มพนักงานทดลองงาน */
+  is_trainee: boolean;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -394,6 +411,16 @@ export const RANK_LABELS: Record<string, string> = {
   inspector: 'ผู้คุมสอบกรมขนส่ง',
   officer: 'พนักงาน',
 };
+
+/** Fallback label ของ "รุ่น" — ใช้เมื่อ officer_generations ยังโหลดไม่เสร็จ / ไม่มีในระบบ */
+export const GENERATION_FALLBACK_LABELS: Record<string, string> = {
+  '1': 'รุ่นที่ 1',
+  '2': 'รุ่นที่ 2',
+  '3': 'รุ่นที่ 3',
+};
+
+/** ข้อความแสดงผลเมื่อเจ้าหน้าที่ยังไม่ได้ระบุรุ่น */
+export const GENERATION_UNSET_LABEL = 'ไม่ระบุรุ่น';
 
 export const DEPARTMENT_LABELS: Record<Department, string> = {
   civil_maintenance: 'โยธาซ่อมบำรุง',
