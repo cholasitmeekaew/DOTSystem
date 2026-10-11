@@ -2126,34 +2126,79 @@ function WeeklyRosterPanel({
   onSwapWeek: (shift: ShiftCode, toOfficerId: string) => Promise<boolean>;
 }) {
   const rankById = useMemo(() => new Map(officers.map((o) => [o.id, o.rank])), [officers]);
-  const weekLabel = `${roster.days[0]?.dayOfMonth ?? ''}–${roster.days[6]?.dayOfMonth ?? ''} ${monthLabelOf(roster.days[0]?.date ?? weekAnchor)}`;
   const shortSlots = roster.understaffedCount + roster.gapCount;
+
+  const start = roster.days[0]?.date ?? weekAnchor;
+  const end = roster.days[6]?.date ?? weekAnchor;
+  const weekLabel = `${roster.days[0]?.dayOfMonth ?? ''}–${roster.days[6]?.dayOfMonth ?? ''} ${monthLabelOf(start)}`;
+
+  // สัปดาห์นี้อยู่ห่างจากสัปดาห์ปัจจุบันกี่สัปดาห์ (0 = สัปดาห์นี้)
+  const currentStart = shiftWeek(toIso(new Date()), 0);
+  const weekDiff = Math.round(
+    (new Date(`${start}T00:00:00`).getTime() - new Date(`${currentStart}T00:00:00`).getTime()) / (7 * 86400000),
+  );
+  const isCurrentWeek = weekDiff === 0;
+  const weekOffsetLabel = isCurrentWeek
+    ? 'สัปดาห์นี้'
+    : weekDiff === 1
+      ? 'สัปดาห์ถัดไป'
+      : weekDiff === -1
+        ? 'สัปดาห์ที่แล้ว'
+        : weekDiff > 0
+          ? `อีก ${weekDiff} สัปดาห์`
+          : `${Math.abs(weekDiff)} สัปดาห์ที่แล้ว`;
 
   return (
     <div className="space-y-3">
-      {/* แถวเดียว ย่อตัวได้ — ห้ามใช้ flex-wrap เพราะจะดันหัวข้อไปบรรทัดสอง
-          แล้วบังหัวข้อจนดูเหมือนไม่มีอยู่ */}
-      <div className="card px-4 py-2.5 flex flex-nowrap items-center justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-bold text-white truncate leading-tight">
+      {/* หัวตารางเวร — ช่วงวันที่ต้องเห็นชัดเสมอ ไม่งั้นกดลูกศรแล้วจะไม่รู้ว่าเลื่อนไปไหน */}
+      <div className="card px-4 py-3 space-y-2">
+        <div className="flex flex-nowrap items-center justify-between gap-3">
+          <h2 className="text-sm font-bold text-white truncate leading-tight min-w-0">
             ตารางเวรประจำสัปดาห์
           </h2>
-          <p className="text-[11px] text-gray-400 truncate leading-tight mt-0.5">
-            {weekLabel}
-            <span className="text-amber-400/70">
-              {' · '}จ–ศ {serverHoursFor(1).start}–{serverHoursFor(1).end}
-              {' · '}ส–อ {serverHoursFor(6).start}–{serverHoursFor(6).end}
-            </span>
-          </p>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={onPrev}
+              className="btn-secondary w-8 h-8 p-0 flex items-center justify-center"
+              aria-label="สัปดาห์ก่อนหน้า"
+              title="สัปดาห์ก่อนหน้า"
+            >
+              <ChevronLeft size={15} />
+            </button>
+            <button
+              onClick={onToday}
+              disabled={isCurrentWeek}
+              className="btn-secondary px-2.5 py-1.5 text-xs disabled:opacity-35 disabled:cursor-not-allowed"
+              title={isCurrentWeek ? 'อยู่ที่สัปดาห์ปัจจุบันอยู่แล้ว' : 'กลับสู่สัปดาห์ปัจจุบัน'}
+            >
+              กลับสู่วันนี้
+            </button>
+            <button
+              onClick={onNext}
+              className="btn-secondary w-8 h-8 p-0 flex items-center justify-center"
+              aria-label="สัปดาห์ถัดไป"
+              title="สัปดาห์ถัดไป"
+            >
+              <ChevronRight size={15} />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={onPrev} className="btn-secondary px-2 py-1.5" aria-label="สัปดาห์ก่อนหน้า">
-            <ChevronLeft size={14} />
-          </button>
-          <button onClick={onToday} className="btn-secondary px-2.5 py-1.5 text-xs">วันนี้</button>
-          <button onClick={onNext} className="btn-secondary px-2 py-1.5" aria-label="สัปดาห์ถัดไป">
-            <ChevronRight size={14} />
-          </button>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/40 text-xs font-bold font-mono">
+            {weekLabel}
+          </span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+            isCurrentWeek
+              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+              : 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+          }`}>
+            {weekOffsetLabel}
+          </span>
+          <span className="text-[11px] text-gray-500">
+            เซิร์ฟเวอร์ · จ–ศ {serverHoursFor(1).start}–{serverHoursFor(1).end}
+            {' · '}ส–อ {serverHoursFor(6).start}–{serverHoursFor(6).end}
+          </span>
         </div>
       </div>
 
