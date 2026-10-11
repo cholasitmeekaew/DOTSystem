@@ -12,11 +12,39 @@
  * ============================================================= */
 
 import type {
-  DutySchedule, ScheduleOverride, ScheduleCellCode, Officer, WorkReport, DutyLog,
+  DutySchedule, ScheduleOverride, ScheduleCellCode, ShiftCode, ShiftWindow, Officer,
+  WorkReport, DutyLog,
 } from './types';
-import { WEEKDAY_SHORT, SHIFT_LABELS, OVERRIDE_TYPE_LABELS } from './types';
+import {
+  WEEKDAY_SHORT, SHIFT_LABELS, OVERRIDE_TYPE_LABELS,
+  WEEKDAY_SHIFT_WINDOWS, WEEKEND_SHIFT_WINDOWS, SERVER_HOURS, isWeekend,
+} from './types';
 
-export const SHIFT_ORDER: ScheduleCellCode[] = ['day', 'night'];
+/** ลำดับกะที่แสดงในตาราง */
+export const SHIFT_ORDER: ShiftCode[] = ['s1', 's2'];
+
+/**
+ * ช่วงเวลาของแต่ละกะ ขึ้นอยู่กับประเภทวัน
+ *   จันทร์–ศุกร์    เซิร์ฟเปิด 18:30–21:30
+ *   เสาร์–อาทิตย์  เซิร์ฟเปิด 18:30–23:00
+ */
+export function shiftWindowsFor(weekday: number): Record<ShiftCode, ShiftWindow> {
+  return isWeekend(weekday) ? WEEKEND_SHIFT_WINDOWS : WEEKDAY_SHIFT_WINDOWS;
+}
+
+export function shiftWindowFor(weekday: number, shift: ShiftCode): ShiftWindow {
+  return shiftWindowsFor(weekday)[shift];
+}
+
+/** 'จันทร์–ศุกร์' | 'เสาร์–อาทิตย์' */
+export function dayTypeLabel(weekday: number): string {
+  return isWeekend(weekday) ? 'เสาร์–อาทิตย์' : 'จันทร์–ศุกร์';
+}
+
+/** เวลาเปิด–ปิดเซิร์ฟเวอร์ของวันนั้น */
+export function serverHoursFor(weekday: number): { start: string; end: string } {
+  return isWeekend(weekday) ? SERVER_HOURS.weekend : SERVER_HOURS.weekday;
+}
 
 export interface WeekDay {
   /** 0 = อาทิตย์ ... 6 = เสาร์ */
@@ -82,8 +110,11 @@ export interface RosterCell {
   overrideType: ScheduleOverride['override_type'] | null;
   /** มาจาก schedule_overrides หรือไม่ */
   fromOverride: boolean;
-  startTime: string | null;
-  endTime: string | null;
+  /** ช่วงเวลาของกะนี้ในวันนั้น (คำนวณจากประเภทวัน) */
+  startTime: string;
+  endTime: string;
+  /** เป็นวันหยุด (เสาร์–อาทิตย์) หรือไม่ */
+  weekend: boolean;
 }
 
 export interface WeeklyRoster {
@@ -105,6 +136,7 @@ export function buildWeeklyRoster(params: {
   shiftTimes?: Record<ScheduleCellCode, { start: string; end: string }>;
 }): WeeklyRoster {
   const { anchorIso, schedules, overrides, officers } = params;
+  void params.shiftTimes;
   const days = buildWeekDays(anchorIso);
   const daySet = new Set(days.map((d) => d.date));
 
@@ -152,6 +184,9 @@ export function buildWeeklyRoster(params: {
       if (name) assignedCount++;
       else gapCount++;
 
+      // เวลาอ้างอิงจากตารางเวลาจริงของเซิร์ฟเวอร์ (จ-ศ ต่างจาก ส-อา)
+      // ถ้า duty_schedules มีเวลากำหนดเองไว้ ให้ใช้ค่านั้นแทน
+      const fallback = shiftWindowFor(day.weekday, shift);
       rows[shift][day.date] = {
         date: day.date,
         shift,
@@ -160,13 +195,65 @@ export function buildWeeklyRoster(params: {
         badge,
         overrideType,
         fromOverride,
-        startTime: override?.shift_code ? null : base?.start_time ?? null,
-        endTime: override?.shift_code ? null : base?.end_time ?? null,
+        startTime: base?.start_time || fallback.start,
+        endTime: base?.end_time || fallback.end,
+        weekend: isWeekend(day.weekday),
       };
     }
   }
 
   return { days, rows, assignedCount, gapCount };
+}
+
+/**
+ * หา id ของเจ้าหน้าที่ที่ "มีผังเวร" ในช่วงวันที่กำหนด
+ * ใช้เป็นเงื่อนไขตั้งต้นก่อนตัดคะแนนขาดเวร — คนที่ไม่ได้ลงตารางไม่ถูกตัดคะแนน
+ */
+export function resolveScheduledOfficerIds(params: {
+  schedules: DutySchedule[];
+  overrides: ScheduleOverride[];
+  fromIso: string;
+  toIso: string;
+}): Set<string> {
+  const { schedules, overrides, fromIso, toIso: toDateIso } = params;
+  const ids = new Set<string>();
+
+  for (const o of overrides) {
+    if (!o.officer_id) continue;
+    if (o.override_date < fromIso || o.override_date > toDateIso) continue;
+    if (o.override_type === 'off') continue;   // หยุด = ไม่ถือว่ามีเวร
+    ids.add(o.officer_id);
+  }
+
+  for (const s of schedules) {
+    if (s.is_active === false) continue;
+    if (!s.officer_id) continue;
+    // ตารางหลักเป็นรายสัปดาห์ → ดูว่าสัปดาห์นั้นทับกับช่วงที่ถามไหม
+    const weeklyDates = datesForWeekdayBetween(fromIso, toDateIso, s.weekday);
+    if (weeklyDates.length === 0) continue;
+    // ถ้าทุกวันที่ตรงกันถูก override เป็น 'off' ให้ถือว่ามีเวรจริงเฉพาะวันที่ยังไม่ถูกปิด
+    const allOff = weeklyDates.every((d) =>
+      overrides.some((o) => o.override_date === d && o.shift_code === s.shift_code && o.override_type === 'off'),
+    );
+    if (!allOff) ids.add(s.officer_id);
+  }
+
+  return ids;
+}
+
+/** วันที่ที่ตรงกับ weekday ภายในช่วง [fromDate, toDate] */
+function datesForWeekdayBetween(fromDate: string, toDate: string, weekday: number): string[] {
+  const out: string[] = [];
+  const d = new Date(`${fromDate}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return out;
+  for (let i = 0; i <= 400; i++) {
+    const cur = new Date(d);
+    cur.setDate(d.getDate() + i);
+    const iso = toIso(cur);
+    if (iso > toDate) break;
+    if (cur.getDay() === weekday) out.push(iso);
+  }
+  return out;
 }
 
 /* ---------- ตรวจจับช่องว่าง / ขาดเวร ---------- */

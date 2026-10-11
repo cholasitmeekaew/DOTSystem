@@ -203,7 +203,8 @@ export function LeaveManagementPage() {
 
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateIso = new Date(d).toISOString().slice(0, 10);
-      for (const shift of ['day', 'night']) {
+      // กะที่ 1 / กะที่ 2 ตามรหัสกะใหม่ของตารางเวร (migration 0029)
+      for (const shift of ['s1', 's2'] as const) {
         rows.push({
           override_date: dateIso,
           shift_code: shift,

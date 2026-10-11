@@ -26,6 +26,44 @@ export interface PointsTxResult {
   entry: PointsLogEntry;
 }
 
+/* =============================================================
+ * Kill Switch: system_settings.auto_points_enabled
+ * -------------------------------------------------------------
+ * false → หยุดการคำนวณคะแนนอัตโนมัติทั้งหมดทันที
+ *         (หัวหน้ากรมยังให้/หักคะแนนเองผ่าน addOfficerPoints ได้ตามปกติ)
+ * อ่านค่าไม่ได้ หรือคอลัมน์ยังไม่มี → ถือว่าปิด เพื่อไม่ให้คะแนนที่
+ * ยังไม่ได้อนุมัติโดยอัตโนมัติ
+ * ============================================================= */
+export async function isAutoPointsEnabled(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from('system_settings')
+      .select('auto_points_enabled')
+      .eq('id', 1)
+      .maybeSingle();
+    if (error) return false;
+    // null/undefined = คอลัมน์ยังไม่มี → ปิดไว้
+    return (data as { auto_points_enabled?: boolean } | null)?.auto_points_enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ให้คะแนนอัตโนมัติ — ผ่าน kill switch ก่อนเสมอ
+ * ใช้แทนการเรียก addOfficerPoints ตรง ๆ ในทุกจุดที่คะแนนถูกคำนวณอัตโนมัติ
+ */
+export async function addAutomaticPoints(
+  officerId: string,
+  delta: number,
+  reason: string,
+  actorId: string,
+  actorName: string,
+): Promise<PointsTxResult | null> {
+  if (!(await isAutoPointsEnabled())) return null;
+  return addOfficerPoints(officerId, delta, reason, actorId, actorName);
+}
+
 export async function addOfficerPoints(
   officerId: string,
   delta: number,

@@ -23,7 +23,7 @@ import { supabase } from '../supabase';
 import type {
   Officer, DutyLog, WorkReport, ServiceRecord, SystemSettings,
 } from '../types';
-import { addOfficerPoints } from './points';
+import { addAutomaticPoints, isAutoPointsEnabled } from './points';
 
 /* ---------- เกณฑ์คะแนน ---------- */
 
@@ -47,20 +47,7 @@ export async function getSystemSettings(): Promise<SystemSettings | null> {
   return (data as SystemSettings | null) ?? null;
 }
 
-/**
- * ตรวจว่าเครื่องยนต์คะแนนอัตโนมัติเปิดอยู่หรือไม่
- * ถ้าอ่านค่าไม่ได้ (เช่น ยังไม่ได้ apply migration 0028) ให้ถือว่าปิดไว้
- * เพื่อไม่ให้คะแนนที่ไม่ได้อนุมัติโดยอัตโนมัติ
- */
-export async function isAutoPointsEnabled(): Promise<boolean> {
-  try {
-    const settings = await getSystemSettings();
-    // undefined = คอลัมน์ยังไม่มี → ปิดไว้เพื่อความปลอดภัย
-    return settings?.auto_points_enabled === true;
-  } catch {
-    return false;
-  }
-}
+export { isAutoPointsEnabled };
 
 /* ---------- แกนหลัก: ให้คะแนนแบบกันซ้ำ ---------- */
 
@@ -108,13 +95,15 @@ export async function awardAutoPoints(params: {
   }
 
   try {
-    const result = await addOfficerPoints(
+    // addAutomaticPoints ตรวจ kill switch ซ้ำอีกชั้น (ป้องกันสวิตช์ถูกปิดระหว่างรอบ)
+    const result = await addAutomaticPoints(
       officerId,
       delta,
       reason,
       AUTO_POINTS_ACTOR.id,
       AUTO_POINTS_ACTOR.name,
     );
+    if (!result) return { awarded: false, delta, skipReason: 'disabled' };
     // ประทับหลังให้สำเร็จเท่านั้น — ถ้าให้คะแนนไม่ได้จะไม่ข้ามรอบหน้า
     await supabase.from('points_award_marks').insert({
       mark_key: markKey,
@@ -225,6 +214,8 @@ export async function applyMissingReportPoints(
 export async function applyWeeklyAbsencePoints(params: {
   officers: Officer[];
   dutyLogs: DutyLog[];
+  /** เจ้าหน้าที่ที่ "มีในตารางเวร" ช่วง 7 วันที่ผ่านมา (จากตารางเวรจริง) */
+  scheduledOfficerIds?: string[];
   approvedLeaveOfficerIds: string[];
 }): Promise<AutoAwardResult[]> {
   const { officers, dutyLogs, approvedLeaveOfficerIds } = params;
@@ -245,9 +236,16 @@ export async function applyWeeklyAbsencePoints(params: {
     workedSince.set(log.officer_id, (workedSince.get(log.officer_id) ?? 0) + 1);
   }
 
+  // ถ้ามีตารางเวรให้มา ให้ตัดคนที่ "ไม่ได้อยู่ในตารางเวร" ออกก่อน
+  // (คนที่ไม่ได้ลงตารางไม่ถือว่าขาดเวร)
+  const scheduled = params.scheduledOfficerIds
+    ? new Set(params.scheduledOfficerIds)
+    : null;
+
   const results: AutoAwardResult[] = [];
   for (const officer of officers) {
     if (officer.status !== 'active') continue;
+    if (scheduled && !scheduled.has(officer.id)) continue;
     if ((workedSince.get(officer.id) ?? 0) > 0) continue;
     if (onLeave.has(officer.id)) continue;   // กำลังลาอยู่ = ไม่ถือว่าขาดเวร
 

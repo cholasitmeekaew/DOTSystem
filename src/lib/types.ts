@@ -274,10 +274,41 @@ export const WORK_REPORT_STATUS_LABELS: Record<WorkReportStatus, string> = {
   rejected: 'ไม่อนุมัติ',
 };
 
-/* ============== ตารางเวรปฏิบัติงาน (migration 0028) ============== */
+/* ============== ตารางเวรปฏิบัติงาน (migration 0028, ปรับใน 0029) ==============
+ * กะเปลี่ยนจาก "กะเช้า/กะดึก" เป็น "กะที่ 1 / กะที่ 2" ให้ตรงกับเวลาเปิดเซิร์ฟเวอร์จริง
+ *   จันทร์–ศุกร์    เซิร์ฟเปิด 18:30–21:30 → กะที่ 1: 18:30–20:00 · กะที่ 2: 20:00–21:30
+ *   เสาร์–อาทิตย์ เซิร์ฟเปิด 18:30–23:00 → กะที่ 1: 18:30–20:45 · กะที่ 2: 20:45–23:00
+ * ======================================================================== */
 
-export type ShiftCode = 'day' | 'night';
+export type ShiftCode = 's1' | 's2';
 export type ScheduleCellCode = ShiftCode | 'off';
+
+/** ตารางเวลาของแต่ละกะ แยกตามประเภทวัน */
+export interface ShiftWindow {
+  start: string;
+  end: string;
+}
+
+export const WEEKDAY_SHIFT_WINDOWS: Record<ShiftCode, ShiftWindow> = {
+  s1: { start: '18:30', end: '20:00' },
+  s2: { start: '20:00', end: '21:30' },
+};
+
+export const WEEKEND_SHIFT_WINDOWS: Record<ShiftCode, ShiftWindow> = {
+  s1: { start: '18:30', end: '20:45' },
+  s2: { start: '20:45', end: '23:00' },
+};
+
+/** เวลาเปิด/ปิดเซิร์ฟเวอร์ */
+export const SERVER_HOURS = {
+  weekday: { start: '18:30', end: '21:30' },
+  weekend: { start: '18:30', end: '23:00' },
+} as const;
+
+/** 0 = อาทิตย์, 6 = เสาร์ → เป็นวันหยุด */
+export function isWeekend(weekday: number): boolean {
+  return weekday === 0 || weekday === 6;
+}
 
 export interface DutySchedule {
   id: string;
@@ -334,13 +365,13 @@ export const WEEKDAY_SHORT: Record<number, string> = {
 };
 
 export const SHIFT_LABELS: Record<ScheduleCellCode, string> = {
-  day: 'กะเช้า',
-  night: 'กะดึก',
+  s1: 'กะที่ 1',
+  s2: 'กะที่ 2',
   off: 'หยุด',
 };
 
 export const OVERRIDE_TYPE_LABELS: Record<ScheduleOverrideType, string> = {
-  swap: 'สลับเวร',
+  swap: 'เวรสลับ',
   leave: 'ลา',
   extra: 'เวรพิเศษ',
   off: 'หยุดประจำสัปดาห์',

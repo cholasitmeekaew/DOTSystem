@@ -3,7 +3,7 @@ import {
   Clock, LogIn, LogOut, Users, Trash2, Power, AlertCircle, Image as ImageIcon, Shield,
   BarChart3, Zap, Download, Search, Filter, FileText,
   Plus, X, Upload, Loader2, ExternalLink, CalendarDays, ChevronLeft, ChevronRight,
-  CheckCircle2, XCircle, Award, Trophy, Sparkles,
+  CheckCircle2, XCircle, Award, Trophy, Sparkles, Repeat,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import {
@@ -20,8 +20,8 @@ import type { RankItem } from '../../components/RankedList';
 import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
 import { uploadImage } from '../../lib/storage';
 import {
-  buildWeeklyRoster, shiftWeek, toIso, findRosterGaps, findLogsMissingReport,
-  findWeeklyAbsentees, cellToneClass, SHIFT_ORDER,
+  buildWeeklyRoster, shiftWeek, toIso, findRosterGaps, cellToneClass,
+  resolveScheduledOfficerIds, shiftWindowFor, dayTypeLabel, serverHoursFor, SHIFT_ORDER,
 } from '../../lib/dutySchedule';
 import {
   isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
@@ -248,15 +248,28 @@ export function OperationsPage() {
 
   // =============== PPS engine ===============
   async function toggleAutoPoints() {
-    if (!officer) return;
+    if (!officer || pointsBusy) return;
     const next = !autoPointsOn;
+
+    // optimistic — ถ้า DB ไม่ผ่านจะย้อนกลับทันที
     setAutoPointsOn(next);
-    await supabase.from('system_settings').update({
+    setSettings((s) => (s ? { ...s, auto_points_enabled: next } : s));
+    setPointsNotice(null);
+
+    const { error } = await supabase.from('system_settings').update({
       auto_points_enabled: next,
       updated_at: new Date().toISOString(),
       updated_by: officer.id,
       updated_by_name: officer.name,
     }).eq('id', 1);
+
+    if (error) {
+      setAutoPointsOn(!next);                                    // ย้อนค่าใน UI
+      setSettings((s) => (s ? { ...s, auto_points_enabled: !next } : s));
+      setPointsNotice(`เปลี่ยนสวิตช์ไม่สำเร็จ: ${error.message}`);
+      return;
+    }
+
     await supabase.from('audit_logs').insert({
       action: next ? 'ENABLE_AUTO_POINTS' : 'DISABLE_AUTO_POINTS',
       target_type: 'system',
@@ -264,7 +277,24 @@ export function OperationsPage() {
       performed_by_name: officer.name,
       details: {},
     });
-    setSettings((s) => (s ? { ...s, auto_points_enabled: next } : s));
+    setPointsNotice(next
+      ? 'เปิด PPS Engine แล้ว — ระบบจะให้/หักคะแนนอัตโนมัติตามเกณฑ์'
+      : 'ปิด PPS Engine แล้ว — ระบบจะไม่ให้หักคะแนนอัตโนมัติ (หัวหน้ากรมยังให้คะแนนเองได้)');
+  }
+
+  /** สลับเวรทั้งสัปดาห์: เขียน override ทุกวันของสัปดาห์ที่แสดงอยู่ */
+  async function swapShiftForWeek(shift: ShiftCode, toOfficerId: string) {
+    const to = rosterOfficers.find((o) => o.id === toOfficerId);
+    if (!to) return;
+    for (const day of weeklyRoster.days) {
+      await saveOverride({
+        date: day.date,
+        shift,
+        officerId: toOfficerId,
+        type: 'swap',
+        note: `สลับเวรเป็น ${to.name} (สัปดาห์นี้)`,
+      });
+    }
   }
 
   /** สแกนหาคะแนนที่ค้าง แล้วให้คะแนน/หักคะแนนตามเกณฑ์ */
@@ -273,11 +303,22 @@ export function OperationsPage() {
     setPointsBusy(true);
     setPointsNotice(null);
     try {
-      const [allOfficers, allLogs, allReports, leavesRes] = await Promise.all([
+      const todayIso = toIso(new Date());
+      const weekStartDate = new Date();
+      weekStartDate.setDate(weekStartDate.getDate() - 7);
+      const weekStart7 = toIso(weekStartDate);
+
+      const [allOfficers, allLogs, allReports, leavesRes, schedRes, ovRes] = await Promise.all([
         supabase.from('officers').select('*').eq('status', 'active'),
         supabase.from('duty_logs').select('*').is('deleted_at', null),
         supabase.from('work_reports').select('*'),
         supabase.from('officer_leaves').select('officer_id').eq('status', 'approved'),
+        supabase.from('duty_schedules').select('*').eq('is_active', true),
+        supabase
+          .from('schedule_overrides')
+          .select('*')
+          .gte('override_date', weekStart7)
+          .lte('override_date', todayIso),
       ]);
 
       const officers = (allOfficers.data ?? []) as Officer[];
@@ -289,11 +330,24 @@ export function OperationsPage() {
           .filter((id): id is string => !!id),
       );
 
+      // ใช้ "ตารางเวร" ตรวจจับว่าใครมีผังเวรแต่ไม่ได้เข้าเวรจริง
+      const scheduledIds = resolveScheduledOfficerIds({
+        schedules: (schedRes.data ?? []) as unknown as DutySchedule[],
+        overrides: (ovRes.data ?? []) as unknown as ScheduleOverride[],
+        fromIso: weekStart7,
+        toIso: todayIso,
+      });
+
       const results = [
         ...(await applyMissingReportPoints(logs, new Set(
           reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
         ))),
-        ...(await applyWeeklyAbsencePoints({ officers, dutyLogs: logs, approvedLeaveOfficerIds: [...onLeave] })),
+        ...(await applyWeeklyAbsencePoints({
+          officers,
+          dutyLogs: logs,
+          scheduledOfficerIds: [...scheduledIds],
+          approvedLeaveOfficerIds: [...onLeave],
+        })),
       ];
 
       const given = results.filter((r) => r.awarded);
@@ -958,6 +1012,7 @@ export function OperationsPage() {
           onSaveBase={saveScheduleCell}
           onSaveOverride={saveOverride}
           onClearOverride={clearOverride}
+          onSwapWeek={swapShiftForWeek}
         />
       )}
 
@@ -1960,7 +2015,7 @@ function StatBox({ label, value, tone }: { label: string; value: number; tone: '
 /* ---------- แท็บตารางเวร (Weekly Roster) ---------- */
 function WeeklyRosterPanel({
   roster, gaps, weekAnchor, onPrev, onNext, onToday,
-  canEdit, editingCell, onEditCell, officers, onSaveBase, onSaveOverride, onClearOverride,
+  canEdit, editingCell, onEditCell, officers, onSaveBase, onSaveOverride, onClearOverride, onSwapWeek,
 }: {
   roster: ReturnType<typeof buildWeeklyRoster>;
   gaps: ReturnType<typeof findRosterGaps>;
@@ -1978,6 +2033,7 @@ function WeeklyRosterPanel({
     type: ScheduleOverride['override_type']; note: string | null;
   }) => void;
   onClearOverride: (date: string, shift: ScheduleCellCode) => void;
+  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => void;
 }) {
   const weekLabel = `${roster.days[0]?.dayOfMonth ?? ''}–${roster.days[6]?.dayOfMonth ?? ''} ${monthLabelOf(roster.days[0]?.date ?? weekAnchor)}`;
 
@@ -1989,6 +2045,10 @@ function WeeklyRosterPanel({
           <div>
             <h2 className="text-sm font-bold text-white">ตารางเวรประจำสัปดาห์</h2>
             <p className="text-xs text-gray-400">สัปดาห์ของ {weekLabel}</p>
+            <p className="text-[11px] text-amber-400/90 mt-0.5">
+              เวลาเปิดเซิร์ฟเวอร์ · จันทร์–ศุกร์ {serverHoursFor(1).start}–{serverHoursFor(1).end}
+              {' · '}เสาร์–อาทิตย์ {serverHoursFor(6).start}–{serverHoursFor(6).end}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
@@ -2012,7 +2072,13 @@ function WeeklyRosterPanel({
               <tr>
                 <th className="w-24 text-left">กะ</th>
                 {roster.days.map((d) => (
-                  <th key={d.date} className={`text-center ${d.isToday ? 'text-amber-300' : ''}`}>
+                  <th
+                    key={d.date}
+                    className={`text-center ${d.isToday ? 'text-amber-300' : ''} ${
+                      roster.days.findIndex((x) => x.date === d.date) >= 5 ? 'bg-blue-500/[0.06]' : ''
+                    }`}
+                    title={dayTypeLabel(d.weekday)}
+                  >
                     {d.label} {d.dayOfMonth}
                     {d.isToday && <span className="block text-[9px]">วันนี้</span>}
                   </th>
@@ -2022,8 +2088,21 @@ function WeeklyRosterPanel({
             <tbody>
               {SHIFT_ORDER.map((shift) => (
                 <tr key={shift}>
-                  <td className="px-3 py-3">
+                  <td className="px-3 py-3 align-top">
                     <div className="text-xs font-semibold text-white">{SHIFT_LABELS[shift]}</div>
+                    <div className="text-[10px] text-amber-400/90 font-mono leading-tight">
+                      จ–ศ {shiftWindowFor(1, shift).start}–{shiftWindowFor(1, shift).end}
+                    </div>
+                    <div className="text-[10px] text-sky-400/90 font-mono leading-tight">
+                      ส–อ {shiftWindowFor(6, shift).start}–{shiftWindowFor(6, shift).end}
+                    </div>
+                    {canEdit && (
+                      <WeekSwapControl
+                        shift={shift}
+                        officers={officers}
+                        onSwapWeek={onSwapWeek}
+                      />
+                    )}
                   </td>
                   {roster.days.map((d) => {
                     const cell = roster.rows[shift]?.[d.date];
@@ -2032,8 +2111,13 @@ function WeeklyRosterPanel({
                     return (
                       <td key={d.date} className="px-1.5 py-1.5">
                         <div
-                          className={`rounded-lg border px-2 py-2 min-h-[58px] flex flex-col items-center justify-center gap-1 ${cellToneClass(cell)} ${d.isToday ? 'ring-1 ring-amber-500/40' : ''}`}
+                          className={`rounded-lg border px-1.5 py-2 min-h-[72px] flex flex-col items-center justify-center gap-1 ${cellToneClass(cell)} ${
+                            d.isToday ? 'ring-1 ring-amber-500/40' : ''
+                          } ${cell.weekend ? 'bg-blue-500/[0.05]' : ''}`}
                         >
+                          <span className="text-[9px] font-mono opacity-70">
+                            {cell.startTime}–{cell.endTime}
+                          </span>
                           <span className="text-[11px] font-medium text-center leading-tight truncate w-full">
                             {cell.officerName ?? '— ว่าง —'}
                           </span>
@@ -2163,6 +2247,38 @@ function CellEditor({
           <X size={11} />
         </button>
       </div>
+    </div>
+  );
+}
+
+/** สลับเวรทั้งสัปดาห์ — เขียน override ทุกวันของสัปดาห์ที่แสดงอยู่ */
+function WeekSwapControl({
+  shift, officers, onSwapWeek,
+}: {
+  shift: ShiftCode;
+  officers: Officer[];
+  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => void;
+}) {
+  const [value, setValue] = useState('');
+  return (
+    <div className="mt-1.5 pt-1.5 border-t border-blue-900/40">
+      <div className="flex items-center gap-1 text-[9px] text-gray-500 mb-1">
+        <Repeat size={9} /> สลับเวรทั้งสัปดาห์
+      </div>
+      <select
+        className="input-field !py-1 !px-1.5 !text-[10px] w-full"
+        value={value}
+        onChange={(e) => {
+          setValue(e.target.value);
+          if (e.target.value) onSwapWeek(shift, e.target.value);
+        }}
+        title="เลือกผู้รับผิดชอบที่ต้องการสลับมาทั้งสัปดาห์นี้"
+      >
+        <option value="">— ไม่สลับ —</option>
+        {officers.map((o) => (
+          <option key={o.id} value={o.id}>{o.name}</option>
+        ))}
+      </select>
     </div>
   );
 }
