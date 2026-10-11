@@ -13,6 +13,8 @@
 
 
 
+
+
 -- =====================================================================
 -- 0027_officer_generation_and_sort_order.sql
 -- =====================================================================
@@ -149,8 +151,10 @@ on conflict (leave_type) do nothing;
 alter table officer_leaves add column if not exists days integer not null default 0;
 
 -- Backfill จำนวนวันของใบลาเดิม (นับแบบรวมวันเริ่มและวันสิ้นสุด)
+-- ใน PostgreSQL: date - date ได้จำนวนวัน (integer) โดยตรง
+-- +1 เพราะนับรวมทั้งวันเริ่มและวันสิ้นสุด
 update officer_leaves
-set days = (date_diff('day', start_date::date, end_date::date) + 1)
+set days = ((end_date::date - start_date::date) + 1)
 where days is null or days <= 0;
 
 create index if not exists officer_leaves_officer_dates_idx
@@ -417,7 +421,6 @@ create index if not exists duty_schedules_slot_idx
   on duty_schedules (weekday, shift_code);
 create index if not exists schedule_overrides_slot_idx
   on schedule_overrides (override_date, shift_code);
-
 
 -- =====================================================================
 -- ตรวจสอบผลลัพธ์ (รันหลังจากส่วนบนสำเร็จ) — ทุกบรรทัดควรได้ค่า ok
