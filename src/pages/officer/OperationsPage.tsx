@@ -2,10 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Clock, LogIn, LogOut, Users, Trash2, Power, AlertCircle, Image as ImageIcon, Shield,
   BarChart3, Zap, Download, Search, Filter, FileText,
-  Plus, X, Upload, Loader2, ExternalLink,
+  Plus, X, Upload, Loader2, ExternalLink, CalendarDays, ChevronLeft, ChevronRight,
+  CheckCircle2, XCircle, Award, Trophy, Sparkles,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { Citizen, DutyLog, Officer, SystemSettings, WorkReport, WorkReportCase, DEPARTMENT_LABELS } from '../../lib/types';
+import {
+  Citizen, DutyLog, Officer, SystemSettings, WorkReport, WorkReportCase, DEPARTMENT_LABELS,
+  DutySchedule, ScheduleOverride, ShiftCode, ScheduleCellCode, WorkReportStatus,
+  WORK_REPORT_STATUS_LABELS, SHIFT_LABELS, OVERRIDE_TYPE_LABELS,
+} from '../../lib/types';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { ConfirmDialog, Modal } from '../../components/Modal';
@@ -14,6 +19,14 @@ import { PageHeader } from '../../components/PageHeader';
 import type { RankItem } from '../../components/RankedList';
 import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
 import { uploadImage } from '../../lib/storage';
+import {
+  buildWeeklyRoster, shiftWeek, toIso, findRosterGaps, findLogsMissingReport,
+  findWeeklyAbsentees, cellToneClass, SHIFT_ORDER,
+} from '../../lib/dutySchedule';
+import {
+  isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
+  applyMissingReportPoints, applyWeeklyAbsencePoints, AUTO_POINTS_RULES,
+} from '../../lib/api/autoPoints';
 
 type ReportCaseDraft = {
   case_name: string;
@@ -34,6 +47,7 @@ type ReportTarget = {
 
 export function OperationsPage() {
   const { officer, setAuth, isCommissioner } = useAuth();
+  const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
   const [onDutyOfficers, setOnDutyOfficers] = useState<Officer[]>([]);
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,6 +84,237 @@ export function OperationsPage() {
   const [viewCitizen, setViewCitizen] = useState<Citizen | null>(null);
   const [viewCitizenStats, setViewCitizenStats] = useState({ vehicles: 0, licenses: 0, fees: 0 });
 
+  // ---- ระบบตารางเวร (migration 0028) ----
+  const [weekAnchor, setWeekAnchor] = useState(() => toIso(new Date()));
+  const [schedules, setSchedules] = useState<DutySchedule[]>([]);
+  const [overrides, setOverrides] = useState<ScheduleOverride[]>([]);
+  const [rosterOfficers, setRosterOfficers] = useState<Officer[]>([]);
+  const [editingCell, setEditingCell] = useState<{ date: string; shift: ScheduleCellCode } | null>(null);
+  const [autoPointsOn, setAutoPointsOn] = useState<boolean>(false);
+  const [pointsBusy, setPointsBusy] = useState(false);
+  const [pointsNotice, setPointsNotice] = useState<string | null>(null);
+
+  // ---- ระบบอนุมัติรายงานปฏิบัติงาน ----
+  const [reviewingWorkReport, setReviewingWorkReport] = useState<WorkReport | null>(null);
+  const [reportReviewAction, setReportReviewAction] = useState<'approved' | 'rejected'>('approved');
+  const [reportReviewNote, setReportReviewNote] = useState('');
+
+  // =============== ตารางเวร ===============
+  async function fetchScheduleData() {
+    const weekStart = shiftWeek(weekAnchor, 0);
+    const weekEnd = shiftWeek(weekAnchor, 1);
+    const [schedRes, ovRes, offRes] = await Promise.all([
+      supabase.from('duty_schedules').select('*').eq('is_active', true).order('weekday'),
+      supabase
+        .from('schedule_overrides')
+        .select('*')
+        .gte('override_date', weekStart)
+        .lt('override_date', weekEnd),
+      supabase.from('officers').select('*').eq('status', 'active').order('name'),
+    ]);
+    setSchedules((schedRes.data ?? []) as unknown as DutySchedule[]);
+    setOverrides((ovRes.data ?? []) as unknown as ScheduleOverride[]);
+    setRosterOfficers((offRes.data ?? []) as Officer[]);
+  }
+
+  async function saveScheduleCell(params: {
+    weekday: number;
+    shift: ShiftCode;
+    officerId: string | null;
+  }) {
+    const { weekday, shift, officerId } = params;
+    const { data: existing } = await supabase
+      .from('duty_schedules')
+      .select('id')
+      .eq('weekday', weekday)
+      .eq('shift_code', shift)
+      .maybeSingle();
+
+    const payload = {
+      weekday,
+      shift_code: shift,
+      shift_name: SHIFT_LABELS[shift],
+      officer_id: officerId,
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (existing && existing.id) {
+      await supabase.from('duty_schedules').update(payload).eq('id', existing.id);
+    } else {
+      await supabase.from('duty_schedules').insert(payload);
+    }
+    await fetchScheduleData();
+  }
+
+  /** บันทึกข้อยกเว้นของวันนั้น (สลับเวร / ลา / เวรพิเศษ / หยุด) */
+  async function saveOverride(params: {
+    date: string;
+    shift: ScheduleCellCode;
+    officerId: string | null;
+    type: ScheduleOverride['override_type'];
+    note: string | null;
+  }) {
+    const { date, shift, officerId, type, note } = params;
+    const { data: existing } = await supabase
+      .from('schedule_overrides')
+      .select('id')
+      .eq('override_date', date)
+      .eq('shift_code', shift)
+      .maybeSingle();
+
+    const payload = {
+      override_date: date,
+      shift_code: shift,
+      officer_id: officerId,
+      override_type: type,
+      note,
+      source: 'manual' as const,
+      created_by: officer?.id ?? null,
+      created_by_name: officer?.name ?? null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (existing && existing.id) {
+      await supabase.from('schedule_overrides').update(payload).eq('id', existing.id);
+    } else {
+      await supabase.from('schedule_overrides').insert(payload);
+    }
+    setEditingCell(null);
+    await fetchScheduleData();
+  }
+
+  async function clearOverride(date: string, shift: ScheduleCellCode) {
+    await supabase.from('schedule_overrides').delete().eq('override_date', date).eq('shift_code', shift);
+    setEditingCell(null);
+    await fetchScheduleData();
+  }
+
+  const weeklyRoster = useMemo(
+    () => buildWeeklyRoster({ anchorIso: weekAnchor, schedules, overrides, officers: rosterOfficers }),
+    [weekAnchor, schedules, overrides, rosterOfficers],
+  );
+  const rosterGaps = useMemo(() => findRosterGaps(weeklyRoster), [weeklyRoster]);
+
+  // =============== อนุมัติรายงานปฏิบัติงาน ===============
+  async function submitReportReview() {
+    if (!reviewingWorkReport || !officer) return;
+    const target = reviewingWorkReport;
+    const nextStatus: WorkReportStatus = reportReviewAction;
+
+    const { error } = await supabase.from('work_reports').update({
+      status: nextStatus,
+      reviewed_by: officer.id,
+      reviewed_by_name: officer.name,
+      reviewed_at: new Date().toISOString(),
+      review_note: reportReviewNote || null,
+      reviewed_points: nextStatus === 'approved' ? AUTO_POINTS_RULES.reportApproved : 0,
+      updated_at: new Date().toISOString(),
+    }).eq('id', target.id);
+
+    if (error) {
+      alert(`บันทึกผลการตรวจรายงานไม่สำเร็จ: ${error.message}`);
+      return;
+    }
+
+    // อนุมัติแล้ว → +10 PPS อัตโนมัติ (ถ้าสวิตช์เปิดอยู่)
+    if (nextStatus === 'approved') {
+      await applyReportApprovalPoints({ ...target, status: nextStatus });
+    }
+
+    setReviewingWorkReport(null);
+    setReportReviewNote('');
+    await fetchData();
+  }
+
+  function openReportReview(report: WorkReport, action: 'approved' | 'rejected') {
+    setReviewingWorkReport(report);
+    setReportReviewAction(action);
+    setReportReviewNote(report.review_note ?? '');
+  }
+
+  const pendingReports = useMemo(
+    () => workReports.filter((r) => (r.status ?? 'pending') === 'pending'),
+    [workReports],
+  );
+  const approvedReports = useMemo(
+    () => workReports.filter((r) => r.status === 'approved'),
+    [workReports],
+  );
+  const rejectedReports = useMemo(
+    () => workReports.filter((r) => r.status === 'rejected'),
+    [workReports],
+  );
+
+  // =============== PPS engine ===============
+  async function toggleAutoPoints() {
+    if (!officer) return;
+    const next = !autoPointsOn;
+    setAutoPointsOn(next);
+    await supabase.from('system_settings').update({
+      auto_points_enabled: next,
+      updated_at: new Date().toISOString(),
+      updated_by: officer.id,
+      updated_by_name: officer.name,
+    }).eq('id', 1);
+    await supabase.from('audit_logs').insert({
+      action: next ? 'ENABLE_AUTO_POINTS' : 'DISABLE_AUTO_POINTS',
+      target_type: 'system',
+      performed_by: officer.id,
+      performed_by_name: officer.name,
+      details: {},
+    });
+    setSettings((s) => (s ? { ...s, auto_points_enabled: next } : s));
+  }
+
+  /** สแกนหาคะแนนที่ค้าง แล้วให้คะแนน/หักคะแนนตามเกณฑ์ */
+  async function runPointsSweep() {
+    if (!officer || !autoPointsOn) return;
+    setPointsBusy(true);
+    setPointsNotice(null);
+    try {
+      const [allOfficers, allLogs, allReports, leavesRes] = await Promise.all([
+        supabase.from('officers').select('*').eq('status', 'active'),
+        supabase.from('duty_logs').select('*').is('deleted_at', null),
+        supabase.from('work_reports').select('*'),
+        supabase.from('officer_leaves').select('officer_id').eq('status', 'approved'),
+      ]);
+
+      const officers = (allOfficers.data ?? []) as Officer[];
+      const logs = (allLogs.data ?? []) as DutyLog[];
+      const reports = (allReports.data ?? []) as WorkReport[];
+      const onLeave = new Set(
+        ((leavesRes.data ?? []) as { officer_id: string | null }[])
+          .map((r) => r.officer_id)
+          .filter((id): id is string => !!id),
+      );
+
+      const results = [
+        ...(await applyMissingReportPoints(logs, new Set(
+          reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
+        ))),
+        ...(await applyWeeklyAbsencePoints({ officers, dutyLogs: logs, approvedLeaveOfficerIds: [...onLeave] })),
+      ];
+
+      const given = results.filter((r) => r.awarded);
+      setPointsNotice(
+        given.length === 0
+          ? 'ไม่มีเหตุการณ์ที่ต้องให้คะแนน (หรือให้ไปแล้วทั้งหมด)'
+          : `ให้คะแนนอัตโนมัติ ${given.length} รายการ · รวม ${given.reduce((s, r) => s + r.delta, 0)} คะแนน`,
+      );
+      await fetchData();
+    } catch (e) {
+      setPointsNotice(`เรียกใช้ PPS engine ไม่สำเร็จ: ${(e as Error).message}`);
+    } finally {
+      setPointsBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    fetchScheduleData();
+    isAutoPointsEnabled().then(setAutoPointsOn);
+  }, [weekAnchor]);
+
   useEffect(() => {
     fetchData();
     if (!isCommissioner) return;
@@ -80,7 +325,14 @@ export function OperationsPage() {
     const reportsCh = supabase.channel('work_reports_rt_ops')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'work_reports' }, () => fetchData())
       .subscribe();
-    return () => { supabase.removeChannel(statsCh); supabase.removeChannel(reportsCh); };
+    const schedCh = supabase.channel('duty_schedules_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'duty_schedules' }, () => fetchScheduleData())
+      .subscribe();
+    return () => {
+      supabase.removeChannel(statsCh);
+      supabase.removeChannel(reportsCh);
+      supabase.removeChannel(schedCh);
+    };
   }, [officer?.id]);
 
   async function fetchAllLogs() {
@@ -268,13 +520,22 @@ export function OperationsPage() {
     if (!error) {
       // ถ้าออกเวรใน DB ไปแล้วตอนกดปุ่ม (โหมดเขียนทีหลัง) ข้ามขั้นออกเวร
       if (!workReportTarget.alreadyCheckedOut) {
+        const dutyOutAt = workReportTarget.clockOut;
+        const durMinutes = workReportTarget.durationMinutes;
         await supabase.from('duty_logs').update({
-          clock_out: workReportTarget.clockOut,
-          duration_minutes: workReportTarget.durationMinutes,
+          clock_out: dutyOutAt,
+          duration_minutes: durMinutes,
           checkout_method: 'self',
         }).eq('id', workReportTarget.log.id);
         await supabase.from('officers').update({ is_on_duty: false, updated_at: new Date().toISOString() }).eq('id', officer.id);
         setAuth({ ...officer, is_on_duty: false });
+        // +5 คะแนน/ชม. สำหรับเวรที่ออกตามปกติ
+        await applyCheckoutPoints({
+          ...workReportTarget.log,
+          clock_out: dutyOutAt,
+          duration_minutes: durMinutes,
+          checkout_method: 'self',
+        } as DutyLog);
       }
       closeReportEditor();
       await fetchData();
@@ -423,6 +684,15 @@ export function OperationsPage() {
             forced_by_name: officer.name,
             checkout_method: 'forced',
           }).eq('id', activeLog.id);
+          // -15 คะแนน เมื่อถูกบังคับให้ออกเวร
+          await applyCheckoutPoints({
+            ...(activeLog as DutyLog),
+            clock_out: now.toISOString(),
+            duration_minutes: dur,
+            forced_by: officer.id,
+            forced_by_name: officer.name,
+            checkout_method: 'forced',
+          } as DutyLog);
         }
         await supabase.from('officers').update({ is_on_duty: false, updated_at: now.toISOString() }).eq('id', o.id);
       }
@@ -493,6 +763,13 @@ export function OperationsPage() {
     await fetchData();
     if (isCommissioner) await fetchAllLogs();
     setClockLoading(false);
+    // +5 คะแนน/ชม. เมื่อออกเวรตามปกติ
+    await applyCheckoutPoints({
+      ...(activeLog as DutyLog),
+      clock_out: now.toISOString(),
+      duration_minutes: dur,
+      checkout_method: 'self',
+    } as DutyLog);
     openReportEditor({
       log: activeLog as DutyLog,
       clockOut: now.toISOString(),
@@ -522,6 +799,15 @@ export function OperationsPage() {
         forced_by_name: officer.name,
         checkout_method: 'forced',
       }).eq('id', activeLog.id);
+      // -15 คะแนน เมื่อถูกบังคับให้ออกเวร
+      await applyCheckoutPoints({
+        ...(activeLog as DutyLog),
+        clock_out: now.toISOString(),
+        duration_minutes: dur,
+        forced_by: officer.id,
+        forced_by_name: officer.name,
+        checkout_method: 'forced',
+      } as DutyLog);
     }
 
     await supabase.from('officers').update({ is_on_duty: false, updated_at: new Date().toISOString() }).eq('id', forceTarget.id);
@@ -628,6 +914,66 @@ export function OperationsPage() {
           </div>
         }
       />
+
+      {/* ---------- แท็บ ---------- */}
+      <div className="card p-1.5 mb-5 flex items-center gap-1.5 overflow-x-auto">
+        <span className="ph-corner ph-corner-tl" aria-hidden />
+        <TabButton active={opsTab === 'duty'} onClick={() => setOpsTab('duty')} icon={<Clock size={14} />} label="ปฏิบัติงาน" />
+        <TabButton active={opsTab === 'roster'} onClick={() => setOpsTab('roster')} icon={<CalendarDays size={14} />} label="ตารางเวร" />
+        {isCommissioner && (
+          <TabButton
+            active={opsTab === 'approvals'}
+            onClick={() => setOpsTab('approvals')}
+            icon={<FileText size={14} />}
+            label="อนุมัติรายงาน"
+            badge={pendingReports.length > 0 ? pendingReports.length : undefined}
+          />
+        )}
+      </div>
+
+      {/* ---------- แท็บ: อนุมัติรายงานปฏิบัติงาน ---------- */}
+      {opsTab === 'approvals' && isCommissioner && (
+        <WorkReportApprovalPanel
+          pending={pendingReports}
+          approved={approvedReports}
+          rejected={rejectedReports}
+          caseCounts={reportCaseCounts}
+          onReview={openReportReview}
+        />
+      )}
+
+      {/* ---------- แท็บ: ตารางเวร ---------- */}
+      {opsTab === 'roster' && (
+        <WeeklyRosterPanel
+          roster={weeklyRoster}
+          gaps={rosterGaps}
+          weekAnchor={weekAnchor}
+          onPrev={() => setWeekAnchor((w) => shiftWeek(w, -1))}
+          onNext={() => setWeekAnchor((w) => shiftWeek(w, 1))}
+          onToday={() => setWeekAnchor(toIso(new Date()))}
+          canEdit={!!isCommissioner}
+          editingCell={editingCell}
+          onEditCell={setEditingCell}
+          officers={rosterOfficers}
+          onSaveBase={saveScheduleCell}
+          onSaveOverride={saveOverride}
+          onClearOverride={clearOverride}
+        />
+      )}
+
+      {opsTab === 'duty' && (
+        <>
+      {/* PPS Engine Kill Switch (commissioner only) */}
+      {isCommissioner && (
+        <AutoPointsSwitch
+          enabled={autoPointsOn}
+          busy={pointsBusy}
+          notice={pointsNotice}
+          canEdit={!!isCommissioner}
+          onToggle={toggleAutoPoints}
+          onRun={runPointsSweep}
+        />
+      )}
 
       {/* Commissioner Duty System Toggle — prominent */}
       {isCommissioner && (
@@ -1299,6 +1645,9 @@ export function OperationsPage() {
         </Modal>
       )}
 
+      </>
+      )}
+
       {/* Force Checkout Confirm */}
       {forceTarget && (
         <ConfirmDialog
@@ -1322,8 +1671,518 @@ export function OperationsPage() {
           }}
         />
       )}
+
+      {/* ---------- Modal: ตรวจ/ไม่อนุมัติรายงานปฏิบัติงาน ---------- */}
+      {reviewingWorkReport && (
+        <Modal
+          title={reportReviewAction === 'approved' ? 'อนุมัติรายงานปฏิบัติงาน' : 'ไม่อนุมัติรายงานปฏิบัติงาน'}
+          onClose={() => { setReviewingWorkReport(null); setReportReviewNote(''); }}
+          size="md"
+        >
+          <div className="space-y-4">
+            <div className="card p-3 bg-navy-700/50">
+              <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                <span className="text-white font-semibold">{reviewingWorkReport.officer_name}</span>
+                <Badge variant="neutral">{getDutyCategoryLabel(reviewingWorkReport.duty_category)}</Badge>
+              </div>
+              <p className="text-xs text-gray-400 whitespace-pre-wrap">
+                {reviewingWorkReport.summary || reviewingWorkReport.report_text}
+              </p>
+              <p className="text-[10px] text-gray-500 mt-1.5 font-mono">
+                ส่งเมื่อ {formatTimestamp(reviewingWorkReport.created_at)} · {reportCaseCounts[reviewingWorkReport.id] ?? 0} เคส
+              </p>
+            </div>
+
+            {reportReviewAction === 'approved' && autoPointsOn && (
+              <div className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                <Award size={13} />
+                ระบบจะให้คะแนนอัตโนมัติ +{AUTO_POINTS_RULES.reportApproved} PPS แก่ผู้ส่งรายงาน
+              </div>
+            )}
+            {reportReviewAction === 'approved' && !autoPointsOn && (
+              <div className="text-xs text-gray-400 bg-navy-700/50 border border-blue-900/40 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                <AlertCircle size={13} />
+                สวิตช์คะแนนอัตโนมัติปิดอยู่ — อนุมัติแล้วจะไม่ได้คะแนนอัตโนมัติ
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                หมายเหตุ{reportReviewAction === 'rejected' ? ' (จำเป็นต้องระบุเหตุผล)' : ''}
+              </label>
+              <textarea
+                className="input-field resize-none"
+                rows={3}
+                placeholder={reportReviewAction === 'rejected' ? 'ระบุเหตุผลที่ไม่อนุมัติ...' : 'หมายเหตุ (ถ้ามี)...'}
+                value={reportReviewNote}
+                onChange={(e) => setReportReviewNote(e.target.value)}
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => { setReviewingWorkReport(null); setReportReviewNote(''); }}
+                className="btn-secondary flex-1"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={submitReportReview}
+                disabled={reportReviewAction === 'rejected' && !reportReviewNote.trim()}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed ${
+                  reportReviewAction === 'approved'
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    : 'bg-red-600 hover:bg-red-700 text-white'
+                }`}
+              >
+                {reportReviewAction === 'approved' ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+                {reportReviewAction === 'approved' ? 'ยืนยันอนุมัติ' : 'ยืนยันไม่อนุมัติ'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
+}
+
+/* =============================================================
+ * Subcomponents: แท็บ / ตารางเวร / อนุมัติรายงาน / สวิตช์คะแนน
+ * ============================================================= */
+
+function TabButton({
+  active, onClick, icon, label, badge,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  badge?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+        active
+          ? 'bg-gradient-to-b from-amber-300 to-amber-500 text-navy-900 shadow-lg shadow-amber-500/20'
+          : 'text-gray-400 hover:text-white hover:bg-navy-700'
+      }`}
+    >
+      {icon}
+      {label}
+      {badge !== undefined && badge > 0 && (
+        <span className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+          active ? 'bg-navy-900 text-amber-300' : 'bg-amber-500/20 text-amber-300'
+        }`}>
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/* ---------- สวิตช์คะแนนอัตโนมัติ ---------- */
+function AutoPointsSwitch({
+  enabled, busy, notice, canEdit, onToggle, onRun,
+}: {
+  enabled: boolean;
+  busy: boolean;
+  notice: string | null;
+  canEdit: boolean;
+  onToggle: () => void;
+  onRun: () => void;
+}) {
+  return (
+    <div className={`card p-3 sm:p-4 mb-5 border-2 ${enabled ? 'border-amber-500/30' : 'border-blue-900/40'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+            enabled ? 'bg-amber-500/15 text-amber-400' : 'bg-navy-700 text-gray-500'
+          }`}>
+            <Award size={20} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-white">PPS Engine — คะแนนอัตโนมัติ</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {enabled
+                ? 'ทำงานอัตโนมัติ — +5/ชม. ออกเวร · +10 รายงานได้รับอนุมัติ · +5 ปิดเคส · หักเมื่อขาดเวร/ไม่ส่งรายงาน/ถูกบังคับออกเวร/ร้องเรียนผลเป็นจริง'
+                : 'ปิดอยู่ — ระบบจะไม่ให้หักคะแนนอัตโนมัติ (หัวหน้ากรมยังให้/หักคะแนนเองได้)'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onRun}
+            disabled={!enabled || busy}
+            className="btn-secondary text-xs py-2 px-3 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="สแกนหาคะแนนที่ค้างแล้วให้คะแนน/หักคะแนนตามเกณฑ์"
+          >
+            {busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            สแกนคะแนนค้าง
+          </button>
+          {canEdit && (
+            <button
+              onClick={onToggle}
+              className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-amber-500' : 'bg-navy-600'}`}
+              aria-label="เปิด/ปิดคะแนนอัตโนมัติ"
+            >
+              <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-lg transition-transform ${enabled ? 'translate-x-8' : ''}`} />
+            </button>
+          )}
+        </div>
+      </div>
+      {notice && (
+        <p className="text-[11px] text-amber-300 mt-2.5 pt-2.5 border-t border-blue-900/40">{notice}</p>
+      )}
+    </div>
+  );
+}
+
+/* ---------- แท็บอนุมัติรายงานปฏิบัติงาน ---------- */
+function WorkReportApprovalPanel({
+  pending, approved, rejected, caseCounts, onReview,
+}: {
+  pending: WorkReport[];
+  approved: WorkReport[];
+  rejected: WorkReport[];
+  caseCounts: Record<string, number>;
+  onReview: (r: WorkReport, action: 'approved' | 'rejected') => void;
+}) {
+  const [tab, setTab] = useState<'pending' | 'approved' | 'rejected'>('pending');
+  const list = tab === 'pending' ? pending : tab === 'approved' ? approved : rejected;
+
+  const variant = (s: WorkReportStatus): 'warning' | 'success' | 'danger' =>
+    s === 'approved' ? 'success' : s === 'rejected' ? 'danger' : 'warning';
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <StatBox label="รอตรวจ" value={pending.length} tone="amber" />
+        <StatBox label="อนุมัติแล้ว" value={approved.length} tone="emerald" />
+        <StatBox label="ไม่อนุมัติ" value={rejected.length} tone="red" />
+      </div>
+
+      <div className="card p-1.5 flex items-center gap-1.5">
+        <div className="gold-toggle">
+          <button className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>
+            รอตรวจ ({pending.length})
+          </button>
+          <button className={tab === 'approved' ? 'active' : ''} onClick={() => setTab('approved')}>
+            อนุมัติแล้ว ({approved.length})
+          </button>
+          <button className={tab === 'rejected' ? 'active' : ''} onClick={() => setTab('rejected')}>
+            ไม่อนุมัติ ({rejected.length})
+          </button>
+        </div>
+      </div>
+
+      <div className="table-panel">
+        {list.length === 0 ? (
+          <div className="p-12 text-center">
+            <Trophy size={32} className="text-gray-600 mx-auto mb-2" />
+            <p className="text-gray-400 text-sm">
+              {tab === 'pending' ? 'ไม่มีรายงานค้างรอตรวจ' : 'ยังไม่มีรายการในหมวดนี้'}
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-blue-900/30">
+            {list.map((r) => {
+              const status = (r.status ?? 'pending') as WorkReportStatus;
+              return (
+                <div key={r.id} className="p-4 table-row">
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-white font-semibold text-sm">{r.officer_name}</span>
+                        <Badge variant={variant(status)}>{WORK_REPORT_STATUS_LABELS[status]}</Badge>
+                        <span className="text-[10px] text-gray-500 bg-navy-700 px-1.5 py-0.5 rounded">
+                          {getDutyCategoryLabel(r.duty_category)}
+                        </span>
+                        <span className="text-[10px] text-gray-500 font-mono">
+                          {caseCounts[r.id] ?? 0} เคส
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1.5 line-clamp-2">
+                        {r.summary || r.report_text}
+                      </p>
+                      <div className="flex items-center gap-3 mt-1.5 text-[10px] text-gray-500 flex-wrap">
+                        <span>{formatTimestamp(r.created_at)}</span>
+                        {r.reviewed_by_name && <span>ตรวจโดย {r.reviewed_by_name}</span>}
+                        {typeof r.reviewed_points === 'number' && r.reviewed_points > 0 && (
+                          <span className="text-emerald-400">+{r.reviewed_points} คะแนน</span>
+                        )}
+                        {r.review_note && <span className="italic">"{r.review_note}"</span>}
+                      </div>
+                    </div>
+                    {status === 'pending' && (
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <button
+                          onClick={() => onReview(r, 'approved')}
+                          className="bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                        >
+                          <CheckCircle2 size={14} /> อนุมัติ
+                        </button>
+                        <button
+                          onClick={() => onReview(r, 'rejected')}
+                          className="bg-red-500/10 text-red-400 hover:bg-red-500/20 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                        >
+                          <XCircle size={14} /> ไม่อนุมัติ
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatBox({ label, value, tone }: { label: string; value: number; tone: 'amber' | 'emerald' | 'red' }) {
+  const tones = {
+    amber: 'text-amber-400 border-amber-500/20',
+    emerald: 'text-emerald-400 border-emerald-500/20',
+    red: 'text-red-400 border-red-500/20',
+  };
+  return (
+    <div className={`card p-3 text-center border ${tones[tone]}`}>
+      <div className={`text-2xl font-bold ${tones[tone].split(' ')[0]}`}>{value}</div>
+      <div className="text-xs text-gray-500 mt-0.5">{label}</div>
+    </div>
+  );
+}
+
+/* ---------- แท็บตารางเวร (Weekly Roster) ---------- */
+function WeeklyRosterPanel({
+  roster, gaps, weekAnchor, onPrev, onNext, onToday,
+  canEdit, editingCell, onEditCell, officers, onSaveBase, onSaveOverride, onClearOverride,
+}: {
+  roster: ReturnType<typeof buildWeeklyRoster>;
+  gaps: ReturnType<typeof findRosterGaps>;
+  weekAnchor: string;
+  onPrev: () => void;
+  onNext: () => void;
+  onToday: () => void;
+  canEdit: boolean;
+  editingCell: { date: string; shift: ScheduleCellCode } | null;
+  onEditCell: (c: { date: string; shift: ScheduleCellCode } | null) => void;
+  officers: Officer[];
+  onSaveBase: (p: { weekday: number; shift: ShiftCode; officerId: string | null }) => void;
+  onSaveOverride: (p: {
+    date: string; shift: ScheduleCellCode; officerId: string | null;
+    type: ScheduleOverride['override_type']; note: string | null;
+  }) => void;
+  onClearOverride: (date: string, shift: ScheduleCellCode) => void;
+}) {
+  const weekLabel = `${roster.days[0]?.dayOfMonth ?? ''}–${roster.days[6]?.dayOfMonth ?? ''} ${monthLabelOf(roster.days[0]?.date ?? weekAnchor)}`;
+
+  return (
+    <div className="space-y-4">
+      <div className="card p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <CalendarDays size={17} className="text-amber-400" />
+          <div>
+            <h2 className="text-sm font-bold text-white">ตารางเวรประจำสัปดาห์</h2>
+            <p className="text-xs text-gray-400">สัปดาห์ของ {weekLabel}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button onClick={onPrev} className="btn-secondary px-2.5 py-2"><ChevronLeft size={15} /></button>
+          <button onClick={onToday} className="btn-secondary px-3 py-2 text-xs">วันนี้</button>
+          <button onClick={onNext} className="btn-secondary px-2.5 py-2"><ChevronRight size={15} /></button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatBox label="ช่องที่มีคน" value={roster.assignedCount} tone="emerald" />
+        <StatBox label="ช่องว่าง" value={gaps.length} tone="amber" />
+        <StatBox label="วันในสัปดาห์" value={7} tone="amber" />
+        <StatBox label="ข้อยกเว้น" value={Object.keys(roster.rows).length ? Object.values(roster.rows).reduce((n, r) => n + Object.values(r).filter((c) => c.fromOverride).length, 0) : 0} tone="red" />
+      </div>
+
+      <div className="table-panel">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px]">
+            <thead className="table-header-gold">
+              <tr>
+                <th className="w-24 text-left">กะ</th>
+                {roster.days.map((d) => (
+                  <th key={d.date} className={`text-center ${d.isToday ? 'text-amber-300' : ''}`}>
+                    {d.label} {d.dayOfMonth}
+                    {d.isToday && <span className="block text-[9px]">วันนี้</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {SHIFT_ORDER.map((shift) => (
+                <tr key={shift}>
+                  <td className="px-3 py-3">
+                    <div className="text-xs font-semibold text-white">{SHIFT_LABELS[shift]}</div>
+                  </td>
+                  {roster.days.map((d) => {
+                    const cell = roster.rows[shift]?.[d.date];
+                    if (!cell) return <td key={d.date} className="px-2 py-2" />;
+                    const isEditing = editingCell?.date === d.date && editingCell?.shift === shift;
+                    return (
+                      <td key={d.date} className="px-1.5 py-1.5">
+                        <div
+                          className={`rounded-lg border px-2 py-2 min-h-[58px] flex flex-col items-center justify-center gap-1 ${cellToneClass(cell)} ${d.isToday ? 'ring-1 ring-amber-500/40' : ''}`}
+                        >
+                          <span className="text-[11px] font-medium text-center leading-tight truncate w-full">
+                            {cell.officerName ?? '— ว่าง —'}
+                          </span>
+                          {cell.badge && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-black/30 border border-current/30 font-semibold">
+                              {cell.badge}
+                            </span>
+                          )}
+                          {canEdit && (
+                            <button
+                              onClick={() => onEditCell(isEditing ? null : { date: d.date, shift })}
+                              className="text-[9px] text-gray-400 hover:text-amber-400 mt-0.5"
+                            >
+                              {isEditing ? 'ปิด' : 'แก้ไข'}
+                            </button>
+                          )}
+                        </div>
+
+                        {isEditing && (
+                          <CellEditor
+                            date={d.date}
+                            shift={shift}
+                            cell={cell}
+                            officers={officers}
+                            onSaveBase={onSaveBase}
+                            onSaveOverride={onSaveOverride}
+                            onClearOverride={onClearOverride}
+                            onClose={() => onEditCell(null)}
+                          />
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {gaps.length > 0 && (
+        <div className="card p-4 border-amber-500/25">
+          <div className="flex items-center gap-2 text-xs font-semibold text-amber-400 mb-2">
+            <AlertCircle size={14} />
+            ช่องที่ยังไม่มีผู้รับผิดชอบ ({gaps.length})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {gaps.map((g) => (
+              <span key={`${g.date}-${g.shift}`} className="text-[11px] px-2 py-1 rounded-full bg-navy-700 text-gray-300 border border-blue-900/50">
+                {formatShortDate(g.date)} · {SHIFT_LABELS[g.shift]}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CellEditor({
+  date, shift, cell, officers, onSaveBase, onSaveOverride, onClearOverride, onClose,
+}: {
+  date: string;
+  shift: ScheduleCellCode;
+  cell: ReturnType<typeof buildWeeklyRoster>['rows'][ScheduleCellCode][string];
+  officers: Officer[];
+  onSaveBase: (p: { weekday: number; shift: ShiftCode; officerId: string | null }) => void;
+  onSaveOverride: (p: {
+    date: string; shift: ScheduleCellCode; officerId: string | null;
+    type: ScheduleOverride['override_type']; note: string | null;
+  }) => void;
+  onClearOverride: (date: string, shift: ScheduleCellCode) => void;
+  onClose: () => void;
+}) {
+  const [officerId, setOfficerId] = useState(cell.officerId ?? '');
+  const [note, setNote] = useState(cell.badge ?? '');
+  const weekday = new Date(`${date}T00:00:00`).getDay();
+
+  return (
+    <div className="mt-1.5 card p-2.5 text-left space-y-1.5 z-10 relative">
+      <select
+        className="input-field !py-1 !px-2 !text-[11px]"
+        value={officerId}
+        onChange={(e) => setOfficerId(e.target.value)}
+      >
+        <option value="">— ไม่ระบุ —</option>
+        {officers.map((o) => (
+          <option key={o.id} value={o.id}>{o.name}</option>
+        ))}
+      </select>
+
+      <select
+        className="input-field !py-1 !px-2 !text-[11px]"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      >
+        <option value="">ไม่มีข้อยกเว้น</option>
+        {(Object.keys(OVERRIDE_TYPE_LABELS) as ScheduleOverride['override_type'][])
+          .map((t) => <option key={t} value={t}>{OVERRIDE_TYPE_LABELS[t]}</option>)}
+      </select>
+
+      <div className="flex gap-1">
+        <button
+          onClick={() => {
+            if (note) {
+              onSaveOverride({ date, shift, officerId: officerId || null, type: note as ScheduleOverride['override_type'], note: OVERRIDE_TYPE_LABELS[note as ScheduleOverride['override_type']] ?? null });
+            } else if (shift === 'off') {
+              onSaveOverride({ date, shift, officerId: null, type: 'off', note: 'หยุดประจำสัปดาห์นี้' });
+            } else {
+              onSaveBase({ weekday, shift, officerId: officerId || null });
+            }
+          }}
+          className="btn-primary !px-2.5 !py-1 !text-[11px] flex-1"
+        >
+          บันทึก
+        </button>
+        {cell.fromOverride && (
+          <button
+            onClick={() => onClearOverride(date, shift)}
+            className="btn-secondary !px-2 !py-1 !text-[11px]"
+            title="ลบข้อยกเว้นของวันนี้"
+          >
+            <Trash2 size={11} />
+          </button>
+        )}
+        <button onClick={onClose} className="btn-secondary !px-2 !py-1 !text-[11px]">
+          <X size={11} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function monthLabelOf(iso: string): string {
+  const m = Number(iso.slice(5, 7)) - 1;
+  const names = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  return `${names[m] ?? ''} ${iso.slice(0, 4)}`;
+}
+
+function formatShortDate(iso: string): string {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString('th-TH', { day: '2-digit', month: 'short' });
+}
+
+/** ฟอร์แมตเวลาแบบย่อ (ใช้ใน subcomponent ที่อยู่นอกขอบเขตของ OperationsPage) */
+function formatTimestamp(iso: string | null | undefined): string {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleString('th-TH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function getDutyCategoryLabel(value: string | null | undefined): string {

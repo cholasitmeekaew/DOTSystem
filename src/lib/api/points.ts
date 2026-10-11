@@ -64,8 +64,20 @@ export async function addOfficerPoints(
     .eq('id', officerId)
     .select('*')
     .single();
-  if (error) throw error;
-  return { officer: data as unknown as Officer, entry };
+
+  // jsonDb (โหมด offline) ไม่คืนแถวหลัง update → single() จะได้ PGRST116
+  // ถือว่าสำเร็จได้ เพราะ entry ถูกคำนวณจากค่าที่อ่านมาแล้ว
+  if (error && error.code !== 'PGRST116') throw error;
+
+  return {
+    officer: (data as unknown as Officer) ?? ({
+      id: officerId,
+      points: newPoints,
+      points_period: period,
+      points_log: [...oldLog, entry],
+    } as unknown as Officer),
+    entry,
+  };
 }
 
 /**
@@ -97,8 +109,8 @@ export async function deleteOfficerPointsLog(
     .eq('id', officerId)
     .select('*')
     .single();
-  if (error) throw error;
-  return data as unknown as Officer;
+  if (error && error.code !== 'PGRST116') throw error;
+  return (data as unknown as Officer) ?? ({ id: officerId, points: newPoints } as unknown as Officer);
 }
 
 export async function resetMonthlyPeriod(

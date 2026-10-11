@@ -207,10 +207,20 @@ export const seedData: JsonDb = {
       id: 1,
       duty_system_enabled: true,
       login_enabled: true,
+      auto_points_enabled: true,
       updated_at: NOW,
       updated_by: null,
       updated_by_name: null,
     },
+  ],
+  // โควตาการลาประจำเดือน (migration 0028) — quota_days = 0 คือไม่จำกัด
+  leave_quotas: [
+    { leave_type: 'sick', quota_days: 3, notes: 'ลาป่วย 3 วัน/คน/เดือน', updated_at: NOW, updated_by: null, updated_by_name: null },
+    { leave_type: 'personal', quota_days: 2, notes: 'ลากิจ 2 วัน/คน/เดือน', updated_at: NOW, updated_by: null, updated_by_name: null },
+    { leave_type: 'vacation', quota_days: 3, notes: 'ลาพักร้อน 3 วัน/คน/เดือน', updated_at: NOW, updated_by: null, updated_by_name: null },
+    { leave_type: 'maternity', quota_days: 0, notes: 'ไม่จำกัดโควตา', updated_at: NOW, updated_by: null, updated_by_name: null },
+    { leave_type: 'ordained', quota_days: 0, notes: 'ไม่จำกัดโควตา', updated_at: NOW, updated_by: null, updated_by_name: null },
+    { leave_type: 'other', quota_days: 0, notes: 'ไม่จำกัดโควตา', updated_at: NOW, updated_by: null, updated_by_name: null },
   ],
   officer_ranks: [
     { label: 'หัวหน้ากรมขนส่ง', rank_key: 'commissioner', sort_order: 1, is_active: true, created_at: NOW, updated_at: NOW },
@@ -250,4 +260,9 @@ export const seedData: JsonDb = {
   emergency_reports: [],
   officer_leaves: [],
   audit_logs: [],
+  // ระบบตารางเวร (migration 0028) — เริ่มว่าง ให้ commissioner จัดตารางเอง
+  duty_schedules: [],
+  schedule_overrides: [],
+  // ป้ายกันให้คะแนนซ้ำของ PPS engine
+  points_award_marks: [],
 };

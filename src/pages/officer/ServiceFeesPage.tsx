@@ -15,6 +15,7 @@ import {
   fetchRevenueConfigs, assignRecordOfficers, recalculateRecord, getScopeForCategory, fetchAssignedOfficerIds,
 } from '../../lib/api/revenueSharing';
 import { submitClaim, translateClaimError, fetchOfficerClaims } from '../../lib/api/claimShare';
+import { applyServiceClosedPoints } from '../../lib/api/autoPoints';
 import { toLocalDateTimeInputValue } from '../../lib/utils';
 
 export function ServiceFeesPage() {
@@ -470,6 +471,19 @@ export function ServiceFeesPage() {
     setPaymentRecord(null);
     setPaymentAmount('');
     setPaymentNotes('');
+
+    // +5 PPS อัตโนมัติเมื่อเคสค่าบริการถูกปิด (ชำระครบทั้งบิล)
+    if (paidTotal >= paymentRecord.amount) {
+      try {
+        await applyServiceClosedPoints(
+          { ...paymentRecord, status: 'paid' },
+          assignedOfficerMap[paymentRecord.id] ?? (paymentRecord.officer_id ? [paymentRecord.officer_id] : []),
+        );
+      } catch {
+        // ให้คะแนนไม่สำเร็จไม่ควรทำให้การรับเงินล้มเหลว
+      }
+    }
+
     await fetchAll();
   }
 

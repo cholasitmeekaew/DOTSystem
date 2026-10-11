@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
   MessageSquare, Eye, CheckCircle, XCircle, Clock, Search,
-  User, Calendar, FileText, ExternalLink,
+  User, Calendar, FileText, ExternalLink, ShieldAlert,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { Modal } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
+import { applyVerifiedComplaintPoints } from '../../lib/api/autoPoints';
 
 interface Complaint {
   id: string;
@@ -16,13 +17,14 @@ interface Complaint {
   incident_datetime: string;
   details: string;
   evidence_url: string;
-  status: 'pending' | 'reviewing' | 'resolved' | 'dismissed';
+  status: 'pending' | 'reviewing' | 'verified' | 'resolved' | 'dismissed';
   created_at: string;
 }
 
 const STATUS_LABELS: Record<Complaint['status'], string> = {
   pending: 'รอดำเนินการ',
   reviewing: 'กำลังตรวจสอบ',
+  verified: 'ยืนยันข้อเท็จจริง',
   resolved: 'ดำเนินการแล้ว',
   dismissed: 'ยกเลิก',
 };
@@ -30,6 +32,7 @@ const STATUS_LABELS: Record<Complaint['status'], string> = {
 const STATUS_VARIANTS: Record<Complaint['status'], 'warning' | 'info' | 'success' | 'danger'> = {
   pending: 'warning',
   reviewing: 'info',
+  verified: 'danger',
   resolved: 'success',
   dismissed: 'danger',
 };
@@ -57,7 +60,13 @@ export function ComplaintsManagementPage() {
 
   async function updateStatus(id: string, newStatus: Complaint['status']) {
     setUpdating(true);
-    await supabase.from('complaints').update({ status: newStatus }).eq('id', id);
+    const target = complaints.find((c) => c.id === id);
+    const { error } = await supabase.from('complaints').update({ status: newStatus }).eq('id', id);
+    if (error) {
+      alert('อัปเดตสถานะเรื่องร้องเรียนไม่สำเร็จ: ' + error.message);
+      setUpdating(false);
+      return;
+    }
     await supabase.from('audit_logs').insert({
       action: 'UPDATE_COMPLAINT_STATUS',
       target_type: 'complaint',
@@ -66,6 +75,21 @@ export function ComplaintsManagementPage() {
       performed_by_name: officer?.name,
       details: { new_status: newStatus },
     });
+
+    // ยืนยันข้อเท็จจริง → หักคะแนนอัตโนมัติ -30 ให้เจ้าหน้าที่ที่ถูกร้องเรียน
+    if (newStatus === 'verified' && target?.officer_name) {
+      const { data: accused } = await supabase
+        .from('officers')
+        .select('id')
+        .ilike('name', target.officer_name)
+        .limit(1)
+        .maybeSingle();
+      await applyVerifiedComplaintPoints({
+        complaintId: id,
+        accusedOfficerName: target.officer_name,
+        accusedOfficerId: (accused as { id: string } | null)?.id ?? null,
+      });
+    }
     setComplaints((prev) => prev.map((c) => c.id === id ? { ...c, status: newStatus } : c));
     if (selected?.id === id) setSelected((prev) => prev ? { ...prev, status: newStatus } : null);
     setUpdating(false);
@@ -85,6 +109,7 @@ export function ComplaintsManagementPage() {
     all: complaints.length,
     pending: complaints.filter((c) => c.status === 'pending').length,
     reviewing: complaints.filter((c) => c.status === 'reviewing').length,
+    verified: complaints.filter((c) => c.status === 'verified').length,
     resolved: complaints.filter((c) => c.status === 'resolved').length,
     dismissed: complaints.filter((c) => c.status === 'dismissed').length,
   };
@@ -104,12 +129,13 @@ export function ComplaintsManagementPage() {
       />
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         <StatCard label="ทั้งหมด" count={counts.all} active={filterStatus === 'all'} onClick={() => setFilterStatus('all')} color="gray" />
         <StatCard label="รอดำเนินการ" count={counts.pending} active={filterStatus === 'pending'} onClick={() => setFilterStatus('pending')} color="amber" />
         <StatCard label="กำลังตรวจสอบ" count={counts.reviewing} active={filterStatus === 'reviewing'} onClick={() => setFilterStatus('reviewing')} color="blue" />
+        <StatCard label="ยืนยันข้อเท็จจริง" count={counts.verified} active={filterStatus === 'verified'} onClick={() => setFilterStatus('verified')} color="red" />
         <StatCard label="ดำเนินการแล้ว" count={counts.resolved} active={filterStatus === 'resolved'} onClick={() => setFilterStatus('resolved')} color="green" />
-        <StatCard label="ยกเลิก" count={counts.dismissed} active={filterStatus === 'dismissed'} onClick={() => setFilterStatus('dismissed')} color="red" />
+        <StatCard label="ยกเลิก" count={counts.dismissed} active={filterStatus === 'dismissed'} onClick={() => setFilterStatus('dismissed')} color="gray" />
       </div>
 
       {/* Search */}
@@ -251,6 +277,19 @@ export function ComplaintsManagementPage() {
                 >
                   <Clock size={12} className="inline mr-1" />
                   กำลังตรวจสอบ
+                </button>
+                <button
+                  onClick={() => updateStatus(selected.id, 'verified')}
+                  disabled={updating || selected.status === 'verified'}
+                  title="ยืนยันว่าเรื่องร้องเรียนเป็นจริง — หักคะแนนผู้ถูกร้องเรียนอัตโนมัติ (ถ้าสวิตช์ PPS เปิดอยู่)"
+                  className={`px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                    selected.status === 'verified'
+                      ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                      : 'bg-navy-700 text-gray-300 hover:bg-red-500/20 hover:text-red-400'
+                  }`}
+                >
+                  <ShieldAlert size={12} className="inline mr-1" />
+                  ยืนยันข้อเท็จจริง
                 </button>
                 <button
                   onClick={() => updateStatus(selected.id, 'resolved')}

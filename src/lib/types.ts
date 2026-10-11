@@ -255,8 +255,128 @@ export interface WorkReport {
   summary: string | null;
   report_text: string;
   cases?: WorkReportCase[];
+  // Review flow (added in migration 0028)
+  status?: WorkReportStatus;
+  reviewed_by?: string | null;
+  reviewed_by_name?: string | null;
+  reviewed_at?: string | null;
+  review_note?: string | null;
+  reviewed_points?: number;
   created_at: string;
   updated_at: string;
+}
+
+export type WorkReportStatus = 'pending' | 'approved' | 'rejected';
+
+export const WORK_REPORT_STATUS_LABELS: Record<WorkReportStatus, string> = {
+  pending: 'รอตรวจ',
+  approved: 'อนุมัติแล้ว',
+  rejected: 'ไม่อนุมัติ',
+};
+
+/* ============== ตารางเวรปฏิบัติงาน (migration 0028) ============== */
+
+export type ShiftCode = 'day' | 'night';
+export type ScheduleCellCode = ShiftCode | 'off';
+
+export interface DutySchedule {
+  id: string;
+  /** 0 = อาทิตย์ ... 6 = เสาร์ */
+  weekday: number;
+  shift_code: ShiftCode;
+  shift_name: string | null;
+  start_time: string;
+  end_time: string;
+  officer_id: string | null;
+  note: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ScheduleOverrideType = 'swap' | 'leave' | 'extra' | 'off';
+export type ScheduleOverrideSource = 'manual' | 'leave_auto';
+
+export interface ScheduleOverride {
+  id: string;
+  /** YYYY-MM-DD */
+  override_date: string;
+  shift_code: ScheduleCellCode;
+  officer_id: string | null;
+  override_type: ScheduleOverrideType;
+  note: string | null;
+  source: ScheduleOverrideSource;
+  ref_id: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const WEEKDAY_LABELS: Record<number, string> = {
+  0: 'อาทิตย์',
+  1: 'จันทร์',
+  2: 'อังคาร',
+  3: 'พุธ',
+  4: 'พฤหัสบดี',
+  5: 'ศุกร์',
+  6: 'เสาร์',
+};
+
+export const WEEKDAY_SHORT: Record<number, string> = {
+  0: 'อา.',
+  1: 'จ.',
+  2: 'อ.',
+  3: 'พ.',
+  4: 'พฤ.',
+  5: 'ศ.',
+  6: 'ส.',
+};
+
+export const SHIFT_LABELS: Record<ScheduleCellCode, string> = {
+  day: 'กะเช้า',
+  night: 'กะดึก',
+  off: 'หยุด',
+};
+
+export const OVERRIDE_TYPE_LABELS: Record<ScheduleOverrideType, string> = {
+  swap: 'สลับเวร',
+  leave: 'ลา',
+  extra: 'เวรพิเศษ',
+  off: 'หยุดประจำสัปดาห์',
+};
+
+/* ============== โควตาการลา (migration 0028) ============== */
+
+export interface LeaveQuota {
+  leave_type: LeaveType;
+  /** 0 = ไม่จำกัดโควตา */
+  quota_days: number;
+  notes: string | null;
+  updated_at: string;
+  updated_by: string | null;
+  updated_by_name: string | null;
+}
+
+/** โควตาตั้งต้น (วัน/คน/เดือน) — ใช้เมื่อยังไม่ได้ตั้งค่าใน leave_quotas */
+export const DEFAULT_LEAVE_QUOTAS: Record<LeaveType, number> = {
+  sick: 3,
+  personal: 2,
+  vacation: 3,
+  maternity: 0,
+  ordained: 0,
+  other: 0,
+};
+
+/* ============== ป้ายกำกับป้องกันคะแนนซ้ำ (migration 0028) ============== */
+
+export interface PointsAwardMark {
+  id: string;
+  mark_key: string;
+  officer_id: string | null;
+  delta: number;
+  reason: string | null;
+  created_at: string;
 }
 
 export interface WorkReportCase {
@@ -276,6 +396,8 @@ export interface SystemSettings {
   id: number;
   duty_system_enabled: boolean;
   login_enabled: boolean;
+  /** สวิตช์เปิด/ปิดการให้คะแนนอัตโนมัติ (migration 0028) */
+  auto_points_enabled?: boolean;
   updated_at: string;
   updated_by: string | null;
   updated_by_name: string | null;
@@ -457,6 +579,8 @@ export interface OfficerLeave {
   reviewed_by_name: string | null;
   reviewed_at: string | null;
   review_note: string | null;
+  /** จำนวนวันลา (cache สำหรับคำนวณโควตา — migration 0028) */
+  days?: number;
   created_at: string;
   updated_at: string;
 }
