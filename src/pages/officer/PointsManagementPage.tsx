@@ -10,7 +10,8 @@ import {
 import { supabase } from '../../lib/supabase';
 import {
   addOfficerPoints, deleteOfficerPointsLog, resetMonthlyPeriod, previewPointsReset,
-  type PointsResetMode, type PointsResetResult,
+  previewClearHistory, clearAllPointsHistory,
+  type PointsResetMode, type PointsResetResult, type ClearHistoryMode,
 } from '../../lib/api/points';
 import { useToast } from '../../hooks/use-toast';
 import { ConfirmDialog } from '../../components/Modal';
@@ -38,6 +39,14 @@ export function PointsManagementPage() {
   const [liveTick, setLiveTick] = useState(0);
   const [pendingDelete, setPendingDelete] = useState<{ officer: Officer; index: number } | null>(null);
   const [deletingLog, setDeletingLog] = useState(false);
+  // ล้างประวัติคะแนนทั้งหมด (ย้อนกลับไม่ได้)
+  const [clearMode, setClearMode] = useState<ClearHistoryMode | null>(null);
+  const [clearPreview, setClearPreview] = useState<{
+    total: number; withLog: number; entries: number; pointsTotal: number;
+  } | null>(null);
+  const [clearPreviewLoading, setClearPreviewLoading] = useState(false);
+  const [clearConfirmText, setClearConfirmText] = useState('');
+  const [clearing, setClearing] = useState(false);
   const { toast } = useToast();
 
   async function fetchAll() {
@@ -197,6 +206,44 @@ export function PointsManagementPage() {
     }
   }
 
+  async function openClear(mode: ClearHistoryMode) {
+    setClearMode(mode);
+    setClearPreview(null);
+    setClearConfirmText('');
+    setClearPreviewLoading(true);
+    try {
+      setClearPreview(await previewClearHistory());
+    } catch (e) {
+      toast({ title: 'อ่านข้อมูลไม่สำเร็จ', description: (e as Error).message, variant: 'destructive' });
+    } finally {
+      setClearPreviewLoading(false);
+    }
+  }
+
+  async function handleClearHistory() {
+    if (!actor || !clearMode) return;
+    if (clearConfirmText.trim() !== 'ลบทั้งหมด') return;
+    setClearing(true);
+    try {
+      const r = await clearAllPointsHistory(actor.id, actor.name, clearMode);
+      await fetchAll();
+      setEditing(null);
+      setClearMode(null);
+      setClearConfirmText('');
+      toast({
+        title: `ล้างประวัติคะแนนสำเร็จ — ${r.cleared} คน`,
+        description: r.failed.length > 0
+          ? `ลบ ${r.entries} รายการ · ไม่สำเร็จ ${r.failed.length} คน (${r.failed.map((f) => f.name).join(', ')})`
+          : `ลบ ${r.entries} รายการประวัติทั้งหมด`,
+        variant: r.failed.length > 0 ? 'destructive' : 'default',
+      });
+    } catch (e) {
+      toast({ title: 'ล้างประวัติไม่สำเร็จ', description: (e as Error).message, variant: 'destructive' });
+    } finally {
+      setClearing(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -223,6 +270,15 @@ export function PointsManagementPage() {
               >
                 <RotateCcw size={14} className={resetting ? 'animate-spin' : ''} />
                 รีเซ็ตทุกคนเป็น 0
+              </button>
+              <button
+                onClick={() => openClear('full')}
+                disabled={resetting || clearing}
+                className="btn-secondary flex items-center gap-2 text-xs text-red-400 hover:text-red-300 border-red-500/40 hover:bg-red-500/10 disabled:opacity-50"
+                title="ลบประวัติคะแนนของทุกคนทิ้งทั้งหมด และรีเซ็ตยอดเป็น 0 (ย้อนกลับไม่ได้)"
+              >
+                <Trash2 size={14} />
+                ล้างประวัติทั้งหมด
               </button>
             </div>
           )
@@ -306,6 +362,38 @@ export function PointsManagementPage() {
           onClose={() => setEditing(null)}
           onAdd={handleAddPoints}
           onDeleteLog={openDeleteLog}
+        />
+      )}
+
+      {/* กล่องยืนยันล้างประวัติคะแนนทั้งหมด — ต้องพิมพ์ยืนยัน */}
+      {clearMode && (
+        <ConfirmDialog
+          title="ล้างประวัติคะแนนของทุกคน"
+          message={
+            clearPreviewLoading
+              ? 'กำลังตรวจสอบข้อมูล...'
+              : clearPreview
+                ? [
+                  `จะลบประวัติคะแนน ${clearPreview.entries.toLocaleString('th-TH')} รายการ ของ ${clearPreview.withLog} คน (จากทั้งหมด ${clearPreview.total} คน)`,
+                  clearMode === 'full'
+                    ? 'และรีเซ็ตยอดคะแนนทั้งหมดเป็น 0'
+                    : 'โดยคงยอดคะแนนไว้ ไม่เปลี่ยน',
+                  `ยอดคะแนนปัจจุบันรวม ${clearPreview.pointsTotal.toLocaleString('th-TH')} คะแนน`,
+                  '',
+                  'การกระทำนี้ย้อนกลับไม่ได้ ผู้ที่ถูกลบจะเหลือร่องรอยไว้ใน audit_logs เท่านั้น',
+                ].join('\n')
+                : 'ไม่พบข้อมูล'
+          }
+          confirmLabel={clearing ? 'กำลังลบ...' : 'ลบประวัติทั้งหมด'}
+          danger
+          onConfirm={handleClearHistory}
+          onCancel={() => { setClearMode(null); setClearPreview(null); setClearConfirmText(''); }}
+          extraField={{
+            label: 'พิมพ์ "ลบทั้งหมด" เพื่อยืนยัน',
+            value: clearConfirmText,
+            onChange: setClearConfirmText,
+            placeholder: 'ลบทั้งหมด',
+          }}
         />
       )}
 

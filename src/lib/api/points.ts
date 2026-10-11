@@ -302,3 +302,118 @@ export async function resetMonthlyPeriod(
 
   return result;
 }
+
+/* =============================================================
+ * ล้างประวัติคะแนนทั้งหมด (ของทุกคน) — การกระทำแบบย้อนกลับไม่ได้
+ * ============================================================= */
+
+export type ClearHistoryMode =
+  /** ล้างประวัติอย่างเดียว คงยอดคะแนนไว้ */
+  | 'log_only'
+  /** ล้างประวัติ + รีเซ็ตยอดคะแนนเป็น 0 */
+  | 'full';
+
+export interface ClearHistoryPreview {
+  total: number;
+  /** คนที่มีประวัติอยู่จริง */
+  withLog: number;
+  /** จำนวนรายการประวัติทั้งหมดที่จะถูกลบ */
+  entries: number;
+  pointsTotal: number;
+}
+
+export async function previewClearHistory(): Promise<ClearHistoryPreview> {
+  const { data, error } = await supabase
+    .from('officers')
+    .select('id, points, points_log, status');
+  if (error) throw error;
+
+  const rows = (data ?? []) as Array<{
+    points: number | null;
+    points_log: PointsLogEntry[] | null;
+    status: string;
+  }>;
+
+  let withLog = 0;
+  let entries = 0;
+  let pointsTotal = 0;
+
+  for (const r of rows) {
+    if (r.status === 'deleted') continue;
+    const n = Array.isArray(r.points_log) ? r.points_log.length : 0;
+    if (n > 0) withLog += 1;
+    entries += n;
+    pointsTotal += Number(r.points) || 0;
+  }
+
+  return { total: rows.length, withLog, entries, pointsTotal };
+}
+
+/**
+ * ล้างประวัติคะแนนของทุกคน
+ *  - mode 'log_only' → points_log = []  (ยอดคะแนนคงเดิม)
+ *  - mode 'full'      → points_log = [] + points = 0 + points_period = งวดปัจจุบัน
+ *
+ * ทำทีละคนและเก็บรายคนที่ล้มเหลว ไม่หยุดกลางคัน
+ */
+export async function clearAllPointsHistory(
+  actorId: string,
+  actorName: string,
+  mode: ClearHistoryMode = 'full',
+): Promise<{ cleared: number; entries: number; failed: Array<{ name: string; message: string }> }> {
+  const period = currentPeriod();
+
+  const { data, error: fetchErr } = await supabase
+    .from('officers')
+    .select('id, name, points, points_log, status');
+  if (fetchErr) throw fetchErr;
+
+  const rows = (data ?? []) as Array<{
+    id: string; name: string; points: number | null;
+    points_log: PointsLogEntry[] | null; status: string;
+  }>;
+
+  const result = { cleared: 0, entries: 0, failed: [] as Array<{ name: string; message: string }> };
+
+  for (const row of rows) {
+    if (row.status === 'deleted') continue;
+
+    const log = Array.isArray(row.points_log) ? row.points_log : [];
+    if (log.length === 0 && mode === 'log_only') continue;
+
+    // ล็อกรายการก่อนลบ เพื่อให้ตรวจสอบย้อนหลังได้จาก audit_logs
+    const patch: Record<string, unknown> = { points_log: [] };
+    if (mode === 'full') {
+      patch.points = 0;
+      patch.points_period = period;
+    }
+
+    const { error } = await supabase.from('officers').update(patch).eq('id', row.id);
+
+    if (error) {
+      result.failed.push({ name: row.name, message: error.message });
+      continue;
+    }
+
+    result.cleared += 1;
+    result.entries += log.length;
+
+    if (log.length > 0 || mode === 'full') {
+      await supabase.from('audit_logs').insert({
+        action: mode === 'full' ? 'CLEAR_POINTS_HISTORY_AND_RESET' : 'CLEAR_POINTS_HISTORY',
+        target_type: 'officer',
+        target_id: row.id,
+        performed_by: actorId,
+        performed_by_name: actorName,
+        details: {
+          officer_name: row.name,
+          deleted_entries: log.length,
+          points_before: Number(row.points) || 0,
+          mode,
+        },
+      });
+    }
+  }
+
+  return result;
+}
