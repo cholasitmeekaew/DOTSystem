@@ -3,7 +3,7 @@ import {
   Clock, LogIn, LogOut, Users, Trash2, Power, AlertCircle, Image as ImageIcon, Shield,
   BarChart3, Zap, Download, Search, Filter, FileText,
   Plus, X, Upload, Loader2, ExternalLink, CalendarDays, ChevronLeft, ChevronRight,
-  CheckCircle2, XCircle, Award, Trophy, Sparkles, Repeat, Users2,
+  CheckCircle2, XCircle, Award, Trophy, Sparkles, Crown, Briefcase, User, Repeat,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import {
@@ -20,10 +20,10 @@ import type { RankItem } from '../../components/RankedList';
 import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
 import { uploadImage } from '../../lib/storage';
 import {
-  buildWeeklyRoster, shiftWeek, toIso, findRosterGaps, cellToneClass,
-  cellStaffingLabel, staffingToneClass, DEFAULT_REQUIRED_OFFICERS,
+  buildWeeklyRoster, shiftWeek, toIso, DEFAULT_REQUIRED_OFFICERS,
   resolveScheduledOfficerIds, shiftWindowFor, dayTypeLabel, serverHoursFor, SHIFT_ORDER,
 } from '../../lib/dutySchedule';
+import { isWeekend } from '../../lib/types';
 import {
   isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
   applyMissingReportPoints, applyWeeklyAbsencePoints, AUTO_POINTS_RULES,
@@ -183,8 +183,6 @@ export function OperationsPage() {
     () => buildWeeklyRoster({ anchorIso: weekAnchor, schedules, overrides, officers: rosterOfficers }),
     [weekAnchor, schedules, overrides, rosterOfficers],
   );
-  const rosterGaps = useMemo(() => findRosterGaps(weeklyRoster), [weeklyRoster]);
-
   /** ผังประจำสัปดาห์ (ทุกคน) ของช่องกะที่กำลังแก้ — ไม่ดึงจาก cell เพราะ cell อาจถูก override ทับ */
   const editingBaseIds = useMemo(() => {
     if (!editingCell) return [];
@@ -1003,13 +1001,11 @@ export function OperationsPage() {
       {opsTab === 'roster' && (
         <WeeklyRosterPanel
           roster={weeklyRoster}
-          gaps={rosterGaps}
           weekAnchor={weekAnchor}
           onPrev={() => setWeekAnchor((w) => shiftWeek(w, -1))}
           onNext={() => setWeekAnchor((w) => shiftWeek(w, 1))}
           onToday={() => setWeekAnchor(toIso(new Date()))}
           canEdit={!!isCommissioner}
-          editingCell={editingCell}
           onEditCell={setEditingCell}
           officers={rosterOfficers}
           onSaveBase={saveScheduleSlot}
@@ -1743,6 +1739,8 @@ export function OperationsPage() {
           onSaveBase={saveScheduleSlot}
           onSaveOverride={saveOverrideSlot}
           onClearOverride={clearOverride}
+          onSwapWeek={swapShiftForWeek}
+          weekDays={weeklyRoster.days.map((d) => d.date)}
         />
       )}
 
@@ -2033,18 +2031,16 @@ function StatBox({ label, value, tone }: { label: string; value: number; tone: '
 
 /* ---------- แท็บตารางเวร (Weekly Roster) ---------- */
 function WeeklyRosterPanel({
-  roster, gaps, weekAnchor, onPrev, onNext, onToday,
-  canEdit, editingCell, onEditCell, officers, onSaveBase, onSaveOverride, onClearOverride, onSwapWeek,
+  roster, weekAnchor, onPrev, onNext, onToday,
+  canEdit, onEditCell, officers, onSaveBase, onSaveOverride, onClearOverride, onSwapWeek,
 }: {
   roster: ReturnType<typeof buildWeeklyRoster>;
-  gaps: ReturnType<typeof findRosterGaps>;
   weekAnchor: string;
   onPrev: () => void;
   onNext: () => void;
   onToday: () => void;
   canEdit: boolean;
-  editingCell: { date: string; shift: ScheduleCellCode } | null;
-  onEditCell: (c: { date: string; shift: ScheduleCellCode } | null) => void;
+  onEditCell: (c: { date: string; shift: ScheduleCellCode }) => void;
   officers: Officer[];
   onSaveBase: (p: { weekday: number; shift: ShiftCode; officerIds: string[]; required: number }) => void;
   onSaveOverride: (p: {
@@ -2054,21 +2050,19 @@ function WeeklyRosterPanel({
   onClearOverride: (date: string, shift: ScheduleCellCode) => void;
   onSwapWeek: (shift: ShiftCode, toOfficerId: string) => void;
 }) {
+  const rankById = useMemo(() => new Map(officers.map((o) => [o.id, o.rank])), [officers]);
   const weekLabel = `${roster.days[0]?.dayOfMonth ?? ''}–${roster.days[6]?.dayOfMonth ?? ''} ${monthLabelOf(roster.days[0]?.date ?? weekAnchor)}`;
+  const shortSlots = roster.understaffedCount + roster.gapCount;
 
   return (
-    <div className="space-y-4">
-      <div className="card p-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <CalendarDays size={17} className="text-amber-400" />
-          <div>
-            <h2 className="text-sm font-bold text-white">ตารางเวรประจำสัปดาห์</h2>
-            <p className="text-xs text-gray-400">สัปดาห์ของ {weekLabel}</p>
-            <p className="text-[11px] text-amber-400/90 mt-0.5">
-              เวลาเปิดเซิร์ฟเวอร์ · จันทร์–ศุกร์ {serverHoursFor(1).start}–{serverHoursFor(1).end}
-              {' · '}เสาร์–อาทิตย์ {serverHoursFor(6).start}–{serverHoursFor(6).end}
-            </p>
-          </div>
+    <div className="space-y-3">
+      <div className="card p-3.5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold text-white">ตารางเวรประจำสัปดาห์</h2>
+          <p className="text-xs text-gray-400">สัปดาห์ของ {weekLabel}</p>
+          <p className="text-[11px] text-amber-400/80 mt-0.5">
+            จ–ศ {serverHoursFor(1).start}–{serverHoursFor(1).end} · ส–อ {serverHoursFor(6).start}–{serverHoursFor(6).end}
+          </p>
         </div>
         <div className="flex items-center gap-1.5">
           <button onClick={onPrev} className="btn-secondary px-2.5 py-2"><ChevronLeft size={15} /></button>
@@ -2077,24 +2071,23 @@ function WeeklyRosterPanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatBox label="ช่องที่มีคน" value={roster.assignedCount} tone="emerald" />
-        <StatBox label="กำลังพลไม่ครบ" value={roster.understaffedCount} tone="amber" />
-        <StatBox label="ช่องว่างเปล่า" value={gaps.length} tone="red" />
-        <StatBox label="ช่องที่มีข้อยกเว้น" value={Object.values(roster.rows).reduce((n, r) => n + Object.values(r).filter((c) => c.fromOverride).length, 0)} tone="amber" />
+      {/* สถิติกระชับ 2 กล่อง */}
+      <div className="grid grid-cols-2 gap-3">
+        <StatBox label="จัดคนแล้ว (ช่อง)" value={roster.assignedCount} tone="emerald" />
+        <StatBox label="ยังขาดคน (กะ)" value={shortSlots} tone={shortSlots > 0 ? 'amber' : 'emerald'} />
       </div>
 
       <div className="table-panel">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px]">
+          <table className="w-full min-w-[680px]">
             <thead className="table-header-gold">
               <tr>
-                <th className="w-24 text-left">กะ</th>
+                <th className="w-20 text-left">กะ</th>
                 {roster.days.map((d) => (
                   <th
                     key={d.date}
                     className={`text-center ${d.isToday ? 'text-amber-300' : ''} ${
-                      roster.days.findIndex((x) => x.date === d.date) >= 5 ? 'bg-blue-500/[0.06]' : ''
+                      isWeekend(d.weekday) ? 'bg-blue-500/[0.06]' : ''
                     }`}
                     title={dayTypeLabel(d.weekday)}
                   >
@@ -2107,82 +2100,62 @@ function WeeklyRosterPanel({
             <tbody>
               {SHIFT_ORDER.map((shift) => (
                 <tr key={shift}>
-                  <td className="px-3 py-3 align-top">
-                    <div className="text-xs font-semibold text-white">{SHIFT_LABELS[shift]}</div>
-                    <div className="text-[10px] text-amber-400/90 font-mono leading-tight">
-                      จ–ศ {shiftWindowFor(1, shift).start}–{shiftWindowFor(1, shift).end}
-                    </div>
-                    <div className="text-[10px] text-sky-400/90 font-mono leading-tight">
-                      ส–อ {shiftWindowFor(6, shift).start}–{shiftWindowFor(6, shift).end}
-                    </div>
-                    {canEdit && (
-                      <WeekSwapControl
-                        shift={shift}
-                        officers={officers}
-                        onSwapWeek={onSwapWeek}
-                      />
-                    )}
+                  <td className="px-3 py-3 align-middle">
+                    <span className="text-xs font-semibold text-white whitespace-nowrap">
+                      {SHIFT_LABELS[shift]}
+                    </span>
                   </td>
                   {roster.days.map((d) => {
                     const cell = roster.rows[shift]?.[d.date];
-                    if (!cell) return <td key={d.date} className="px-2 py-2" />;
-                    const staffing = cellStaffingLabel(cell);
+                    if (!cell) return <td key={d.date} className="px-1.5 py-1.5" />;
+                    const empty = cell.members.length === 0;
+
                     return (
-                      <td key={d.date} className="px-1.5 py-1.5">
-                        <div
-                          className={`rounded-lg border px-1.5 py-2 min-h-[88px] flex flex-col gap-1 ${cellToneClass(cell)} ${
-                            d.isToday ? 'ring-1 ring-amber-500/40' : ''
-                          } ${cell.weekend ? 'bg-blue-500/[0.05]' : ''}`}
+                      <td key={d.date} className={`p-1 ${isWeekend(d.weekday) ? 'bg-blue-500/[0.04]' : ''}`}>
+                        <button
+                          type="button"
+                          onClick={canEdit ? () => onEditCell({ date: d.date, shift }) : undefined}
+                          disabled={!canEdit}
+                          title={canEdit ? `จัดกำลังพล ${SHIFT_LABELS[shift]} วันที่ ${d.date}` : undefined}
+                          className={`w-full rounded-lg border px-1.5 py-2 flex flex-col gap-1.5 text-left transition-all ${
+                            empty
+                              ? 'border-dashed border-blue-900/60 bg-transparent hover:border-amber-500/50'
+                              : 'border-transparent bg-navy-700/40 hover:border-amber-500/40'
+                          } ${d.isToday ? 'ring-1 ring-amber-500/40' : ''} ${
+                            canEdit ? 'cursor-pointer' : 'cursor-default'
+                          }`}
                         >
                           <div className="flex items-center justify-between gap-1">
-                            <span className="text-[9px] font-mono opacity-70">
+                            <span className="text-[9px] font-mono text-gray-500">
                               {cell.startTime}–{cell.endTime}
                             </span>
-                            <span className={`text-[9px] font-mono px-1 py-0.5 rounded border ${staffingToneClass(staffing.tone)}`}>
+                            <span className="text-[9px] font-mono text-gray-500">
                               {cell.members.length}/{cell.required}
                             </span>
                           </div>
 
-                          <div className="flex flex-1 flex-col gap-1 min-h-0">
-                            {cell.members.length === 0 ? (
-                              <span className="text-[10px] text-center py-1">
-                                {cell.closed ? 'ปิดเวร' : '— ยังไม่มีคน —'}
-                              </span>
-                            ) : (
-                              cell.members.map((m) => (
-                                <div
-                                  key={m.officerId}
-                                  className="flex items-center gap-1 bg-black/25 rounded px-1 py-0.5 border border-white/5"
-                                >
-                                  <span className="w-4 h-4 rounded-full bg-navy-900 text-amber-400 text-[9px] font-bold flex items-center justify-center flex-shrink-0 overflow-hidden">
-                                    {m.officerName.charAt(0).toUpperCase()}
+                          {empty ? (
+                            <span className="flex items-center justify-center gap-1 py-1.5 text-[10px] text-gray-600">
+                              <Plus size={10} /> เพิ่ม
+                            </span>
+                          ) : (
+                            <div className="flex flex-col gap-0.5">
+                              {cell.members.map((m) => (
+                                <div key={m.officerId} className="flex items-center gap-1">
+                                  <RankGlyph rank={rankById.get(m.officerId)} />
+                                  <span className="text-[10px] text-gray-200 truncate flex-1 leading-tight">
+                                    {m.officerName}
                                   </span>
-                                  <span className="text-[10px] truncate flex-1 leading-tight">{m.officerName}</span>
                                   {m.badge && (
                                     <span className="text-[8px] px-1 py-px rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-semibold flex-shrink-0">
                                       {m.badge}
                                     </span>
                                   )}
                                 </div>
-                              ))
-                            )}
-                          </div>
-
-                          <div className="flex items-center justify-between gap-1">
-                            <span className={`text-[9px] px-1 py-px rounded border ${staffingToneClass(staffing.tone)}`}>
-                              {staffing.text}
-                            </span>
-                            {canEdit && (
-                              <button
-                                onClick={() => onEditCell({ date: d.date, shift })}
-                                className="text-[9px] text-gray-400 hover:text-amber-400 transition-colors"
-                              >
-                                จัดกำลังพล
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
+                              ))}
+                            </div>
+                          )}
+                        </button>
                       </td>
                     );
                   })}
@@ -2193,28 +2166,23 @@ function WeeklyRosterPanel({
         </div>
       </div>
 
-      {gaps.length > 0 && (
-        <div className="card p-4 border-amber-500/25">
-          <div className="flex items-center gap-2 text-xs font-semibold text-amber-400 mb-2">
-            <AlertCircle size={14} />
-            ช่องที่ยังไม่มีผู้รับผิดชอบ ({gaps.length})
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {gaps.map((g) => (
-              <span key={`${g.date}-${g.shift}`} className="text-[11px] px-2 py-1 rounded-full bg-navy-700 text-gray-300 border border-blue-900/50">
-                {formatShortDate(g.date)} · {SHIFT_LABELS[g.shift]}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      <p className="text-[11px] text-gray-600 text-center">
+        {canEdit ? 'คลิกที่ช่องกะเพื่อจัดกำลังพล / สลับเวร / แก้ไขข้อมูล' : 'ดูโหมดอ่านอย่างเดียว'}
+      </p>
     </div>
   );
 }
 
+/** ไอคอนยศเล็ก ๆ กำกับหน้าชื่อในช่องกะ */
+function RankGlyph({ rank }: { rank?: string }) {
+  if (rank === 'commissioner') return <Crown size={9} className="text-amber-400 flex-shrink-0" />;
+  if (rank === 'inspector') return <Briefcase size={9} className="text-blue-400 flex-shrink-0" />;
+  return <User size={9} className="text-emerald-500/80 flex-shrink-0" />;
+}
+
 function ShiftStaffingModal({
   date, shift, cell, baseOfficerIds, existingOverrides, officers, onClose,
-  onSaveBase, onSaveOverride, onClearOverride,
+  onSaveBase, onSaveOverride, onClearOverride, onSwapWeek, weekDays,
 }: {
   date: string;
   shift: ShiftCode;
@@ -2229,6 +2197,8 @@ function ShiftStaffingModal({
     entries: Array<{ officerId: string | null; type: ScheduleOverride['override_type'] }>;
   }) => void;
   onClearOverride: (date: string, shift: ScheduleCellCode) => void;
+  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => void;
+  weekDays: string[];
 }) {
   const weekday = new Date(`${date}T00:00:00`).getDay();
   const dateLabel = new Date(`${date}T00:00:00`).toLocaleDateString('th-TH', {
@@ -2302,6 +2272,30 @@ function ShiftStaffingModal({
           >
             <CheckCircle2 size={15} /> บันทึกตารางเวร (ผังประจำสัปดาห์)
           </button>
+        </div>
+
+        {/* ---------- สลับเวรทั้งสัปดาห์ ---------- */}
+        <div className="card p-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <Repeat size={12} className="text-amber-400" />
+            <h3 className="text-xs font-bold text-white">สลับเวรทั้งสัปดาห์</h3>
+            <span className="text-[10px] text-gray-500">
+              เปลี่ยนผู้รับผิดชอบของ {SHIFT_LABELS[shift]} ครบทั้ง {weekDays.length} วัน
+            </span>
+          </div>
+          <select
+            className="input-field !py-1.5 !text-xs"
+            value=""
+            onChange={(e) => { if (e.target.value) onSwapWeek(shift, e.target.value); }}
+          >
+            <option value="">— เลือกผู้ที่ต้องการสลับมาทั้งสัปดาห์ —</option>
+            {officers
+              .filter((o) => !baseIds.includes(o.id))
+              .map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+          <p className="text-[10px] text-gray-500 mt-1.5">
+            ช่องกะทั้งสัปดาห์จะเปลี่ยนเป็นชื่อนี้ พร้อมป้าย &quot;เวรสลับ&quot;
+          </p>
         </div>
 
         {/* ---------- ข้อยกเว้นของวันนี้ ---------- */}
@@ -2418,38 +2412,6 @@ function OfficerPickerGrid({
       {officers.length === 0 && (
         <p className="col-span-full text-xs text-gray-500 text-center py-4">ยังไม่มีเจ้าหน้าที่ในระบบ</p>
       )}
-    </div>
-  );
-}
-
-/** สลับเวรทั้งสัปดาห์ — เขียน override ทุกวันของสัปดาห์ที่แสดงอยู่ */
-function WeekSwapControl({
-  shift, officers, onSwapWeek,
-}: {
-  shift: ShiftCode;
-  officers: Officer[];
-  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => void;
-}) {
-  const [value, setValue] = useState('');
-  return (
-    <div className="mt-1.5 pt-1.5 border-t border-blue-900/40">
-      <div className="flex items-center gap-1 text-[9px] text-gray-500 mb-1">
-        <Repeat size={9} /> สลับเวรทั้งสัปดาห์
-      </div>
-      <select
-        className="input-field !py-1 !px-1.5 !text-[10px] w-full"
-        value={value}
-        onChange={(e) => {
-          setValue(e.target.value);
-          if (e.target.value) onSwapWeek(shift, e.target.value);
-        }}
-        title="เลือกผู้รับผิดชอบที่ต้องการสลับมาทั้งสัปดาห์นี้"
-      >
-        <option value="">— ไม่สลับ —</option>
-        {officers.map((o) => (
-          <option key={o.id} value={o.id}>{o.name}</option>
-        ))}
-      </select>
     </div>
   );
 }
