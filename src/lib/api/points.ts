@@ -64,6 +64,18 @@ export async function addAutomaticPoints(
   return addOfficerPoints(officerId, delta, reason, actorId, actorName);
 }
 
+/**
+ * เพดานคะแนนสูงสุด — ต้องตรงกับ CHECK constraint ใน migration 0006
+ * (points >= 0 and points <= 100000) ถ้าไม่ clamp การให้คะแนนเกินจะโดน DB ปฏิเสธ
+ */
+export const POINTS_MIN = 0;
+export const POINTS_MAX = 100000;
+
+export function clampPoints(value: number): number {
+  if (!Number.isFinite(value)) return POINTS_MIN;
+  return Math.min(POINTS_MAX, Math.max(POINTS_MIN, Math.round(value)));
+}
+
 export async function addOfficerPoints(
   officerId: string,
   delta: number,
@@ -80,15 +92,20 @@ export async function addOfficerPoints(
 
   const oldPoints = (current?.points as number) ?? 0;
   const oldLog = (current?.points_log as PointsLogEntry[]) ?? [];
-  const newPoints = Math.max(0, oldPoints + delta);
+  const newPoints = clampPoints(oldPoints + delta);
+  // บันทึก "ค่าที่ให้จริง" ไม่ใช่ค่าที่ขอ เพื่อให้ balance_after สอดคล้องเสมอ
+  const appliedDelta = newPoints - oldPoints;
+  const clampedNote = appliedDelta !== delta
+    ? ` (ขอ ${delta > 0 ? '+' : ''}${delta} แต่ถูกจำกัดที่ ${newPoints.toLocaleString()})`
+    : '';
   const period = (current?.points_period as string | null) ?? new Date().toISOString().slice(0, 7);
 
   const entry: PointsLogEntry = {
     at: new Date().toISOString(),
     by: actorId,
     by_name: actorName,
-    delta,
-    reason,
+    delta: appliedDelta,
+    reason: reason + clampedNote,
     balance_after: newPoints,
     period,
   };
@@ -139,7 +156,7 @@ export async function deleteOfficerPointsLog(
     throw new Error('ไม่พบประวัติรายการนี้แล้ว');
   }
   const [removed] = oldLog.splice(logIndex, 1);
-  const newPoints = Math.max(0, oldPoints - (removed?.delta ?? 0));
+  const newPoints = clampPoints(oldPoints - (removed?.delta ?? 0));
 
   const { data, error } = await supabase
     .from('officers')
@@ -251,7 +268,7 @@ export async function resetMonthlyPeriod(
     const isStale = !row.points_period || row.points_period < period;
     if (mode === 'stale' && !isStale) { result.skipped += 1; continue; }
 
-    const oldPoints = Number(row.points) || 0;
+    const oldPoints = clampPoints(Number(row.points) || 0);
     const oldLog = (row.points_log as PointsLogEntry[]) ?? [];
     const entry: PointsLogEntry = {
       at: new Date().toISOString(),

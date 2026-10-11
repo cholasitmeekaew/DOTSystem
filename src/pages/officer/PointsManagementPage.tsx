@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Award, Search, Plus, Minus, X, History, RotateCcw, Trophy, TrendingUp, TrendingDown, Trash2,
+  Award, Search, Plus, Minus, X, History, RotateCcw, Trophy, TrendingUp, TrendingDown, Trash2, AlertCircle,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import {
@@ -35,6 +35,9 @@ export function PointsManagementPage() {
     period: string; total: number; affected: number; skipped: number; pointsBefore: number;
   } | null>(null);
   const [resetPreviewLoading, setResetPreviewLoading] = useState(false);
+  const [liveTick, setLiveTick] = useState(0);
+  const [pendingDelete, setPendingDelete] = useState<{ officer: Officer; index: number } | null>(null);
+  const [deletingLog, setDeletingLog] = useState(false);
   const { toast } = useToast();
 
   async function fetchAll() {
@@ -59,7 +62,7 @@ export function PointsManagementPage() {
       error = r2.error;
     }
     if (error) {
-      alert(`โหลดข้อมูลไม่สำเร็จ: ${error.message}`);
+      toast({ title: 'โหลดข้อมูลไม่สำเร็จ', description: error.message, variant: 'destructive' });
     }
     const list = (data as unknown as Officer[]) ?? [];
     // เรียงตามคะแนนใน JS (กัน null + fallback)
@@ -67,7 +70,38 @@ export function PointsManagementPage() {
     setLoading(false);
   }
 
-  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { fetchAll(); }, [liveTick]);
+
+  // คะแนนเปลี่ยนได้จาก PPS engine และจากผู้ใช้คนอื่น → ดึงใหม่อัตโนมัติ
+  useEffect(() => {
+    const ch = supabase
+      .channel('officers_points_mgmt')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'officers' },
+        () => setLiveTick((t) => t + 1))
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, []);
+
+  const currentPeriod = new Date().toISOString().slice(0, 7);
+  const currentPeriodLabel = useMemo(() => {
+    const names = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+    return `${names[Number(currentPeriod.slice(5, 7)) - 1] ?? ''} ${currentPeriod.slice(0, 4)}`;
+  }, [currentPeriod]);
+
+  const stats = useMemo(() => {
+    let withPoints = 0;
+    let zeroPoints = 0;
+    let totalPoints = 0;
+    let stalePeriod = 0;
+    for (const o of officers) {
+      const p = o.points ?? 0;
+      if (p > 0) withPoints += 1; else zeroPoints += 1;
+      totalPoints += p;
+      const per = o.points_period ?? null;
+      if (!per || per < currentPeriod) stalePeriod += 1;
+    }
+    return { total: officers.length, withPoints, zeroPoints, totalPoints, stalePeriod };
+  }, [officers, currentPeriod]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
@@ -94,19 +128,30 @@ export function PointsManagementPage() {
       // refresh editing row จาก Supabase เพื่อเอา field อื่นๆ ครบ
       const { data } = await supabase.from('officers').select('*').eq('id', o.id).single();
       if (data) setEditing(data as unknown as Officer);
+      toast({ title: 'ให้/หักคะแนนสำเร็จ', description: `${o.name} · ${delta > 0 ? '+' : ''}${delta} คะแนน` });
     } catch (e) {
-      alert(`เกิดข้อผิดพลาด: ${(e as Error).message}`);
+      toast({ title: 'บันทึกคะแนนไม่สำเร็จ', description: (e as Error).message, variant: 'destructive' });
     }
   }
 
-  async function handleDeleteLog(o: Officer, logIndex: number) {
-    if (!confirm('ลบประวัติรายการนี้? ยอดคงเหลือจะถูกย้อนกลับตามค่าของรายการ')) return;
+  /** เปิดกล่องยืนยันลบประวัติ */
+  function openDeleteLog(o: Officer, logIndex: number) {
+    setPendingDelete({ officer: o, index: logIndex });
+  }
+
+  async function handleDeleteLog() {
+    if (!pendingDelete) return;
+    setDeletingLog(true);
     try {
-      const updated = await deleteOfficerPointsLog(o.id, logIndex);
+      const updated = await deleteOfficerPointsLog(pendingDelete.officer.id, pendingDelete.index);
       await fetchAll();
       setEditing(updated);
+      toast({ title: 'ลบประวัติเรียบร้อย', description: 'ยอดคะแนนถูกย้อนกลับตามรายการที่ลบ' });
     } catch (e) {
-      alert(`เกิดข้อผิดพลาด: ${(e as Error).message}`);
+      toast({ title: 'ลบประวัติไม่สำเร็จ', description: (e as Error).message, variant: 'destructive' });
+    } finally {
+      setDeletingLog(false);
+      setPendingDelete(null);
     }
   }
 
@@ -184,6 +229,25 @@ export function PointsManagementPage() {
         }
       />
 
+      {/* แถบสรุปงวด — หน้านี้คะแนนรีเซ็ตรายเดือน ต้องบอกงวดที่กำลังดูเสมอ */}
+      <FadeIn className="mb-4">
+        <div className="card p-3 sm:p-4 mb-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/40 text-xs font-bold font-mono">
+              งวด {currentPeriodLabel}
+            </span>
+            <span className="text-[11px] text-gray-400">
+              {stats.total} คน · มีคะแนน {stats.withPoints} คน · เป็น 0 {stats.zeroPoints} คน · รวม {stats.totalPoints.toLocaleString('th-TH')} คะแนน
+            </span>
+            {stats.stalePeriod > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/40 text-[10px] font-semibold">
+                {stats.stalePeriod} คนคะแนนยังเป็นของงวดก่อน
+              </span>
+            )}
+          </div>
+        </div>
+      </FadeIn>
+
       <FadeIn className="mb-4">
         <div className="card relative max-w-md">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
@@ -241,7 +305,21 @@ export function PointsManagementPage() {
           actorName={actor?.name ?? 'ระบบ'}
           onClose={() => setEditing(null)}
           onAdd={handleAddPoints}
-          onDeleteLog={handleDeleteLog}
+          onDeleteLog={openDeleteLog}
+        />
+      )}
+
+      {/* กล่องยืนยันลบประวัติคะแนน */}
+      {pendingDelete && (
+        <ConfirmDialog
+          title="ลบประวัติคะแนนรายการนี้"
+          message={`ลบรายการของ ${pendingDelete.officer.name} หรือไม่?
+
+ยอดคะแนนจะถูกย้อนกลับตามค่าของรายการนั้น และการกระทำนี้ย้อนกลับไม่ได้`}
+          confirmLabel={deletingLog ? 'กำลังลบ...' : 'ลบประวัติ'}
+          danger
+          onConfirm={handleDeleteLog}
+          onCancel={() => setPendingDelete(null)}
         />
       )}
 
@@ -275,7 +353,7 @@ function EditPointsModal({
   actorName: string;
   onClose: () => void;
   onAdd: (o: Officer, delta: number, reason: string) => Promise<void>;
-  onDeleteLog: (o: Officer, logIndex: number) => Promise<void>;
+  onDeleteLog: (o: Officer, logIndex: number) => void | Promise<void>;
 }) {
   const [tab, setTab] = useState<'reward' | 'penalty' | 'custom'>('reward');
   const [preset, setPreset] = useState(POINTS_REWARDS[0].label);
@@ -285,9 +363,11 @@ function EditPointsModal({
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [deletingIdx, setDeletingIdx] = useState<number | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   function switchTab(t: 'reward' | 'penalty' | 'custom') {
     setTab(t);
+    setFormError(null);
     if (t === 'custom') setCustomMode('none');
   }
 
@@ -316,17 +396,18 @@ function EditPointsModal({
 
   async function handleSubmit() {
     if (tab === 'custom' && customMode === 'none') {
-      alert('กรุณาเลือก ให้คะแนน หรือ ลบคะแนน ก่อน');
+      setFormError('กรุณาเลือก ให้คะแนน หรือ ลบคะแนน ก่อน');
       return;
     }
     if (selectedDelta === 0) {
-      alert('กรุณาระบุจำนวนคะแนนที่ไม่เป็น 0');
+      setFormError('กรุณาระบุจำนวนคะแนนที่ไม่เป็น 0');
       return;
     }
     if (!finalReason) {
-      alert('กรุณาระบุเหตุผล');
+      setFormError('กรุณาระบุเหตุผล');
       return;
     }
+    setFormError(null);
     setSubmitting(true);
     try {
       await onAdd(officer, selectedDelta, finalReason);
@@ -470,6 +551,9 @@ function EditPointsModal({
               <div className="flex items-center gap-1.5">
                 <span className={level.textClass}>{level.label}</span>
                 {levelUp && <span className="text-emerald-400">→ <strong>{newLevel.label}</strong> 🎉</span>}
+                {!levelUp && newLevel.min < level.min && (
+                  <span className="text-red-400">→ <strong>{newLevel.label}</strong> ⚠</span>
+                )}
               </div>
             </div>
           </div>
@@ -524,6 +608,12 @@ function EditPointsModal({
             )}
           </div>
         </div>
+
+        {formError && (
+          <div className="mx-4 sm:mx-5 mb-2 text-[11px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 flex items-center gap-1.5 flex-shrink-0">
+            <AlertCircle size={12} /> {formError}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex items-center gap-2 p-4 sm:p-5 border-t border-blue-900/40 bg-navy-900/40 flex-shrink-0">
