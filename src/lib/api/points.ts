@@ -151,41 +151,137 @@ export async function deleteOfficerPointsLog(
   return (data as unknown as Officer) ?? ({ id: officerId, points: newPoints } as unknown as Officer);
 }
 
+/* =============================================================
+ * รีเซ็ตคะแนนสะสมประจำเดือน
+ * ============================================================= */
+
+export type PointsResetMode =
+  /** เฉพาะคนที่ยังไม่ได้เข้างวดปัจจุบัน (งวดเก่ากว่า หรือไม่มีค่างวดเลย) */
+  | 'stale'
+  /** ทุกคน ไม่ว่างวดไหน */
+  | 'all';
+
+export interface PointsResetResult {
+  mode: PointsResetMode;
+  period: string;
+  /** จำนวนคนที่รีเซ็ต */
+  affected: number;
+  /** จำนวนคนที่ข้าม (ไม่เข้าเงื่อนไข) */
+  skipped: number;
+  /** ผู้ที่รีเซ็ตสำเร็จ */
+  names: string[];
+  /** ผู้ที่รีเซ็ตไม่สำเร็จ */
+  failures: Array<{ name: string; message: string }>;
+}
+
+function currentPeriod(): string {
+  return new Date().toISOString().slice(0, 7);
+}
+
+/** นับจำนวนคนที่จะถูกรีเซ็ตล่วงหน้า (เอาไว้แสดงในกล่องยืนยัน) */
+export async function previewPointsReset(mode: PointsResetMode = 'all'): Promise<{
+  period: string;
+  total: number;
+  affected: number;
+  skipped: number;
+  pointsBefore: number;
+}> {
+  const period = currentPeriod();
+  const { data, error } = await supabase
+    .from('officers')
+    .select('id, name, points, points_period, status');
+  if (error) throw error;
+
+  const rows = (data ?? []) as Array<{
+    id: string; name: string; points: number; points_period: string | null; status: string;
+  }>;
+
+  let affected = 0;
+  let skipped = 0;
+  let pointsBefore = 0;
+
+  for (const row of rows) {
+    if (row.status === 'deleted') { skipped += 1; continue; }
+    const isStale = !row.points_period || row.points_period < period;
+    const target = mode === 'all' || isStale;
+    if (target) { affected += 1; pointsBefore += Number(row.points) || 0; }
+    else skipped += 1;
+  }
+
+  return { period, total: rows.length, affected, skipped, pointsBefore };
+}
+
+/**
+ * รีเซ็ตคะแนนสะสมเป็น 0
+ *
+ * ข้อผิดพลาดที่เคยทำให้ปุ่มกดแล้วไม่มีอะไรเกิดขึ้น:
+ *   1. เงื่อนไขเดิม `points_period < เดือนนี้` เป็น false เกือบเสมอ
+ *      เพราะคอลัมน์ points_period มี default = เดือนปัจจุบัน → ไม่มีใครเข้าเงื่อนไข
+ *   2. คนที่ points_period IS NULL ถูกข้ามไปเฉย ๆ
+ *   3. points_log ถูก "แทนที่" ทั้งประวัติทิ้ง แทนที่จะต่อท้าย
+ */
 export async function resetMonthlyPeriod(
   actorId: string,
   actorName: string,
-): Promise<{ affected: number }> {
-  const newPeriod = new Date().toISOString().slice(0, 7);
+  mode: PointsResetMode = 'all',
+): Promise<PointsResetResult> {
+  const period = currentPeriod();
 
-  const { data: all, error: fetchErr } = await supabase
+  const { data, error: fetchErr } = await supabase
     .from('officers')
-    .select('id, points_period, points_log, points');
+    .select('id, name, points, points_period, points_log, status');
   if (fetchErr) throw fetchErr;
 
-  let affected = 0;
-  for (const row of (all ?? []) as Array<{ id: string; points_period: string | null; points_log: PointsLogEntry[]; points: number }>) {
-    if (row.points_period && row.points_period < newPeriod) {
-      const { error: upErr } = await supabase
-        .from('officers')
-        .update({
-          points: 0,
-          points_period: newPeriod,
-          points_log: [
-            {
-              at: new Date().toISOString(),
-              by: actorId,
-              by_name: actorName,
-              delta: -row.points,
-              reason: `รีเซ็ตคะแนนประจำเดือน (เก่า: ${row.points_period})`,
-              balance_after: 0,
-              period: newPeriod,
-            },
-          ],
-        })
-        .eq('id', row.id);
-      if (upErr) throw upErr;
-      affected++;
+  const rows = (data ?? []) as Array<{
+    id: string;
+    name: string;
+    points: number | null;
+    points_period: string | null;
+    points_log: PointsLogEntry[] | null;
+    status: string;
+  }>;
+
+  const result: PointsResetResult = {
+    mode, period, affected: 0, skipped: 0, names: [], failures: [],
+  };
+
+  for (const row of rows) {
+    if (row.status === 'deleted') { result.skipped += 1; continue; }
+
+    const isStale = !row.points_period || row.points_period < period;
+    if (mode === 'stale' && !isStale) { result.skipped += 1; continue; }
+
+    const oldPoints = Number(row.points) || 0;
+    const oldLog = (row.points_log as PointsLogEntry[]) ?? [];
+    const entry: PointsLogEntry = {
+      at: new Date().toISOString(),
+      by: actorId,
+      by_name: actorName,
+      delta: -oldPoints,
+      reason: mode === 'all'
+        ? `รีเซ็ตคะแนนทั้งหมดเป็น 0 (งวดก่อน: ${row.points_period ?? 'ไม่ระบุ'})`
+        : `รีเซ็ตคะแนนประจำเดือน (งวดก่อน: ${row.points_period ?? 'ไม่ระบุ'})`,
+      balance_after: 0,
+      period,
+    };
+
+    // ต่อท้ายประวัติเดิม ไม่ลบทิ้ง — คง audit trail ไว้
+    const { error: upErr } = await supabase
+      .from('officers')
+      .update({
+        points: 0,
+        points_period: period,
+        points_log: [...oldLog, entry],
+      })
+      .eq('id', row.id);
+
+    if (upErr) {
+      result.failures.push({ name: row.name, message: upErr.message });
+    } else {
+      result.affected += 1;
+      result.names.push(row.name);
     }
   }
-  return { affected };
+
+  return result;
 }

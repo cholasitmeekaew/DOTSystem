@@ -8,7 +8,12 @@ import {
   POINTS_REWARDS, POINTS_PENALTIES, getPointsLevel,
 } from '../../lib/types';
 import { supabase } from '../../lib/supabase';
-import { addOfficerPoints, deleteOfficerPointsLog, resetMonthlyPeriod } from '../../lib/api/points';
+import {
+  addOfficerPoints, deleteOfficerPointsLog, resetMonthlyPeriod, previewPointsReset,
+  type PointsResetMode, type PointsResetResult,
+} from '../../lib/api/points';
+import { useToast } from '../../hooks/use-toast';
+import { ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
 import { FadeIn } from '../../components/animations';
 
@@ -25,6 +30,12 @@ export function PointsManagementPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Officer | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [resetMode, setResetMode] = useState<PointsResetMode | null>(null);
+  const [resetPreview, setResetPreview] = useState<{
+    period: string; total: number; affected: number; skipped: number; pointsBefore: number;
+  } | null>(null);
+  const [resetPreviewLoading, setResetPreviewLoading] = useState(false);
+  const { toast } = useToast();
 
   async function fetchAll() {
     setLoading(true);
@@ -99,17 +110,43 @@ export function PointsManagementPage() {
     }
   }
 
+  /** เปิดกล่องยืนยัน พร้อมดูจำนวนคนที่จะถูกรีเซ็ตก่อนลงมือ */
+  async function openReset(mode: PointsResetMode) {
+    setResetMode(mode);
+    setResetPreview(null);
+    setResetPreviewLoading(true);
+    try {
+      setResetPreview(await previewPointsReset(mode));
+    } catch (e) {
+      toast({ title: 'อ่านข้อมูลไม่สำเร็จ', description: (e as Error).message, variant: 'destructive' });
+    } finally {
+      setResetPreviewLoading(false);
+    }
+  }
+
   async function handleReset() {
-    if (!actor) return;
-    if (!confirm(`รีเซ็ตคะแนนทั้งหมดเป็น 0 สำหรับงวดใหม่ "${new Date().toISOString().slice(0, 7)}"?\n\nการกระทำนี้ไม่สามารถยกเลิกได้`)) return;
+    if (!actor || !resetMode) return;
     setResetting(true);
     try {
-      const { affected } = await resetMonthlyPeriod(actor.id, actor.name);
-      alert(`รีเซ็ตสำเร็จ — อัปเดต ${affected} คน`);
+      const r: PointsResetResult = await resetMonthlyPeriod(actor.id, actor.name, resetMode);
       await fetchAll();
       setEditing(null);
+      setResetMode(null);
+
+      if (r.failures.length > 0) {
+        toast({
+          title: `รีเซ็ตสำเร็จ ${r.affected} คน · ไม่สำเร็จ ${r.failures.length} คน`,
+          description: r.failures.map((f) => `${f.name}: ${f.message}`).join(' · '),
+          variant: 'destructive',
+        });
+      } else {
+        toast({
+          title: 'รีเซ็ตคะแนนสำเร็จ',
+          description: `งวด ${r.period} · อัปเดต ${r.affected} คน · ข้าม ${r.skipped} คน`,
+        });
+      }
     } catch (e) {
-      alert(`เกิดข้อผิดพลาด: ${(e as Error).message}`);
+      toast({ title: 'รีเซ็ตไม่สำเร็จ', description: (e as Error).message, variant: 'destructive' });
     } finally {
       setResetting(false);
     }
@@ -123,14 +160,26 @@ export function PointsManagementPage() {
         subtitle="เพิ่ม/ลดคะแนน และรีเซ็ตประจำเดือน"
         actions={
           isCommissioner && (
-            <button
-              onClick={handleReset}
-              disabled={resetting}
-              className="btn-secondary flex items-center gap-2 disabled:opacity-50"
-            >
-              <RotateCcw size={16} className={resetting ? 'animate-spin' : ''} />
-              รีเซ็ตประจำเดือน
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => openReset('stale')}
+                disabled={resetting}
+                className="btn-secondary flex items-center gap-2 text-xs disabled:opacity-50"
+                title="รีเซ็ตเฉพาะคนที่คะแนนยังเป็นของงวดก่อน"
+              >
+                <RotateCcw size={14} className={resetting ? 'animate-spin' : ''} />
+                รีเซ็ตงวดเก่า
+              </button>
+              <button
+                onClick={() => openReset('all')}
+                disabled={resetting}
+                className="btn-secondary flex items-center gap-2 text-xs text-amber-400 hover:text-amber-300 border-amber-500/40 disabled:opacity-50"
+                title="รีเซ็ตคะแนนทุกคนเป็น 0 ไม่ว่าจะอยู่งวดไหน"
+              >
+                <RotateCcw size={14} className={resetting ? 'animate-spin' : ''} />
+                รีเซ็ตทุกคนเป็น 0
+              </button>
+            </div>
           )
         }
       />
@@ -193,6 +242,26 @@ export function PointsManagementPage() {
           onClose={() => setEditing(null)}
           onAdd={handleAddPoints}
           onDeleteLog={handleDeleteLog}
+        />
+      )}
+
+      {/* กล่องยืนยันรีเซ็ตคะแนน */}
+      {resetMode && (
+        <ConfirmDialog
+          title={resetMode === 'all' ? 'รีเซ็ตคะแนนทุกคนเป็น 0' : 'รีเซ็ตเฉพาะงวดเก่า'}
+          message={
+            resetPreviewLoading
+              ? 'กำลังตรวจสอบข้อมูล...'
+              : resetPreview
+                ? `งวด ${resetPreview.period} · จะรีเซ็ต ${resetPreview.affected} คน (ข้าม ${resetPreview.skipped} คน)`
+                  + `\nยอดคะแนนที่จะถูกล้างรวม ${resetPreview.pointsBefore.toLocaleString('th-TH')} คะแนน`
+                  + '\n\nประวัติคะแนนเดิมยังคงอยู่ (ต่อท้ายรายการรีเซ็ต) การกระทำนี้ย้อนกลับไม่ได้'
+                : 'ไม่พบข้อมูล'
+          }
+          confirmLabel={resetting ? 'กำลังรีเซ็ต...' : 'ยืนยันรีเซ็ต'}
+          danger
+          onConfirm={handleReset}
+          onCancel={() => { setResetMode(null); setResetPreview(null); }}
         />
       )}
     </div>
