@@ -319,6 +319,8 @@ export interface DutySchedule {
   start_time: string;
   end_time: string;
   officer_id: string | null;
+  /** จำนวนคนที่ต้องการในกะนี้ (migration 0030) — 1 ช่องกะมีหลายคนได้ */
+  required_officers?: number;
   note: string | null;
   is_active: boolean;
   created_at: string;
@@ -335,6 +337,8 @@ export interface ScheduleOverride {
   shift_code: ScheduleCellCode;
   officer_id: string | null;
   override_type: ScheduleOverrideType;
+  /** กำลังพลที่ต้องการเฉพาะวันนี้ (migration 0030) — ไม่ระบุ = ใช้ค่าของตารางหลัก */
+  required_officers?: number | null;
   note: string | null;
   source: ScheduleOverrideSource;
   ref_id: string | null;

@@ -178,7 +178,7 @@ export function LeaveManagementPage() {
   }
 
   async function deleteLeave(id: string) {
-    // ลบ override ของใบลานี้ด้วย เพื่อไม่ให้ตารางเวรค้างสถานะ "ลา"
+    // ลบเฉพาะ override ที่สร้างจากใบลานี้ (ref_id) ไม่แตะข้อยกเว้นของคนอื่น
     await supabase.from('schedule_overrides').delete().eq('ref_id', id);
     await supabase.from('officer_leaves').delete().eq('id', id);
     setConfirmDelete(null);
@@ -219,13 +219,15 @@ export function LeaveManagementPage() {
       }
     }
     if (rows.length === 0) return;
-    // upsert ทีละแถวเพื่อไม่ต้องพึ่ง onConflict (jsonDb ไม่รองรับซับซ้อน)
+    // upsert ทีละแถวโดยยึดคีย์ (วัน, กะ, คน) — ต้องระบุคนด้วย เพราะตารางรองรับ
+    // หลายคนต่อช่องกะแล้ว (migration 0030) การค้นแค่วัน+กะจะทับของคนอื่น
     for (const row of rows) {
       const { data: existing } = await supabase
         .from('schedule_overrides')
         .select('id')
         .eq('override_date', row.override_date as string)
         .eq('shift_code', row.shift_code as string)
+        .eq('officer_id', row.officer_id as string)
         .maybeSingle();
       if (existing && existing.id) {
         await supabase.from('schedule_overrides').update(row).eq('id', existing.id);

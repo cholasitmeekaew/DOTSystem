@@ -98,111 +98,177 @@ export function shiftWeek(anchorIso: string, delta: number): string {
   return toIso(start);
 }
 
-/* ---------- ผลลัพธ์ต่อช่องตาราง ---------- */
+/* ---------- ผลลัพธ์ต่อช่องตาราง (รองรับหลายคนต่อกะ) ---------- */
+
+/** กำลังพลที่ต้องการเมื่อยังไม่ได้กำหนด */
+export const DEFAULT_REQUIRED_OFFICERS = 2;
+
+/** 1 คนในช่องกะของวันนั้น */
+export interface RosterMember {
+  officerId: string;
+  officerName: string;
+  /** ป้ายเฉพาะของคนนี้: ลา / เวรสลับ / เวรพิเศษ */
+  badge: string | null;
+  /** มาจาก schedule_overrides หรือผังประจำ */
+  fromOverride: boolean;
+}
 
 export interface RosterCell {
   date: string;
   shift: ScheduleCellCode;
-  officerId: string | null;
-  officerName: string | null;
-  /** ป้ายสถานะพิเศษ: ลา / เวรสลับ / เวรพิเศษ / หยุด */
-  badge: string | null;
-  overrideType: ScheduleOverride['override_type'] | null;
-  /** มาจาก schedule_overrides หรือไม่ */
-  fromOverride: boolean;
+  members: RosterMember[];
   /** ช่วงเวลาของกะนี้ในวันนั้น (คำนวณจากประเภทวัน) */
   startTime: string;
   endTime: string;
   /** เป็นวันหยุด (เสาร์–อาทิตย์) หรือไม่ */
   weekend: boolean;
+  /** จำนวนคนที่ต้องการ */
+  required: number;
+  /** ช่องนี้มีข้อยกเว้นอยู่ */
+  fromOverride: boolean;
+  /** ปิดทั้งช่องกะ */
+  closed: boolean;
 }
 
 export interface WeeklyRoster {
   days: WeekDay[];
-  /** rows[shift][date] = RosterCell */
   rows: Record<ScheduleCellCode, Record<string, RosterCell>>;
   /** จำนวนช่องที่มีคนจริง */
   assignedCount: number;
-  /** จำนวนช่องที่ถูกทำเครื่องหมายว่าไม่มีคน (เช่น ว่าง/ลา) */
+  /** จำนวนช่องที่ยังขาดคนจากกำลังพลที่กำหนด */
+  understaffedCount: number;
+  /** จำนวนช่องที่ไม่มีคนเลย */
   gapCount: number;
 }
 
+/**
+ * สร้างตารางเวรรายสัปดาห์ที่ resolve แล้ว
+ *
+ * กติกาการรวม (ต่อช่องกะของ 1 วัน):
+ *   1. มี override 'off' ที่ officer_id = null  → ปิดทั้งช่อง
+ *   2. มี override 'swap'                      → ใช้คนใน swap แทนผังประจำทั้งช่อง
+ *   3. ไม่งั้น → เริ่มจากผังประจำ (รองรับหลายคน)
+ *   4. ตัดคนที่ 'leave' / 'off' เฉพาะบุคคลออก
+ *   5. เติมคนที่ 'extra'
+ */
 export function buildWeeklyRoster(params: {
   anchorIso: string;
   schedules: DutySchedule[];
   overrides: ScheduleOverride[];
   officers: Officer[];
-  /** เวลาเริ่ม/จบของแต่ละกะ ใช้แสดงผลในหัวตาราง */
-  shiftTimes?: Record<ScheduleCellCode, { start: string; end: string }>;
 }): WeeklyRoster {
   const { anchorIso, schedules, overrides, officers } = params;
-  void params.shiftTimes;
   const days = buildWeekDays(anchorIso);
   const daySet = new Set(days.map((d) => d.date));
 
   const nameById = new Map(officers.map((o) => [o.id, o.name]));
-  const scheduleByCell = new Map<string, DutySchedule>();
+
+  // ผังประจำ: weekday+shift → หลายแถว (หลายคน)
+  const baseBySlot = new Map<string, DutySchedule[]>();
   for (const s of schedules) {
     if (s.is_active === false) continue;
-    scheduleByCell.set(`${s.weekday}:${s.shift_code}`, s);
+    const key = `${s.weekday}:${s.shift_code}`;
+    const list = baseBySlot.get(key) ?? [];
+    list.push(s);
+    baseBySlot.set(key, list);
   }
-  const overrideByCell = new Map<string, ScheduleOverride>();
+
+  // ข้อยกเว้น: date+shift → หลายแถว
+  const overrideBySlot = new Map<string, ScheduleOverride[]>();
   for (const o of overrides) {
     if (!daySet.has(o.override_date)) continue;
-    overrideByCell.set(`${o.override_date}:${o.shift_code}`, o);
+    const key = `${o.override_date}:${o.shift_code}`;
+    const list = overrideBySlot.get(key) ?? [];
+    list.push(o);
+    overrideBySlot.set(key, list);
   }
 
   const rows = {} as Record<ScheduleCellCode, Record<string, RosterCell>>;
   let assignedCount = 0;
+  let understaffedCount = 0;
   let gapCount = 0;
 
   for (const shift of SHIFT_ORDER) {
     rows[shift] = {};
     for (const day of days) {
-      const key = `${day.date}:${shift}`;
-      const override = overrideByCell.get(key);
-      const base = scheduleByCell.get(`${day.weekday}:${shift}`);
+      const base = baseBySlot.get(`${day.weekday}:${shift}`) ?? [];
+      const ovs = overrideBySlot.get(`${day.date}:${shift}`) ?? [];
 
-      let officerId: string | null = base?.officer_id ?? null;
-      let fromOverride = false;
-      let badge: string | null = null;
-      let overrideType: ScheduleOverride['override_type'] | null = null;
+      const closed = ovs.some((o) => !o.officer_id && o.override_type === 'off');
+      const swaps = ovs.filter((o) => o.override_type === 'swap' && o.officer_id);
+      const leaves = ovs.filter((o) => o.override_type === 'leave' && o.officer_id);
+      const extras = ovs.filter((o) => o.override_type === 'extra' && o.officer_id);
+      const offPeople = ovs.filter((o) => o.override_type === 'off' && o.officer_id);
 
-      if (override) {
-        fromOverride = true;
-        overrideType = override.override_type;
-        badge = OVERRIDE_TYPE_LABELS[override.override_type] ?? null;
-        // 'off' = หยุดประจำสัปดาห์นี้ → ไม่มีคน
-        if (override.override_type === 'off') {
-          officerId = null;
-        } else {
-          officerId = override.officer_id ?? null;
-        }
+      const badgeById = new Map<string, string>();
+      for (const o of leaves) badgeById.set(o.officer_id!, OVERRIDE_TYPE_LABELS.leave);
+      for (const o of swaps) badgeById.set(o.officer_id!, OVERRIDE_TYPE_LABELS.swap);
+      for (const o of extras) badgeById.set(o.officer_id!, OVERRIDE_TYPE_LABELS.extra);
+
+      let pool: string[];
+      if (closed) {
+        pool = [];
+      } else if (swaps.length > 0) {
+        pool = swaps.map((o) => o.officer_id!);      // สลับเวร = ใช้คนชุดใหม่ล้วน
+      } else {
+        pool = base.map((s) => s.officer_id).filter((id): id is string => !!id);
       }
 
-      const name = officerId ? nameById.get(officerId) ?? null : null;
-      if (name) assignedCount++;
-      else gapCount++;
+      const removed = new Set<string>([
+        ...leaves.map((o) => o.officer_id!),
+        ...offPeople.map((o) => o.officer_id!),
+      ]);
 
-      // เวลาอ้างอิงจากตารางเวลาจริงของเซิร์ฟเวอร์ (จ-ศ ต่างจาก ส-อา)
-      // ถ้า duty_schedules มีเวลากำหนดเองไว้ ให้ใช้ค่านั้นแทน
+      const members: RosterMember[] = [];
+      const seen = new Set<string>();
+      for (const id of pool) {
+        if (removed.has(id) || seen.has(id)) continue;
+        seen.add(id);
+        members.push({
+          officerId: id,
+          officerName: nameById.get(id) ?? 'ไม่ทราบชื่อ',
+          badge: badgeById.get(id) ?? null,
+          fromOverride: ovs.some((o) => o.officer_id === id),
+        });
+      }
+      for (const o of extras) {
+        const id = o.officer_id!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        members.push({
+          officerId: id,
+          officerName: nameById.get(id) ?? 'ไม่ทราบชื่อ',
+          badge: OVERRIDE_TYPE_LABELS.extra,
+          fromOverride: true,
+        });
+      }
+
+      // กำลังพลที่ต้องการ: override ของวันนั้น > ผังประจำ > ค่าเริ่มต้น
+      const ovRequired = ovs.find((o) => typeof o.required_officers === 'number')?.required_officers;
+      const baseRequired = base.find((s) => typeof s.required_officers === 'number')?.required_officers;
+      const required = ovRequired ?? baseRequired ?? DEFAULT_REQUIRED_OFFICERS;
+
       const fallback = shiftWindowFor(day.weekday, shift);
+
+      if (members.length > 0) assignedCount++;
+      else gapCount++;
+      if (members.length > 0 && members.length < required) understaffedCount++;
+
       rows[shift][day.date] = {
         date: day.date,
         shift,
-        officerId,
-        officerName: name,
-        badge,
-        overrideType,
-        fromOverride,
-        startTime: base?.start_time || fallback.start,
-        endTime: base?.end_time || fallback.end,
+        members,
+        startTime: base[0]?.start_time || fallback.start,
+        endTime: base[0]?.end_time || fallback.end,
         weekend: isWeekend(day.weekday),
+        required,
+        fromOverride: ovs.length > 0,
+        closed,
       };
     }
   }
 
-  return { days, rows, assignedCount, gapCount };
+  return { days, rows, assignedCount, understaffedCount, gapCount };
 }
 
 /**
@@ -221,21 +287,26 @@ export function resolveScheduledOfficerIds(params: {
   for (const o of overrides) {
     if (!o.officer_id) continue;
     if (o.override_date < fromIso || o.override_date > toDateIso) continue;
-    if (o.override_type === 'off') continue;   // หยุด = ไม่ถือว่ามีเวร
+    if (o.override_type === 'leave' || o.override_type === 'off') continue; // ไม่มีเวรจริง
     ids.add(o.officer_id);
   }
 
   for (const s of schedules) {
     if (s.is_active === false) continue;
     if (!s.officer_id) continue;
-    // ตารางหลักเป็นรายสัปดาห์ → ดูว่าสัปดาห์นั้นทับกับช่วงที่ถามไหม
     const weeklyDates = datesForWeekdayBetween(fromIso, toDateIso, s.weekday);
     if (weeklyDates.length === 0) continue;
-    // ถ้าทุกวันที่ตรงกันถูก override เป็น 'off' ให้ถือว่ามีเวรจริงเฉพาะวันที่ยังไม่ถูกปิด
-    const allOff = weeklyDates.every((d) =>
-      overrides.some((o) => o.override_date === d && o.shift_code === s.shift_code && o.override_type === 'off'),
+    // ถ้าทุกวันของสัปดาห์นั้นถูก override ออก (ลา/ปิด) ให้ถือว่าไม่มีเวร
+    const allRemoved = weeklyDates.every((d) =>
+      overrides.some(
+        (o) =>
+          o.override_date === d &&
+          o.shift_code === s.shift_code &&
+          (o.override_type === 'off' ||
+            (o.override_type === 'leave' && o.officer_id === s.officer_id)),
+      ),
     );
-    if (!allOff) ids.add(s.officer_id);
+    if (!allRemoved) ids.add(s.officer_id);
   }
 
   return ids;
@@ -271,8 +342,8 @@ export function findRosterGaps(roster: WeeklyRoster): RosterGap[] {
     for (const day of roster.days) {
       const cell = roster.rows[shift]?.[day.date];
       if (!cell) continue;
-      if (cell.officerId) continue;
-      if (cell.overrideType === 'leave' || cell.overrideType === 'off') continue;
+      if (cell.members.length > 0) continue;
+      if (cell.closed) continue;        // ปิดทั้งช่อง = ตั้งใจ ไม่ถือว่าว่าง
       gaps.push({ date: day.date, weekday: day.weekday, shift });
     }
   }
@@ -330,12 +401,31 @@ export function findWeeklyAbsentees(params: {
 
 /** สรุปสถานะช่องตารางสำหรับแสดงในหัวตาราง */
 export function cellToneClass(cell: RosterCell): string {
-  if (cell.overrideType === 'leave') return 'bg-blue-500/10 border-blue-500/40 text-blue-300';
-  if (cell.overrideType === 'off') return 'bg-navy-800 border-blue-900/40 text-gray-500';
-  if (cell.overrideType === 'swap') return 'bg-amber-500/10 border-amber-500/40 text-amber-300';
-  if (cell.overrideType === 'extra') return 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300';
-  if (!cell.officerId) return 'bg-navy-900/60 border-red-500/25 text-gray-600';
-  return 'bg-navy-700/60 border-blue-900/50 text-gray-200';
+  if (cell.closed) return 'bg-navy-800 border-blue-900/40 text-gray-500';
+  if (cell.members.length === 0) return 'bg-navy-900/60 border-red-500/25 text-gray-600';
+  if (cell.members.length < cell.required) return 'bg-amber-500/[0.07] border-amber-500/35 text-gray-200';
+  return 'bg-navy-700/60 border-emerald-500/25 text-gray-200';
+}
+
+/** ป้ายสถานะกำลังพลของช่อง: "กำลังพลครบ" / "ยังว่างอยู่" / "ยังไม่มีคน" */
+export function cellStaffingLabel(cell: RosterCell): {
+  text: string; tone: 'ok' | 'short' | 'empty' | 'closed';
+} {
+  if (cell.closed) return { text: 'ปิดเวร', tone: 'closed' };
+  const n = cell.members.length;
+  if (n === 0) return { text: 'ยังไม่มีคน', tone: 'empty' };
+  if (n < cell.required) return { text: `ยังว่างอยู่ ${cell.required - n}`, tone: 'short' };
+  return { text: 'กำลังพลครบ', tone: 'ok' };
+}
+
+/** สีของป้ายสถานะกำลังพล */
+export function staffingToneClass(tone: 'ok' | 'short' | 'empty' | 'closed'): string {
+  switch (tone) {
+    case 'ok': return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
+    case 'short': return 'bg-amber-500/15 text-amber-300 border-amber-500/40';
+    case 'closed': return 'bg-navy-700 text-gray-500 border-blue-900/50';
+    default: return 'bg-red-500/15 text-red-300 border-red-500/40';
+  }
 }
 
 export { SHIFT_LABELS };
