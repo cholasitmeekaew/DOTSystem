@@ -2056,18 +2056,29 @@ function WeeklyRosterPanel({
 
   return (
     <div className="space-y-3">
-      <div className="card p-3.5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-bold text-white">ตารางเวรประจำสัปดาห์</h2>
-          <p className="text-xs text-gray-400">สัปดาห์ของ {weekLabel}</p>
-          <p className="text-[11px] text-amber-400/80 mt-0.5">
-            จ–ศ {serverHoursFor(1).start}–{serverHoursFor(1).end} · ส–อ {serverHoursFor(6).start}–{serverHoursFor(6).end}
+      {/* แถวเดียว ย่อตัวได้ — ห้ามใช้ flex-wrap เพราะจะดันหัวข้อไปบรรทัดสอง
+          แล้วบังหัวข้อจนดูเหมือนไม่มีอยู่ */}
+      <div className="card px-4 py-2.5 flex flex-nowrap items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-bold text-white truncate leading-tight">
+            ตารางเวรประจำสัปดาห์
+          </h2>
+          <p className="text-[11px] text-gray-400 truncate leading-tight mt-0.5">
+            {weekLabel}
+            <span className="text-amber-400/70">
+              {' · '}จ–ศ {serverHoursFor(1).start}–{serverHoursFor(1).end}
+              {' · '}ส–อ {serverHoursFor(6).start}–{serverHoursFor(6).end}
+            </span>
           </p>
         </div>
-        <div className="flex items-center gap-1.5">
-          <button onClick={onPrev} className="btn-secondary px-2.5 py-2"><ChevronLeft size={15} /></button>
-          <button onClick={onToday} className="btn-secondary px-3 py-2 text-xs">วันนี้</button>
-          <button onClick={onNext} className="btn-secondary px-2.5 py-2"><ChevronRight size={15} /></button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button onClick={onPrev} className="btn-secondary px-2 py-1.5" aria-label="สัปดาห์ก่อนหน้า">
+            <ChevronLeft size={14} />
+          </button>
+          <button onClick={onToday} className="btn-secondary px-2.5 py-1.5 text-xs">วันนี้</button>
+          <button onClick={onNext} className="btn-secondary px-2 py-1.5" aria-label="สัปดาห์ถัดไป">
+            <ChevronRight size={14} />
+          </button>
         </div>
       </div>
 
