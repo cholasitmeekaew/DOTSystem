@@ -1,6 +1,7 @@
 import { useState, lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import { QueryProvider } from './hooks/useQueryProvider';
+import { Toaster } from './components/ui/toaster';
 import { Officer } from './lib/types';
 
 // Public
@@ -149,6 +150,8 @@ export default function App() {
   return (
     <QueryProvider>
       <AuthProvider>
+        {/* ต้อง mount ที่นี่เดียว ไม่งั้น toast() ทุกจุดในระบบจะไม่แสดงผล */}
+        <Toaster />
         <AppRouter />
       </AuthProvider>
     </QueryProvider>

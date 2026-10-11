@@ -118,8 +118,16 @@ export function OperationsPage() {
     setRosterOfficers((offRes.data ?? []) as Officer[]);
   }
 
+  /** แจ้งผลลงใน modal (ไม่ใช้ toast เพื่อให้ผู้ใช้เห็นคำว่า "บันทึกแล้ว" แน่นอน) */
+  const [saveFlash, setSaveFlash] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  function flash(kind: 'ok' | 'err', text: string) {
+    setSaveFlash({ kind, text });
+    if (kind === 'ok') setTimeout(() => setSaveFlash(null), 2500);
+  }
+
   /**
-   * บันทึกผังประจำสัปดาห์ของ 1 ช่องกะ (หลายคนได้)
+   * แท็บ 1 — บันทึกผังประจำสัปดาห์ของ 1 ช่องกะ (หลายคนได้)
    * = ลบแถวเดิมของช่องนี้ทั้งหมด แล้วเขียนใหม่ 1 แถวต่อ 1 คน
    */
   async function saveScheduleSlot(params: {
@@ -127,50 +135,93 @@ export function OperationsPage() {
     shift: ShiftCode;
     officerIds: string[];
     required: number;
-  }) {
+  }): Promise<boolean> {
     const { weekday, shift, officerIds, required } = params;
-    await supabase.from('duty_schedules').delete().eq('weekday', weekday).eq('shift_code', shift);
+    try {
+      const { error: delErr } = await supabase
+        .from('duty_schedules').delete().eq('weekday', weekday).eq('shift_code', shift);
+      if (delErr) throw delErr;
 
-    for (const officerId of officerIds) {
-      const win = shiftWindowFor(weekday, shift);
-      await supabase.from('duty_schedules').insert({
-        weekday,
-        shift_code: shift,
-        shift_name: SHIFT_LABELS[shift],
-        start_time: win.start,
-        end_time: win.end,
-        officer_id: officerId,
-        required_officers: required,
-        is_active: true,
-      });
+      for (const officerId of officerIds) {
+        const win = shiftWindowFor(weekday, shift);
+        const { error } = await supabase.from('duty_schedules').insert({
+          weekday,
+          shift_code: shift,
+          shift_name: SHIFT_LABELS[shift],
+          start_time: win.start,
+          end_time: win.end,
+          officer_id: officerId,
+          required_officers: required,
+          is_active: true,
+        });
+        if (error) throw error;
+      }
+      await fetchScheduleData();
+      flash('ok', `บันทึกผังประจำ ${SHIFT_LABELS[shift]} สำเร็จ — ${officerIds.length} คน`);
+      return true;
+    } catch (e) {
+      flash('err', `บันทึกผังประจำไม่สำเร็จ: ${(e as Error).message}`);
+      await fetchScheduleData();
+      return false;
     }
-    setEditingCell(null);
-    await fetchScheduleData();
   }
 
-  /** บันทึกข้อยกเว้นของ 1 วัน (หลายคนได้) — เขียนใหม่ทั้งช่องของวันนั้น */
+  /** แท็บ 3 — บันทึกข้อยกเว้นของ 1 วัน (หลายคนได้) — เขียนใหม่ทั้งช่องของวันนั้น */
   async function saveOverrideSlot(params: {
     date: string;
     shift: ScheduleCellCode;
     entries: Array<{ officerId: string | null; type: ScheduleOverride['override_type'] }>;
-  }) {
+  }): Promise<boolean> {
     const { date, shift, entries } = params;
-    await supabase.from('schedule_overrides').delete().eq('override_date', date).eq('shift_code', shift);
+    try {
+      const { error: delErr } = await supabase
+        .from('schedule_overrides').delete().eq('override_date', date).eq('shift_code', shift);
+      if (delErr) throw delErr;
 
-    for (const e of entries) {
-      await supabase.from('schedule_overrides').insert({
-        override_date: date,
-        shift_code: shift,
-        officer_id: e.officerId,
-        override_type: e.type,
-        note: OVERRIDE_TYPE_LABELS[e.type] ?? null,
-        source: 'manual',
-        created_by: officer?.id ?? null,
-        created_by_name: officer?.name ?? null,
-      });
+      for (const e of entries) {
+        const { error } = await supabase.from('schedule_overrides').insert({
+          override_date: date,
+          shift_code: shift,
+          officer_id: e.officerId,
+          override_type: e.type,
+          note: OVERRIDE_TYPE_LABELS[e.type] ?? null,
+          source: 'manual',
+          created_by: officer?.id ?? null,
+          created_by_name: officer?.name ?? null,
+        });
+        if (error) throw error;
+      }
+      await fetchScheduleData();
+      const label = entries.length === 0
+        ? 'ล้างข้อยกเว้นของวันนี้'
+        : entries.length === 1 && !entries[0].officerId
+          ? 'ปิดเวรทั้งช่อง'
+          : `บันทึกข้อยกเว้น ${entries.length} รายการ`;
+      flash('ok', `${label} สำเร็จ`);
+      return true;
+    } catch (e) {
+      flash('err', `บันทึกข้อยกเว้นไม่สำเร็จ: ${(e as Error).message}`);
+      await fetchScheduleData();
+      return false;
     }
-    setEditingCell(null);
-    await fetchScheduleData();
+  }
+
+  /** ล้าง override ของกะหนึ่งครบทั้งสัปดาห์ (ใช้จากแท็บ "สลับเวรทั้งสัปดาห์") */
+  async function clearWeekOverrides(shift: ScheduleCellCode): Promise<boolean> {
+    const dates = weeklyRoster.days.map((d) => d.date);
+    try {
+      for (const date of dates) {
+        const { error } = await supabase
+          .from('schedule_overrides').delete().eq('override_date', date).eq('shift_code', shift);
+        if (error) throw error;
+      }
+      await fetchScheduleData();
+      flash('ok', `ล้างการสลับเวรของสัปดาห์นี้แล้ว (${dates.length} วัน)`);
+      return true;
+    } catch (e) {
+      flash('err', `ล้างการสลับเวรไม่สำเร็จ: ${(e as Error).message}`);
+      return false;
+    }
   }
 
   async function clearOverride(date: string, shift: ScheduleCellCode) {
@@ -288,13 +339,35 @@ export function OperationsPage() {
   }
 
   /** สลับเวรทั้งสัปดาห์: เขียน override ทุกวันของสัปดาห์ที่แสดงอยู่ */
-  async function swapShiftForWeek(shift: ShiftCode, toOfficerId: string) {
-    for (const day of weeklyRoster.days) {
-      await saveOverrideSlot({
-        date: day.date,
-        shift,
-        entries: [{ officerId: toOfficerId, type: 'swap' }],
-      });
+  /** แท็บ 2 — สลับเวรทั้งสัปดาห์: เขียน override ครบทุกวันของสัปดาห์ที่เปิดอยู่ */
+  async function swapShiftForWeek(shift: ShiftCode, toOfficerId: string): Promise<boolean> {
+    const target = rosterOfficers.find((o) => o.id === toOfficerId);
+    const days = weeklyRoster.days.map((d) => d.date);
+    try {
+      for (const date of days) {
+        const { error: delErr } = await supabase
+          .from('schedule_overrides').delete().eq('override_date', date).eq('shift_code', shift);
+        if (delErr) throw delErr;
+
+        const { error } = await supabase.from('schedule_overrides').insert({
+          override_date: date,
+          shift_code: shift,
+          officer_id: toOfficerId,
+          override_type: 'swap',
+          note: `สลับเวรเป็น ${target?.name ?? ''} (สัปดาห์นี้)`,
+          source: 'manual',
+          created_by: officer?.id ?? null,
+          created_by_name: officer?.name ?? null,
+        });
+        if (error) throw error;
+      }
+      await fetchScheduleData();
+      flash('ok', `บันทึกการสลับเวรสำเร็จ — ${target?.name ?? ''} รับผิดชอบ ${SHIFT_LABELS[shift]} ครบ ${days.length} วัน`);
+      return true;
+    } catch (e) {
+      flash('err', `บันทึกการสลับเวรไม่สำเร็จ: ${(e as Error).message}`);
+      await fetchScheduleData();
+      return false;
     }
   }
 
@@ -1740,7 +1813,9 @@ export function OperationsPage() {
           onSaveOverride={saveOverrideSlot}
           onClearOverride={clearOverride}
           onSwapWeek={swapShiftForWeek}
+          onClearWeek={clearWeekOverrides}
           weekDays={weeklyRoster.days.map((d) => d.date)}
+          saveFlash={saveFlash}
         />
       )}
 
@@ -2048,7 +2123,7 @@ function WeeklyRosterPanel({
     entries: Array<{ officerId: string | null; type: ScheduleOverride['override_type'] }>;
   }) => void;
   onClearOverride: (date: string, shift: ScheduleCellCode) => void;
-  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => void;
+  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => Promise<boolean>;
 }) {
   const rankById = useMemo(() => new Map(officers.map((o) => [o.id, o.rank])), [officers]);
   const weekLabel = `${roster.days[0]?.dayOfMonth ?? ''}–${roster.days[6]?.dayOfMonth ?? ''} ${monthLabelOf(roster.days[0]?.date ?? weekAnchor)}`;
@@ -2193,7 +2268,8 @@ function RankGlyph({ rank }: { rank?: string }) {
 
 function ShiftStaffingModal({
   date, shift, cell, baseOfficerIds, existingOverrides, officers, onClose,
-  onSaveBase, onSaveOverride, onClearOverride, onSwapWeek, weekDays,
+  onSaveBase, onSaveOverride, onClearOverride, onSwapWeek, onClearWeek, weekDays,
+  saveFlash,
 }: {
   date: string;
   shift: ShiftCode;
@@ -2202,184 +2278,259 @@ function ShiftStaffingModal({
   existingOverrides: ScheduleOverride[];
   officers: Officer[];
   onClose: () => void;
-  onSaveBase: (p: { weekday: number; shift: ShiftCode; officerIds: string[]; required: number }) => void;
+  onSaveBase: (p: { weekday: number; shift: ShiftCode; officerIds: string[]; required: number }) => Promise<boolean>;
   onSaveOverride: (p: {
     date: string; shift: ScheduleCellCode;
     entries: Array<{ officerId: string | null; type: ScheduleOverride['override_type'] }>;
-  }) => void;
+  }) => Promise<boolean>;
   onClearOverride: (date: string, shift: ScheduleCellCode) => void;
-  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => void;
+  onSwapWeek: (shift: ShiftCode, toOfficerId: string) => Promise<boolean>;
+  onClearWeek: (shift: ScheduleCellCode) => Promise<boolean>;
   weekDays: string[];
+  saveFlash: { kind: 'ok' | 'err'; text: string } | null;
 }) {
-  const weekday = new Date(`${date}T00:00:00`).getDay();
-  const dateLabel = new Date(`${date}T00:00:00`).toLocaleDateString('th-TH', {
-    weekday: 'long', day: 'numeric', month: 'short',
-  });
+  const [tab, setTab] = useState<'roster' | 'swap' | 'exception'>('roster');
+  const [busy, setBusy] = useState(false);
 
+  // ---------- แท็บ 1: ผังประจำ ----------
   const [baseIds, setBaseIds] = useState<string[]>(baseOfficerIds);
   const [required, setRequired] = useState(cell.required || DEFAULT_REQUIRED_OFFICERS);
 
-  // เปิดมาแล้วต้องเห็นค่าเดิมของวันนั้นจริง ๆ ไม่ใช่ค่าที่ resolve หลัง override แล้ว
+  // ---------- แท็บ 2: สลับเวรทั้งสัปดาห์ ----------
+  const [swapId, setSwapId] = useState('');
+
+  // ---------- แท็บ 3: ข้อยกเว้น ----------
   const initial = existingOverrides[0];
+  const [closed, setClosed] = useState(
+    existingOverrides.some((o) => !o.officer_id && o.override_type === 'off'),
+  );
   const [ovType, setOvType] = useState<ScheduleOverride['override_type']>(
-    initial?.override_type === 'off' ? 'leave' : initial?.override_type ?? 'leave',
+    initial?.override_type && initial.override_type !== 'off' ? initial.override_type : 'leave',
   );
   const [ovIds, setOvIds] = useState<string[]>(
     existingOverrides.filter((o) => o.officer_id && o.override_type !== 'off').map((o) => o.officer_id!),
   );
-  const [closed, setClosed] = useState(existingOverrides.some((o) => !o.officer_id && o.override_type === 'off'));
 
+  const weekday = new Date(`${date}T00:00:00`).getDay();
+  const dateLabel = new Date(`${date}T00:00:00`).toLocaleDateString('th-TH', {
+    weekday: 'long', day: 'numeric', month: 'short',
+  });
   const win = shiftWindowFor(weekday, shift);
   const allIds = officers.map((o) => o.id);
 
   const toggleIn = (list: string[], id: string, set: (v: string[]) => void) =>
     set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
+  /** บันทึกสำเร็จ → ปิด modal (รีเฟรชตารางทำงานใน handler ให้แล้ว) */
+  async function run(fn: () => Promise<boolean>) {
+    setBusy(true);
+    const ok = await fn();
+    setBusy(false);
+    if (ok) setTimeout(onClose, 550);
+  }
+
+  const tabs = [
+    { id: 'roster' as const, label: 'จัดผังประจำ' },
+    { id: 'swap' as const, label: 'สลับเวรทั้งสัปดาห์' },
+    { id: 'exception' as const, label: 'ข้อยกเว้น / แจ้งลา' },
+  ];
+
   return (
     <Modal
-      title={`จัดกำลังพล — ${SHIFT_LABELS[shift]} · ${dateLabel}`}
+      title={`${SHIFT_LABELS[shift]} · ${dateLabel}`}
       onClose={onClose}
       size="lg"
     >
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-3 text-xs">
+        {/* แถบสรุป */}
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
           <span className="px-2 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono">
             {dayTypeLabel(weekday)} · {win.start}–{win.end}
           </span>
-          <label className="flex items-center gap-1.5">
-            <span className="text-gray-400">ต้องการ</span>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={required}
-              onChange={(e) => setRequired(Math.max(1, parseInt(e.target.value) || 1))}
-              className="input-field !w-16 !py-1 !px-2 !text-xs text-center"
-            />
-            <span className="text-gray-500">คน</span>
-          </label>
-          <span className="text-gray-500">เลือกแล้ว {baseIds.length} คน</span>
-        </div>
-
-        {/* ---------- ผังประจำสัปดาห์ ---------- */}
-        <div className="card p-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-bold text-white">ผังประจำสัปดาห์ (ใช้ทุกสัปดาห์)</h3>
-            <button
-              onClick={() => setBaseIds(baseIds.length === allIds.length ? [] : allIds)}
-              className="text-[10px] text-amber-400 hover:text-amber-300"
-            >
-              {baseIds.length === allIds.length ? 'ล้างทั้งหมด' : 'เลือกทั้งหมด'}
-            </button>
-          </div>
-          <OfficerPickerGrid
-            officers={officers}
-            selected={baseIds}
-            onToggle={(id) => toggleIn(baseIds, id, setBaseIds)}
-          />
-          <button
-            onClick={() => onSaveBase({ weekday, shift, officerIds: baseIds, required })}
-            className="btn-primary w-full mt-3 flex items-center justify-center gap-2"
-          >
-            <CheckCircle2 size={15} /> บันทึกตารางเวร (ผังประจำสัปดาห์)
-          </button>
-        </div>
-
-        {/* ---------- สลับเวรทั้งสัปดาห์ ---------- */}
-        <div className="card p-3">
-          <div className="flex items-center gap-1.5 mb-2">
-            <Repeat size={12} className="text-amber-400" />
-            <h3 className="text-xs font-bold text-white">สลับเวรทั้งสัปดาห์</h3>
-            <span className="text-[10px] text-gray-500">
-              เปลี่ยนผู้รับผิดชอบของ {SHIFT_LABELS[shift]} ครบทั้ง {weekDays.length} วัน
+          <span className="text-gray-500">กำลังพล {cell.members.length}/{cell.required}</span>
+          {cell.fromOverride && (
+            <span className="px-2 py-1 rounded-full bg-blue-500/10 text-blue-300 border border-blue-500/30">
+              มีข้อยกเว้นของวันนี้
             </span>
-          </div>
-          <select
-            className="input-field !py-1.5 !text-xs"
-            value=""
-            onChange={(e) => { if (e.target.value) onSwapWeek(shift, e.target.value); }}
-          >
-            <option value="">— เลือกผู้ที่ต้องการสลับมาทั้งสัปดาห์ —</option>
-            {officers
-              .filter((o) => !baseIds.includes(o.id))
-              .map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-          </select>
-          <p className="text-[10px] text-gray-500 mt-1.5">
-            ช่องกะทั้งสัปดาห์จะเปลี่ยนเป็นชื่อนี้ พร้อมป้าย &quot;เวรสลับ&quot;
-          </p>
+          )}
         </div>
 
-        {/* ---------- ข้อยกเว้นของวันนี้ ---------- */}
-        <div className="card p-3 border-blue-900/50">
-          <h3 className="text-xs font-bold text-white mb-2">ข้อยกเว้นของวันนี้ (ไม่กระทบผังประจำ)</h3>
-
-          <label className="flex items-center gap-2 mb-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={closed}
-              onChange={(e) => setClosed(e.target.checked)}
-              className="w-4 h-4 accent-amber-500"
-            />
-            <span className="text-xs text-gray-300">ปิดเวรทั้งช่องวันนี้</span>
-          </label>
-
-          {!closed && (
-            <>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {(Object.keys(OVERRIDE_TYPE_LABELS) as ScheduleOverride['override_type'][])
-                  .filter((t) => t !== 'off')
-                  .map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => { setOvType(t); setOvIds([]); }}
-                      className={`px-2 py-1 rounded-full text-[11px] font-semibold border transition-all ${
-                        ovType === t
-                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/50'
-                          : 'bg-navy-800 text-gray-400 border-blue-900/60 hover:text-white'
-                      }`}
-                    >
-                      {OVERRIDE_TYPE_LABELS[t]}
-                    </button>
-                  ))}
-              </div>
-              <p className="text-[10px] text-gray-500 mb-2">
-                เลือกเจ้าหน้าที่ที่
-                {ovType === 'leave' ? 'ลา' : ovType === 'swap' ? 'เข้าเวรแทนผังประจำ' : 'เข้าเวรเพิ่ม'}
-                ในวันนี้
-              </p>
-              <OfficerPickerGrid
-                officers={officers}
-                selected={ovIds}
-                onToggle={(id) => toggleIn(ovIds, id, setOvIds)}
-              />
-            </>
-          )}
-
-          <div className="flex gap-2 mt-3">
+        {/* แท็บ */}
+        <div className="flex gap-1 p-1 bg-navy-900/60 border border-blue-900/40 rounded-lg">
+          {tabs.map((t) => (
             <button
-              onClick={() => onSaveOverride({
-                date,
-                shift,
-                entries: closed
-                  ? [{ officerId: null, type: 'off' }]
-                  : ovIds.map((id) => ({ officerId: id, type: ovType })),
-              })}
-              className="btn-primary flex-1 flex items-center justify-center gap-2"
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex-1 px-2 py-1.5 rounded-md text-[11px] font-semibold transition-all ${
+                tab === t.id
+                  ? 'bg-gradient-to-b from-amber-300 to-amber-500 text-navy-900'
+                  : 'text-gray-400 hover:text-white'
+              }`}
             >
-              <CheckCircle2 size={15} /> บันทึกข้อยกเว้นวันนี้
+              {t.label}
             </button>
-            {cell.fromOverride && (
+          ))}
+        </div>
+
+        {/* ผลลัพธ์การบันทึก */}
+        {saveFlash && (
+          <div className={`text-[11px] px-3 py-2 rounded-lg border flex items-center gap-1.5 ${
+            saveFlash.kind === 'ok'
+              ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+              : 'bg-red-500/10 text-red-300 border-red-500/30'
+          }`}>
+            {saveFlash.kind === 'ok' ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+            {saveFlash.text}
+          </div>
+        )}
+
+        {/* ============ แท็บ 1: จัดผังประจำ ============ */}
+        {tab === 'roster' && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-gray-400">
+                ต้องการ
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={required}
+                  onChange={(e) => setRequired(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="input-field !w-16 !py-1 !px-2 text-center"
+                />
+                คน/กะ
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-gray-500">เลือกแล้ว {baseIds.length} คน</span>
+                <button
+                  onClick={() => setBaseIds(baseIds.length === allIds.length ? [] : allIds)}
+                  className="text-[10px] text-amber-400 hover:text-amber-300"
+                >
+                  {baseIds.length === allIds.length ? 'ล้างทั้งหมด' : 'เลือกทั้งหมด'}
+                </button>
+              </div>
+            </div>
+            <OfficerPickerGrid
+              officers={officers}
+              selected={baseIds}
+              onToggle={(id) => toggleIn(baseIds, id, setBaseIds)}
+            />
+            <button
+              onClick={() => run(() => onSaveBase({ weekday, shift, officerIds: baseIds, required }))}
+              disabled={busy}
+              className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+              บันทึกผังประจำ
+            </button>
+          </div>
+        )}
+
+        {/* ============ แท็บ 2: สลับเวรทั้งสัปดาห์ ============ */}
+        {tab === 'swap' && (
+          <div className="space-y-3">
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              เลือกเจ้าหน้าที่ที่จะมารับผิดชอบ <strong className="text-white">{SHIFT_LABELS[shift]}</strong> แทนทั้งสัปดาห์
+              ({weekDays.length} วัน) — ทุกช่องกะจะขึ้นป้าย &quot;เวรสลับ&quot;
+              และไม่กระทบผังประจำที่ตั้งไว้ในแท็บ &quot;จัดผังประจำ&quot;
+            </p>
+            <select
+              className="input-field text-xs"
+              value={swapId}
+              onChange={(e) => setSwapId(e.target.value)}
+            >
+              <option value="">— เลือกเจ้าหน้าที่ —</option>
+              {officers.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+            <button
+              onClick={() => swapId && run(() => onSwapWeek(shift, swapId))}
+              disabled={busy || !swapId}
+              className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <Repeat size={15} />}
+              บันทึกการสลับเวร
+            </button>
+            <button
+              onClick={() => run(() => onClearWeek(shift))}
+              disabled={busy}
+              className="btn-secondary w-full text-xs disabled:opacity-50"
+            >
+              ล้างการสลับเวรทั้งสัปดาห์นี้
+            </button>
+          </div>
+        )}
+
+        {/* ============ แท็บ 3: ข้อยกเว้น / แจ้งลา ============ */}
+        {tab === 'exception' && (
+          <div className="space-y-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={closed}
+                onChange={(e) => setClosed(e.target.checked)}
+                className="w-4 h-4 accent-amber-500"
+              />
+              <span className="text-xs text-gray-300">ปิดเวรทั้งช่องของวันนี้</span>
+            </label>
+
+            {!closed && (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {(Object.keys(OVERRIDE_TYPE_LABELS) as ScheduleOverride['override_type'][])
+                    .filter((t) => t !== 'off')
+                    .map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => { setOvType(t); setOvIds([]); }}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all ${
+                          ovType === t
+                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/50'
+                            : 'bg-navy-800 text-gray-400 border-blue-900/60 hover:text-white'
+                        }`}
+                      >
+                        {OVERRIDE_TYPE_LABELS[t]}
+                      </button>
+                    ))}
+                </div>
+                <p className="text-[10px] text-gray-500">
+                  เลือกเจ้าหน้าที่ที่
+                  {ovType === 'leave' ? 'ลา' : ovType === 'swap' ? 'เข้าเวรแทนผังประจำ' : 'เข้าเวรเพิ่ม'}
+                  ในวันนี้
+                </p>
+                <OfficerPickerGrid
+                  officers={officers}
+                  selected={ovIds}
+                  onToggle={(id) => toggleIn(ovIds, id, setOvIds)}
+                />
+              </>
+            )}
+
+            <div className="flex gap-2">
               <button
-                onClick={() => onClearOverride(date, shift)}
-                className="btn-secondary px-3"
-                title="ล้างข้อยกเว้นของวันนี้"
+                onClick={() => run(() => onSaveOverride({
+                  date,
+                  shift,
+                  entries: closed
+                    ? [{ officerId: null, type: 'off' }]
+                    : ovIds.map((id) => ({ officerId: id, type: ovType })),
+                }))}
+                disabled={busy || (!closed && ovIds.length === 0)}
+                className="btn-primary flex-1 flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {busy ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                บันทึกข้อยกเว้น
+              </button>
+              <button
+                onClick={() => run(() => onSaveOverride({ date, shift, entries: [] }))}
+                disabled={busy || !cell.fromOverride}
+                className="btn-secondary px-3 disabled:opacity-40"
+                title="ล้างข้อยกเว้นของวันนี้ทั้งหมด"
               >
                 <Trash2 size={15} />
               </button>
-            )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </Modal>
   );
