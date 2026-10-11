@@ -79,7 +79,9 @@ src/
 └── pages/
     ├── public/  10 หน้า
     └── officer/ 16 หน้า
-supabase/migrations/ 0001–0027 (27 ไฟล์, 23 ตาราง, 22 ฟังก์ชัน, 1 trigger)
+supabase/migrations/ 0001–0030 (30 ไฟล์, 27 ตาราง, 22 ฟังก์ชัน, 1 trigger)
+│   └── APPLY_0027-0030.sql  # รวม 0027→0030 สำหรับ paste ใน SQL Editor (idempotent)
+│   └── VERIFY.sql           # query ตรวจสอบ 18 รายการในผลลัพธ์เดียว
 ```
 
 ---
@@ -116,7 +118,7 @@ supabase/migrations/ 0001–0027 (27 ไฟล์, 23 ตาราง, 22 ฟั
 
 ## 3. ฐานข้อมูล (Supabase)
 
-**27 migrations · 23 ตาราง · 0 ENUM (ใช้ inline CHECK ทั้งหมด) · 0 VIEW · 1 TRIGGER**
+**30 migrations · 27 ตาราง · 0 ENUM (ใช้ inline CHECK ทั้งหมด) · 0 VIEW · 1 TRIGGER**
 
 ### 3.1 ตารางทั้งหมด
 
@@ -125,7 +127,7 @@ supabase/migrations/ 0001–0027 (27 ไฟล์, 23 ตาราง, 22 ฟั
 | `officer_ranks` | id, label, rank_key(unique), sort_order, is_active | 0001 |
 | `officer_generations` | id, label, generation_key(unique), sort_order, **is_trainee**, is_active | **0027** |
 | `officers` | id, username(unique), password_hash, name, rank, department, status, is_on_duty, photo_url, **points**, points_period, **points_log(jsonb)**, **duty_rate**, **service_category**, **accumulated_share**, **auth_user_id**, **generation**, **sort_order** | 0001+0006+0007+0009+0017+**0027** |
-| `system_settings` | **singleton** `id=1 CHECK(id=1)`, duty_system_enabled, login_enabled | 0001 |
+| `system_settings` | **singleton** `id=1 CHECK(id=1)`, duty_system_enabled, login_enabled, **auto_points_enabled** | 0001 + **0028** |
 | `citizens` | id, roblox_username, discord_username, status, notes | 0001 |
 | `vehicles` | license_plate, owner_name, vehicle_type, color, brand_model, vehicle_category, citizen_id, is_impounded + impound_reason/location/at/by(_name) + released_at/by(_name), notes, image_url | 0001 |
 | `licenses` | roblox_username, discord_username, license_type, license_number(unique), issue_date, expiry_date, status, issued_by(_name), notes, citizen_id | 0001 |
@@ -139,14 +141,18 @@ supabase/migrations/ 0001–0027 (27 ไฟล์, 23 ตาราง, 22 ฟั
 | `claim_records` | officer_id, service_record_id, amount, scope, officer_share_percent, claim_period, record_count, status, claimed_by, approved_by/at, rejected_by/at/reason, paid_by/at, note | 0009 |
 | `payroll_overrides` | PK(officer_id, period_month), manual_duty_income, manual_service_income, manual_bonus, manual_total_net_payout, is_manual_mode, updated_by | 0010 |
 | `duty_logs` | officer_id(_name), clock_in, clock_out, duration_minutes, forced_by(_name), checkout_method, **soft delete** (deleted_at/by(_name)/delete_reason) | 0001 |
-| `work_reports` | officer_id, duty_log_id, report_text, **summary**, **duty_category** | 0011+0014+0023 |
+| `work_reports` | officer_id, duty_log_id, report_text, **summary**, **duty_category**, **status**(pending/approved/rejected), reviewed_by(_name)/at, review_note, **reviewed_points** · RLS ปิด | 0011+0014+0023+**0028** |
 | `work_report_cases` | work_report_id, case_name, case_type, citizen_username, citizen_id, case_status(default 'completed'), details, evidence_url | 0014+0023 |
-| `complaints` | complainant_name, complainant_contact, officer_name, category, discord_username, incident_datetime, details, evidence_url, status — **ไม่มี updated_at** | 0001 |
+| `complaints` | complainant_name, complainant_contact, officer_name, category, discord_username, incident_datetime, details, evidence_url, status — **ไม่มี updated_at** · status รับเพิ่ม `verified` | 0001 + **0028** |
 | `emergency_reports` | discord_username, report_type, details, location, image_url, status, responded_by(_name) | 0001 |
 | `announcements` | title, content, image_url, is_pinned, created_by(_name) | 0001 |
-| `officer_leaves` | officer_id(_name), leave_type, start_date, end_date, status, reason, reviewed_by(_name)/at, review_note | 0001 |
+| `officer_leaves` | officer_id(_name), leave_type, start_date, end_date, status, reason, reviewed_by(_name)/at, review_note, **days** (cache สำหรับคิดโควตา) | 0001 + **0028** |
 | `audit_logs` | bigserial, action, target_type, target_id, performed_by(_name), details(jsonb) | 0001 |
 | `manual_items` | variant(default 'officer'), title, content, image_url, created_by(_name) — **ไม่มี updated_at** | 0026 |
+| `leave_quotas` | leave_type PK, quota_days (**0 = ไม่จำกัด**), notes, updated_by(_name) | **0028** |
+| `duty_schedules` | **1 แถวต่อ 1 คน** ต่อช่องกะ: weekday(0-6), shift_code(`s1`/`s2`), start/end_time, officer_id, **required_officers**, note, is_active | **0028 + 0029 + 0030** |
+| `schedule_overrides` | 1 แถวต่อ 1 คน ต่อช่องกะของวันนั้น: override_date, shift_code, officer_id, override_type(`swap`/`leave`/`extra`/`off`), source, ref_id | **0028 + 0029 + 0030** |
+| `points_award_marks` | **mark_key UNIQUE** (กันให้คะแนนซ้ำ), officer_id, delta, reason | **0028** |
 
 > ตารางที่ไม่มี trigger ดูแล `updated_at` → client ต้องส่ง `updated_at` เองเสมอ
 
@@ -208,8 +214,8 @@ preview_claim_share / claim_service_share (0020):
 - `audit_logs` insert policy = `auth.uid() is not null` → ในทางปฏิบัติ**บันทึก audit log ได้ทุกคน**
 - `manual_items` policies = `using(true) with check(true)` → **ใครก็ insert/update/delete ได้**
 
-### 3.5 Realtime Publication (`supabase_realtime`) — 14 ตาราง
-`officers, duty_logs, service_records, emergency_reports, officer_leaves, complaints, announcements, vehicles, citizens, licenses, service_payments, work_reports, work_report_cases, officer_generations`
+### 3.5 Realtime Publication (`supabase_realtime`) — 16 ตาราง
+`officers, duty_logs, service_records, emergency_reports, officer_leaves, complaints, announcements, vehicles, citizens, licenses, service_payments, work_reports, work_report_cases, officer_generations, duty_schedules, schedule_overrides`
 **ไม่อยู่ใน publication**: service_rates, claim_records, payroll_overrides, manual_items, audit_logs, department_balances, revenue_sharing_config, service_record_officers
 
 ### 3.6 Storage — 5 buckets (ทั้งหมด `public = true`)
@@ -662,3 +668,10 @@ per_officer   = (override ?? officer_share) / max(1, assigned_officer_count)
 14. **เจ้าหน้าที่ใหม่ต้องส่ง `sort_order = max(sort_order)+1` เสมอ** (ใช้ `nextSortOrder()`) เพราะ JSON mode ไม่มี DB default
 15. **การจัดลำดับใหม่ต้อง update เฉพาะแถวที่ `sort_order` เปลี่ยนจริง** และ **ต้อง optimistic update + ย้อนกลับเมื่อ error**
 16. **การจัดลำดับห้ามแตะเจ้าหน้าที่ที่ถูกกรองออก** — ใช้การแทนที่เฉพาะ slot ของแถวที่มองเห็น (ดู `commitReorder`)
+17. **shift_code มีแค่ `s1` / `s2`** (กะที่ 1 / กะที่ 2) — ห้ามใช้ `day`/`night` เด็ดขาด · เวลามาจาก `shiftWindowFor(weekday, shift)` (จ–ศ กับ ส–อ ต่างกัน)
+18. **`duty_schedules` / `schedule_overrides` = 1 แถวต่อ 1 คน** — ห้ามเขียนหลายคนรวมฟิลด์เดียว · UNIQUE อยู่ที่ `(slot, officer_id)`
+19. **การอนุมัติใบลาเขียน `schedule_overrides` ด้วยคีย์ 3 ชั้น** `(override_date, shift_code, officer_id)` — ห้ามค้นแค่วัน+กะ เพราะจะทับของคนอื่น
+20. **การให้/หักคะแนนอัตโนมัติต้องผ่าน `addAutomaticPoints()`** เท่านั้น (มันตรวจ `auto_points_enabled` ใน `points.ts`) · `addOfficerPoints()` ใช้เฉพาะการให้คะแนนด้วยมือ
+21. **ก่อนให้คะแนนอัตโนมัติทุกครั้งต้องเขียน `points_award_marks` ด้วย mark_key** เพื่อกันการให้ซ้ำ
+22. **`policy` ของ `system_settings` ต้องเป็น read + update แบบ `using(true)`** — ห้ามย้อนกลับไปใช้ `current_rank()` (ระบบไม่ได้ login ผ่าน Supabase Auth จึงได้ NULL เสมอ)
+23. **ตัดคะแนนขาดเวรต้องมีเงื่อนไขว่าอยู่ในตารางเวรด้วย** — ใช้ `resolveScheduledOfficerIds()` ไม่ใช่นับจาก duty_logs อย่างเดียว
