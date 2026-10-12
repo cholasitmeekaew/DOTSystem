@@ -13,9 +13,10 @@ import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/PageHeader';
 import { Modal } from '../../components/Modal';
+import { ReportDetailModal } from '../../components/ReportDetailModal';
 import {
   RANK_LABELS, WORK_REPORT_STATUS_LABELS,
-  type Officer, type OfficerRankRecord, type WorkReport,
+  type Officer, type OfficerRankRecord, type WorkReport, type WorkReportCase,
 } from '../../lib/types';
 import { deleteWorkReport, dutyCategoryLabel } from '../../lib/api/workReportsAdmin';
 
@@ -56,6 +57,8 @@ export function WorkReportsAdminPage() {
   const [target, setTarget] = useState<WorkReport | null>(null);
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState<WorkReport | null>(null);
+  /** เคสของรายงานที่กำลังดู — โหลดตอนเปิด modal (RLS ให้อ่านตาม report_id เดียว) */
+  const [viewCases, setViewCases] = useState<WorkReportCase[]>([]);
   const [deletedHint, setDeletedHint] = useState<number | null>(null);
 
   async function load() {
@@ -346,7 +349,14 @@ export function WorkReportsAdminPage() {
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1">
                         <button
-                          onClick={() => setView(r)}
+                          onClick={async () => {
+                            setView(r);
+                            const { data } = await supabase
+                              .from('work_report_cases').select('*')
+                              .eq('work_report_id', r.id)
+                              .order('created_at', { ascending: true });
+                            setViewCases((data ?? []) as WorkReportCase[]);
+                          }}
                           className="p-1.5 rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10"
                           title="ดูรายงานฉบับเต็ม"
                         >
@@ -438,59 +448,17 @@ export function WorkReportsAdminPage() {
         </Modal>
       )}
 
-      {/* ---------- รายละเอียดฉบับเต็ม ---------- */}
+      {/* ---------- รายละเอียดฉบับเต็ม (component เดียวกับหน้าอนุมัติรายงาน) ---------- */}
       {view && (
-        <Modal
-          title={`รายงานของ ${view.officer_id ? (byOfficer.get(view.officer_id)?.name ?? view.officer_name) : view.officer_name}`}
-          onClose={() => setView(null)}
-          size="lg"
-        >
-          <div className="space-y-3 text-xs">
-            <div className="grid sm:grid-cols-2 gap-2">
-              {[
-                ['ประเภทงาน', dutyCategoryLabel(view.duty_category)],
-                ['ส่งเมื่อ', fmtDT(view.created_at)],
-                ['สถานะ', STATUS_STYLE[statusKeyOf(view)].label],
-                ['จำนวนเคส', `${caseCounts[view.id] ?? 0} เคส`],
-                ['ผู้ตรวจ', view.reviewed_by_name ?? '—'],
-                ['ตรวจเมื่อ', view.reviewed_at ? fmtDT(view.reviewed_at) : '—'],
-              ].map(([k, v]) => (
-                <div key={k} className="flex gap-2">
-                  <span className="text-gray-500 w-24 flex-shrink-0">{k}</span>
-                  <span className="text-gray-200">{v}</span>
-                </div>
-              ))}
-            </div>
-
-            {view.review_note && (
-              <div className="rounded-lg bg-navy-900/50 border border-blue-900/40 px-3 py-2">
-                <div className="text-[10px] text-gray-500 mb-1">หมายเหตุผู้ตรวจ</div>
-                <div className="text-gray-200 italic">{view.review_note}</div>
-              </div>
-            )}
-
-            <div>
-              <div className="text-[10px] text-gray-500 mb-1">สรุปรายงาน</div>
-              <div className="text-gray-200 leading-relaxed">{view.summary || '—'}</div>
-            </div>
-
-            <div>
-              <div className="text-[10px] text-gray-500 mb-1">เนื้อหารายงาน</div>
-              <div className="text-gray-300 leading-relaxed whitespace-pre-wrap">{view.report_text || '—'}</div>
-            </div>
-
-            <div className="flex gap-2 pt-2 border-t border-blue-900/40">
-              <button
-                onClick={() => { setTarget(view); setView(null); }}
-                className="btn-danger flex items-center gap-1.5 text-xs"
-              >
-                <Trash2 size={13} /> ลบรายงานนี้
-              </button>
-              <button onClick={() => setView(null)} className="btn-secondary text-xs ml-auto">ปิด</button>
-            </div>
-          </div>
-        </Modal>
+        <ReportDetailModal
+          report={view}
+          cases={viewCases}
+          deleting={saving}
+          onDelete={() => setTarget(view)}
+          onClose={() => { setView(null); setViewCases([]); }}
+        />
       )}
+
     </div>
   );
 }

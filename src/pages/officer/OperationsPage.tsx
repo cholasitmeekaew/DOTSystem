@@ -15,6 +15,7 @@ import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { ConfirmDialog, Modal } from '../../components/Modal';
 import { IdCard } from '../../components/IdCard';
+import { ReportDetailModal } from '../../components/ReportDetailModal';
 import { PageHeader } from '../../components/PageHeader';
 import { randomizeWeeklyRoster, isLeader, leaderLabel, type RandomizeResult, type LeaveRecord } from '../../lib/rosterRandomizer';
 import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
@@ -1480,83 +1481,14 @@ export function OperationsPage({
         </Modal>
       )}
 
+      {/* ---------- Modal: ดูรายละเอียดรายงาน (ใช้ component กลางร่วมกับฝั่ง Admin) ---------- */}
       {viewReport && (
-        <Modal title={`รายงานของ ${viewReport.officer_name}`} onClose={() => { setViewReport(null); setViewReportCases([]); }} size="xl">
-          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
-            {/* ---------- สถานะรายงาน ---------- */}
-            <ReportStatusBanner report={viewReport} />
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="bg-navy-900/50 border border-blue-900/40 rounded-lg p-3">
-                <div className="text-[10px] text-gray-500 mb-1">วันที่ส่งรายงาน</div>
-                <div className="text-xs text-gray-300">{formatTime(viewReport.created_at)}</div>
-              </div>
-              <div className="bg-navy-900/50 border border-blue-900/40 rounded-lg p-3">
-                <div className="text-[10px] text-gray-500 mb-1">หมวดงาน</div>
-                <div className="text-sm text-white">{getDutyCategoryLabel(viewReport.duty_category)}</div>
-              </div>
-              <div className="bg-navy-900/50 border border-blue-900/40 rounded-lg p-3">
-                <div className="text-[10px] text-gray-500 mb-1">จำนวนเคส</div>
-                <div className="text-sm font-semibold text-amber-300">{viewReportCases.length.toLocaleString('th-TH')} เคส</div>
-              </div>
-            </div>
-
-            {(viewReport.summary || viewReport.report_text) && (
-              <div className="bg-navy-900/50 p-3 rounded-lg border border-blue-900/40">
-                <div className="text-xs text-gray-500 mb-1">รายละเอียดภาพรวม</div>
-                <div className="text-sm text-gray-200 whitespace-pre-wrap">{viewReport.summary || viewReport.report_text}</div>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              {viewReportCases.length === 0 ? (
-                <p className="text-gray-500 text-sm">ไม่มีเคสในรายงานนี้</p>
-              ) : viewReportCases.map((item, idx) => (
-                <div key={item.id} className="bg-navy-900/50 p-4 rounded-lg border border-blue-900/40 space-y-3">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <div>
-                      <div className="text-xs font-bold text-amber-400">เคส #{idx + 1}</div>
-                      <div className="text-white text-sm font-semibold mt-0.5">{item.case_name || item.case_type || 'ไม่ระบุชื่อเคส'}</div>
-                    </div>
-                    <Badge variant={item.case_status === 'completed' ? 'success' : item.case_status === 'transferred' ? 'warning' : 'neutral'}>
-                      {getCaseStatusLabel(item.case_status)}
-                    </Badge>
-                  </div>
-
-                  {item.citizen_username && (
-                    <button
-                      type="button"
-                      onClick={() => openCitizenProfileFromCase(item)}
-                      className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded-lg px-2.5 py-1 hover:bg-blue-500/20 transition-colors"
-                    >
-                      <ExternalLink size={12} />
-                      ประชาชนที่เกี่ยวข้อง: {item.citizen_username}
-                    </button>
-                  )}
-
-                  {item.details && <p className="text-sm text-gray-200 whitespace-pre-wrap">{item.details}</p>}
-                  {item.evidence_url && (
-                    <button type="button" onClick={() => setViewEvidenceUrl(item.evidence_url!)} className="block group">
-                      <img src={item.evidence_url} alt="ภาพหลักฐาน" className="max-h-48 max-w-full rounded-lg border border-blue-900/50 object-contain bg-navy-900 group-hover:opacity-90 transition-opacity" />
-                      <span className="block text-[11px] text-emerald-400 group-hover:underline mt-1">คลิกเพื่อดูภาพขนาดเต็ม</span>
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button onClick={() => { setViewReport(null); setViewReportCases([]); }} className="btn-secondary">ปิด</button>
-          </div>
-        </Modal>
-      )}
-
-      {viewEvidenceUrl && (
-        <Modal title="รูปภาพหลักฐาน" onClose={() => setViewEvidenceUrl(null)} size="lg">
-          <div className="flex justify-center">
-            <img src={viewEvidenceUrl} alt="ภาพหลักฐาน" className="max-w-full max-h-[70vh] rounded-lg object-contain" />
-          </div>
-        </Modal>
+        <ReportDetailModal
+          report={viewReport}
+          cases={viewReportCases}
+          onClose={() => { setViewReport(null); setViewReportCases([]); }}
+          onOpenCitizen={openCitizenProfileFromCase}
+        />
       )}
 
       {viewCitizen && (
@@ -2700,91 +2632,5 @@ function RandomizeRosterModal({
         </div>
       </div>
     </Modal>
-  );
-}
-
-/* ---------- Banner สถานะรายงาน (ใน modal ดูรายละเอียด) ---------- */
-function ReportStatusBanner({ report }: { report: WorkReport }) {
-  const status = (report.status ?? 'pending') as WorkReportStatus;
-
-  const config = {
-    pending: {
-      label: 'รอตรวจ',
-      chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
-      dot: 'bg-amber-400',
-      Icon: Clock,
-      hint: 'รายงานนี้ยังไม่ได้รับการตรวจ',
-    },
-    approved: {
-      label: 'อนุมัติแล้ว',
-      chip: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
-      dot: 'bg-emerald-400',
-      Icon: CheckCircle2,
-      hint: 'รายงานนี้ได้รับการอนุมัติแล้ว',
-    },
-    rejected: {
-      label: 'ไม่อนุมัติ',
-      chip: 'bg-red-500/15 text-red-300 border-red-500/40',
-      dot: 'bg-red-400',
-      Icon: XCircle,
-      hint: 'รายงานนี้ไม่ผ่านการตรวจ',
-    },
-  }[status];
-
-  const Icon = config.Icon;
-  const reviewed = Boolean(report.reviewed_by_name);
-
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3
-                    rounded-lg border border-blue-900/40 bg-navy-900/40 px-4 py-3">
-      <div className="flex items-start gap-2.5 min-w-0">
-        <Icon size={16} className={`mt-0.5 flex-shrink-0 ${config.chip.split(' ')[1]}`} />
-        <div className="min-w-0">
-          <div className="text-[10px] text-gray-500">สถานะรายงาน</div>
-          <div className="flex items-center gap-2 mt-1 flex-wrap">
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-semibold ${config.chip}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${config.dot}`} />
-              {config.label}
-            </span>
-            {reviewed && (
-              <span className="text-[10px] text-gray-500">
-                ตรวจโดย: <span className="text-gray-300">{report.reviewed_by_name}</span>
-                {report.reviewed_at && <> เมื่อ {formatTimestamp(report.reviewed_at)}</>}
-              </span>
-            )}
-          </div>
-          {!reviewed && (
-            <p className="text-[10px] text-gray-500 mt-1">{config.hint}</p>
-          )}
-        </div>
-      </div>
-
-      {reviewed && (
-        <div className="text-right flex-shrink-0">
-          <div className="text-[10px] text-gray-500">คะแนนที่ได้รับ</div>
-          <div className={`text-sm font-bold mt-0.5 ${
-            (report.reviewed_points ?? 0) > 0 ? 'text-emerald-400' : 'text-gray-500'
-          }`}>
-            {(report.reviewed_points ?? 0) > 0 ? `+${report.reviewed_points}` : '—'}
-          </div>
-        </div>
-      )}
-
-      {/* เหตุผลที่ไม่อนุมัติ */}
-      {status === 'rejected' && (
-        <div className="sm:col-span-full mt-1 flex items-start gap-2.5
-                        rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2.5">
-          <XCircle size={15} className="text-red-400 mt-0.5 flex-shrink-0" />
-          <div className="min-w-0">
-            <div className="text-[11px] font-semibold text-red-300">เหตุผลที่ไม่อนุมัติ</div>
-            <div className={`text-xs mt-1 leading-relaxed ${
-              report.review_note ? 'text-gray-200' : 'text-red-300/70 italic'
-            }`}>
-              {report.review_note || 'ไม่ได้ระบุเหตุผล'}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
   );
 }
