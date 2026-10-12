@@ -3,20 +3,21 @@ import {
   Clock, LogIn, LogOut, Users, Trash2, Power, AlertCircle, Image as ImageIcon, Shield,
   BarChart3, Zap, Download, Search, Filter, FileText,
   Plus, X, Upload, Loader2, ExternalLink, CalendarDays, ChevronLeft, ChevronRight,
-  CheckCircle2, XCircle, Award, Trophy, Sparkles, Crown, Briefcase, User, Repeat,
+  CheckCircle2, XCircle, Award, Trophy, Sparkles, Crown, Briefcase, User, Repeat, Shuffle,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import {
   Citizen, DutyLog, Officer, SystemSettings, WorkReport, WorkReportCase, DEPARTMENT_LABELS,
   DutySchedule, ScheduleOverride, ShiftCode, ScheduleCellCode, WorkReportStatus,
-  WORK_REPORT_STATUS_LABELS, SHIFT_LABELS, OVERRIDE_TYPE_LABELS,
+  WORK_REPORT_STATUS_LABELS, SHIFT_LABELS, OVERRIDE_TYPE_LABELS, OfficerRankRecord,
 } from '../../lib/types';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { ConfirmDialog, Modal } from '../../components/Modal';
 import { IdCard } from '../../components/IdCard';
 import { PageHeader } from '../../components/PageHeader';
-import type { RankItem } from '../../components/RankedList';
+import { randomizeWeeklyRoster, isLeader, leaderLabel, type RandomizeResult, type LeaveRecord } from '../../lib/rosterRandomizer';
+import { RankItem } from '../../components/RankedList';
 import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
 import { uploadImage } from '../../lib/storage';
 import {
@@ -92,6 +93,13 @@ export function OperationsPage() {
   const [rosterOfficers, setRosterOfficers] = useState<Officer[]>([]);
   const [editingCell, setEditingCell] = useState<{ date: string; shift: ScheduleCellCode } | null>(null);
   const [autoPointsOn, setAutoPointsOn] = useState<boolean>(false);
+  // --- สุ่มเวรอัตโนมัติ ---
+  const [ranks, setRanks] = useState<OfficerRankRecord[]>([]);
+  const [weekLeaves, setWeekLeaves] = useState<LeaveRecord[]>([]);
+  const [showRandomize, setShowRandomize] = useState(false);
+  const [randomizing, setRandomizing] = useState(false);
+  const [requireLeader, setRequireLeader] = useState(true);
+  const [randomPreview, setRandomPreview] = useState<RandomizeResult | null>(null);
   const [pointsBusy, setPointsBusy] = useState(false);
   const [pointsNotice, setPointsNotice] = useState<string | null>(null);
 
@@ -104,7 +112,7 @@ export function OperationsPage() {
   async function fetchScheduleData() {
     const weekStart = shiftWeek(weekAnchor, 0);
     const weekEnd = shiftWeek(weekAnchor, 1);
-    const [schedRes, ovRes, offRes] = await Promise.all([
+    const [schedRes, ovRes, offRes, rankRes, leaveRes] = await Promise.all([
       supabase.from('duty_schedules').select('*').eq('is_active', true).order('weekday'),
       supabase
         .from('schedule_overrides')
@@ -112,10 +120,19 @@ export function OperationsPage() {
         .gte('override_date', weekStart)
         .lt('override_date', weekEnd),
       supabase.from('officers').select('*').eq('status', 'active').order('name'),
+      supabase.from('officer_ranks').select('*').eq('is_active', true).order('sort_order'),
+      supabase
+        .from('officer_leaves')
+        .select('officer_id, start_date, end_date')
+        .eq('status', 'approved')
+        .lte('start_date', weekEnd)
+        .gte('end_date', weekStart),
     ]);
     setSchedules((schedRes.data ?? []) as unknown as DutySchedule[]);
     setOverrides((ovRes.data ?? []) as unknown as ScheduleOverride[]);
     setRosterOfficers((offRes.data ?? []) as Officer[]);
+    setRanks((rankRes.data ?? []) as OfficerRankRecord[]);
+    setWeekLeaves((leaveRes.data ?? []) as unknown as LeaveRecord[]);
   }
 
   /** แจ้งผลลงใน modal (ไม่ใช้ toast เพื่อให้ผู้ใช้เห็นคำว่า "บันทึกแล้ว" แน่นอน) */
@@ -207,6 +224,75 @@ export function OperationsPage() {
   }
 
   /** ล้าง override ของกะหนึ่งครบทั้งสัปดาห์ (ใช้จากแท็บ "สลับเวรทั้งสัปดาห์") */
+
+  /* ---------- สุ่มเวรอัตโนมัติ ---------- */
+
+  /** คำนวณผลสุ่มล่วงหน้า (ยังไม่เขียนลงฐานข้อมูล) เพื่อให้ผู้ใช้ตรวจก่อน */
+  function buildRandomPreview(seed: number): RandomizeResult {
+    return randomizeWeeklyRoster({
+      days: weeklyRoster.days.map((d) => d.date),
+      shifts: ['s1', 's2'],
+      schedules,
+      overrides,
+      leaves: weekLeaves,
+      officers: rosterOfficers,
+      ranks,
+      defaultRequired: DEFAULT_REQUIRED_OFFICERS,
+      requireLeader,
+    }, seed);
+  }
+
+  function doRandomize() {
+    setRandomizing(true);
+    try {
+      setRandomPreview(buildRandomPreview(Math.floor(Math.random() * 2 ** 31)));
+    } finally {
+      setRandomizing(false);
+    }
+  }
+
+  /**
+   * เขียนผลสุ่มลง duty_schedules
+   * เขียนเองแทนเรียก saveScheduleSlot ทีละช่อง เพราะจะได้ไม่ต้อง refetch 14 รอบ
+   * และไม่ขึ้นข้อความบันทึกสำเร็จ 14 ครั้งรบกวนสายตา
+   */
+  async function saveRandomRoster() {
+    if (!randomPreview) return;
+    setRandomizing(true);
+    try {
+      const open = randomPreview.cells.filter((c) => c.required > 0);
+      for (const cell of open) {
+        const { error: delErr } = await supabase
+          .from('duty_schedules').delete().eq('weekday', cell.weekday).eq('shift_code', cell.shift);
+        if (delErr) throw delErr;
+
+        for (const officerId of cell.officerIds) {
+          const win = shiftWindowFor(cell.weekday, cell.shift);
+          const { error } = await supabase.from('duty_schedules').insert({
+            weekday: cell.weekday,
+            shift_code: cell.shift,
+            shift_name: SHIFT_LABELS[cell.shift],
+            start_time: win.start,
+            end_time: win.end,
+            officer_id: officerId,
+            required_officers: cell.required,
+            is_active: true,
+          });
+          if (error) throw error;
+        }
+      }
+      await fetchScheduleData();
+      setShowRandomize(false);
+      setRandomPreview(null);
+      flash('ok', `สุ่มเวรสัปดาห์นี้สำเร็จ — ${open.length} ช่องกะ · ใช้เจ้าหน้าที่ ${randomPreview.officersUsed} คน`);
+    } catch (e) {
+      flash('err', `บันทึกผลสุ่มไม่สำเร็จ: ${(e as Error).message}`);
+      await fetchScheduleData();
+    } finally {
+      setRandomizing(false);
+    }
+  }
+
   async function clearWeekOverrides(shift: ScheduleCellCode): Promise<boolean> {
     const dates = weeklyRoster.days.map((d) => d.date);
     try {
@@ -1085,6 +1171,7 @@ export function OperationsPage() {
           onSaveOverride={saveOverrideSlot}
           onClearOverride={clearOverride}
           onSwapWeek={swapShiftForWeek}
+          onRandomize={isCommissioner ? () => setShowRandomize(true) : undefined}
         />
       )}
 
@@ -1799,6 +1886,22 @@ export function OperationsPage() {
         />
       )}
 
+      {/* ---------- Modal: สุ่มเวรอัตโนมัติ ---------- */}
+      {isCommissioner && (
+        <RandomizeRosterModal
+          open={showRandomize}
+          onClose={() => { setShowRandomize(false); setRandomPreview(null); }}
+          officers={rosterOfficers}
+          ranks={ranks}
+          preview={randomPreview}
+          requireLeader={requireLeader}
+          onToggleRequireLeader={() => { setRequireLeader((v) => !v); setRandomPreview(null); }}
+          onRandomize={doRandomize}
+          onSave={saveRandomRoster}
+          busy={randomizing}
+        />
+      )}
+
       {/* ---------- Modal: จัดกำลังพล 1 ช่องกะ ---------- */}
       {editingCell && weeklyRoster.rows[editingCell.shift]?.[editingCell.date] && (
         <ShiftStaffingModal
@@ -2108,6 +2211,7 @@ function StatBox({ label, value, tone }: { label: string; value: number; tone: '
 function WeeklyRosterPanel({
   roster, weekAnchor, onPrev, onNext, onToday,
   canEdit, onEditCell, officers, onSaveBase, onSaveOverride, onClearOverride, onSwapWeek,
+  onRandomize,
 }: {
   roster: ReturnType<typeof buildWeeklyRoster>;
   weekAnchor: string;
@@ -2124,6 +2228,7 @@ function WeeklyRosterPanel({
   }) => void;
   onClearOverride: (date: string, shift: ScheduleCellCode) => void;
   onSwapWeek: (shift: ShiftCode, toOfficerId: string) => Promise<boolean>;
+  onRandomize?: () => void;
 }) {
   const rankById = useMemo(() => new Map(officers.map((o) => [o.id, o.rank])), [officers]);
   const shortSlots = roster.understaffedCount + roster.gapCount;
@@ -2157,6 +2262,16 @@ function WeeklyRosterPanel({
             ตารางเวรประจำสัปดาห์
           </h2>
           <div className="flex items-center gap-1 flex-shrink-0">
+            {onRandomize && (
+              <button
+                onClick={onRandomize}
+                className="btn-secondary px-2.5 py-1.5 text-xs flex items-center gap-1.5 text-amber-300 hover:text-amber-200 border-amber-500/40"
+                title="สุ่มตารางเวรทั้งสัปดาห์ — บังคับให้มีผู้นำทุกกะและตัดคนที่ลาออก"
+              >
+                <Shuffle size={14} />
+                สุ่มเวร
+              </button>
+            )}
             <button
               onClick={onPrev}
               className="btn-secondary w-8 h-8 p-0 flex items-center justify-center"
@@ -2660,4 +2775,169 @@ function getCaseStatusLabel(value: string | null | undefined): string {
     transferred: 'ส่งต่อ',
   };
   return value ? (map[value] ?? value) : '-';
+}
+
+/* ---------- Modal: สุ่มเวรอัตโนมัติ ---------- */
+function RandomizeRosterModal({
+  open, onClose, officers, ranks, preview, requireLeader, onToggleRequireLeader,
+  onRandomize, onSave, busy,
+}: {
+  open: boolean;
+  onClose: () => void;
+  officers: Officer[];
+  ranks: OfficerRankRecord[];
+  preview: RandomizeResult | null;
+  requireLeader: boolean;
+  onToggleRequireLeader: () => void;
+  onRandomize: () => void;
+  onSave: () => void;
+  busy: boolean;
+}) {
+  if (!open) return null;
+  const byId = new Map(officers.map((o) => [o.id, o]));
+
+  return (
+    <Modal onClose={onClose} title="สุ่มเวรประจำสัปดาห์" size="xl">
+      <div className="space-y-3">
+        {/* กติกา */}
+        <div className="text-[11px] text-gray-400 bg-navy-900/50 border border-blue-900/40 rounded-lg p-3 space-y-1.5">
+          <div className="font-semibold text-gray-300">กติกาที่ระบบบังคับให้อัตโนมัติ</div>
+          <div className="flex items-start gap-1.5"><CheckCircle2 size={12} className="text-emerald-400 mt-0.5 flex-shrink-0" />
+            <span>ทุกช่องกะต้องมี <strong className="text-gray-200">ผู้นำอย่างน้อย 1 คน</strong> (หัวหน้า / รอง / ผู้คุม)</span></div>
+          <div className="flex items-start gap-1.5"><CheckCircle2 size={12} className="text-emerald-400 mt-0.5 flex-shrink-0" />
+            <span>เติมกำลังพลให้ครบโควตาของแต่ละกะ</span></div>
+          <div className="flex items-start gap-1.5"><CheckCircle2 size={12} className="text-emerald-400 mt-0.5 flex-shrink-0" />
+            <span>ตัดเจ้าหน้าที่ที่<strong className="text-gray-200">ลาอยู่ในวันนั้น</strong>ออกอัตโนมัติ</span></div>
+          <div className="flex items-start gap-1.5"><CheckCircle2 size={12} className="text-emerald-400 mt-0.5 flex-shrink-0" />
+            <span>หนึ่งคนทำได้ไม่เกิน 1 กะต่อวัน และแจกแจงให้ใครมีภาระน้อยกว่าได้ก่อน</span></div>
+        </div>
+
+        {/* ตัวเลือก */}
+        <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={requireLeader}
+            onChange={onToggleRequireLeader}
+            className="accent-amber-500 w-4 h-4"
+          />
+          บังคับให้มีผู้นำทุกกะ
+          <span className="text-[10px] text-gray-500">(ปิดไว้ = สุ่มตามโควตาอย่างเดียว)</span>
+        </label>
+
+        {/* ผลลัพธ์ */}
+        {preview ? (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 font-semibold">
+                มีผู้นำ {preview.slotsWithLeader}/{preview.totalSlots} กะ
+              </span>
+              <span className={`px-2 py-0.5 rounded-full border font-semibold ${
+                preview.slotsUnderfilled > 0
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                  : 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+              }`}>
+                ไม่ครบโควตา {preview.slotsUnderfilled} กะ
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/40 font-semibold">
+                ใช้เจ้าหน้าที่ {preview.officersUsed} คน
+              </span>
+            </div>
+
+            {preview.notes.map((n, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">
+                <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />{n}
+              </div>
+            ))}
+
+            <div className="max-h-72 overflow-y-auto rounded-lg border border-blue-900/40">
+              <table className="w-full text-[11px]">
+                <thead className="sticky top-0 bg-navy-800 text-gray-400">
+                  <tr>
+                    <th className="text-left px-2 py-1.5 font-semibold">วัน</th>
+                    <th className="text-left px-2 py-1.5 font-semibold">กะ</th>
+                    <th className="text-left px-2 py-1.5 font-semibold">เจ้าหน้าที่</th>
+                    <th className="text-center px-2 py-1.5 font-semibold">ผู้นำ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.cells.map((c) => (
+                    <tr key={`${c.date}-${c.shift}`} className="border-t border-blue-900/25">
+                      <td className="px-2 py-1.5 text-gray-300 whitespace-nowrap font-mono">
+                        {new Date(`${c.date}T00:00:00`).getDate()}
+                      </td>
+                      <td className="px-2 py-1.5 text-gray-400 whitespace-nowrap">{c.shiftLabel}</td>
+                      <td className="px-2 py-1.5">
+                        <div className="flex flex-wrap gap-1">
+                          {c.officerIds.length === 0 && <span className="text-gray-600">— ว่าง —</span>}
+                          {c.officerIds.map((id) => {
+                            const o = byId.get(id);
+                            if (!o) return null;
+                            const lead = isLeader(o, ranks);
+                            return (
+                              <span
+                                key={id}
+                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[10px] ${
+                                  lead
+                                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 font-semibold'
+                                    : 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                                }`}
+                                title={lead ? `ผู้นำ · ${leaderLabel(o, ranks)}` : leaderLabel(o, ranks)}
+                              >
+                                {lead && <Crown size={9} />}
+                                {o.name}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        {c.issues.map((msg, i) => (
+                          <div key={i} className="text-[10px] text-amber-400/90 mt-0.5">{msg}</div>
+                        ))}
+                      </td>
+                      <td className="px-2 py-1.5 text-center">
+                        {c.hasLeader
+                          ? <CheckCircle2 size={13} className="text-emerald-400 inline" />
+                          : <XCircle size={13} className="text-red-400 inline" />}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="text-[10px] text-amber-400/90 leading-relaxed">
+              ⚠ การบันทึกจะเขียนทับ<strong className="text-amber-300">ผังประจำสัปดาห์ (duty_schedules)</strong> ซึ่งใช้ซ้ำทุกสัปดาห์
+              ไม่ใช่แค่สัปดาห์ที่เลือกอยู่
+            </p>
+          </div>
+        ) : (
+          <p className="text-[11px] text-gray-500 text-center py-4">
+            กดปุ่ม "สุ่ม" เพื่อดูตัวอย่างก่อนบันทึกลงตาราง
+          </p>
+        )}
+
+        {/* ปุ่ม */}
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            onClick={onRandomize}
+            disabled={busy}
+            className="btn-secondary flex items-center gap-1.5 text-xs"
+          >
+            <Shuffle size={13} className={busy ? 'animate-spin' : ''} />
+            {preview ? 'สุ่มใหม่' : 'สุ่ม'}
+          </button>
+          <button
+            onClick={onSave}
+            disabled={busy || !preview}
+            className="btn-primary flex items-center gap-1.5 text-xs flex-1 disabled:opacity-40"
+          >
+            {busy ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+            ยืนยันบันทึกลงตาราง
+          </button>
+          <button onClick={onClose} disabled={busy} className="btn-secondary text-xs">
+            ยกเลิก
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
 }
