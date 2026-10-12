@@ -1,7 +1,7 @@
 import { ReactNode, useState } from 'react';
 import {
   Truck, LayoutDashboard, Shield, DollarSign, Megaphone,
-  Users, LogOut, Menu, X, ChevronRight, Tag, MessageSquare, Siren, Car, UserCog, CalendarDays, BookOpen, Award, Wallet, Newspaper,
+  Users, LogOut, Menu, X, ChevronRight, Tag, MessageSquare, Siren, Car, UserCog, CalendarDays, BookOpen, Award, Wallet, Newspaper, UserCircle,
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { RANK_LABELS, DEPARTMENT_LABELS } from '../lib/types';
@@ -10,6 +10,7 @@ const LOGO_URL = '/logo.png';
 
 export type OfficerPage =
   | 'dashboard'
+  | 'profile'
   | 'operations'
   | 'service-fees'
   | 'complaints'
@@ -48,6 +49,7 @@ const navSections: { id: 'ops' | 'admin' | 'general'; label: string; adminOnly: 
 
 const navItems: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} />, commissionerOnly: false, section: 'ops' },
+  { id: 'profile', label: 'ข้อมูลส่วนตัว', icon: <UserCircle size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'operations', label: 'ปฏิบัติการ', icon: <Shield size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'service-fees', label: 'แจ้งค่าบริการ', icon: <DollarSign size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: <Siren size={18} />, commissionerOnly: false, section: 'ops' },

@@ -32,6 +32,7 @@ const VehicleManagementPage = lazy(() => import('./pages/officer/VehicleManageme
 const LeaveManagementPage = lazy(() => import('./pages/officer/LeaveManagementPage').then((m) => ({ default: m.LeaveManagementPage })));
 const ManualPage = lazy(() => import('./pages/public/ManualPage').then((m) => ({ default: m.ManualPage })));
 const MyPointsPage = lazy(() => import('./pages/officer/MyPointsPage').then((m) => ({ default: m.MyPointsPage })));
+const ProfilePage = lazy(() => import('./pages/officer/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const PointsManagementPage = lazy(() => import('./pages/officer/PointsManagementPage').then((m) => ({ default: m.PointsManagementPage })));
 const DepartmentBalancePage = lazy(() => import('./pages/officer/DepartmentBalancePage').then((m) => ({ default: m.DepartmentBalancePage })));
 
@@ -64,6 +65,8 @@ function AccessDenied({ onBack }: { onBack: () => void }) {
 function OfficerApp() {
   const { officer, logout, isCommissioner } = useAuth();
   const [currentPage, setCurrentPage] = useState<OfficerPage>('dashboard');
+  /** แท็บที่จะเปิดเมื่อเข้าหน้าปฏิบัติการ — ใช้ตอนกดการ์ดทางลัดที่ระบุแท็บ */
+  const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
 
   if (!officer) return null;
 
@@ -76,6 +79,14 @@ function OfficerApp() {
       return;
     }
     setCurrentPage(page);
+    // แท็บถูกเลือกไว้เฉพาะตอนกดการ์ดทางลัด — ครั้งถัดไปกลับมาเริ่มที่แท็บแรก
+    if (page !== 'operations') setOpsTab('duty');
+  }
+
+  /** เปิดหน้าปฏิบัติการที่แท็บที่ระบุ (ใช้จากการ์ดทางลัด) */
+  function navigateToOpsTab(tab: 'duty' | 'roster' | 'approvals') {
+    setOpsTab(tab);
+    setCurrentPage('operations');
   }
 
   return (
@@ -86,7 +97,12 @@ function OfficerApp() {
         ) : (
           <>
             {currentPage === 'dashboard' && <DashboardPage />}
-            {currentPage === 'operations' && <OperationsPage />}
+            {currentPage === 'profile' && (
+              <ProfilePage onNavigate={handleNavigate} onOpenOpsTab={navigateToOpsTab} />
+            )}
+            {currentPage === 'operations' && (
+              <OperationsPage key={opsTab} initialTab={opsTab} />
+            )}
             {currentPage === 'service-fees' && <ServiceFeesPage />}
             {currentPage === 'complaints' && isCommissioner && <ComplaintsManagementPage />}
             {currentPage === 'announcements' && isCommissioner && <AnnouncementsPage />}

@@ -47,9 +47,14 @@ type ReportTarget = {
   alreadyCheckedOut?: boolean;
 };
 
-export function OperationsPage() {
+export function OperationsPage({
+  initialTab = 'duty',
+}: {
+  /** ให้ลิงก์ภายนอกเปิดเข้ามาที่แท็บที่ต้องการได้ (เช่น การ์ดทางลัดในหน้าข้อมูลส่วนตัว) */
+  initialTab?: 'duty' | 'roster' | 'approvals';
+} = {}) {
   const { officer, setAuth, isCommissioner } = useAuth();
-  const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
+  const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>(initialTab);
   const [onDutyOfficers, setOnDutyOfficers] = useState<Officer[]>([]);
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [loading, setLoading] = useState(true);
