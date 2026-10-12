@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User, Users, Banknote, HandCoins, Download, Receipt, RefreshCw,
+  Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User, Users, Banknote, HandCoins, Download, Receipt, RefreshCw, AlertCircle,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { uploadImage, deleteImage } from '../../lib/storage';
@@ -16,10 +16,15 @@ import {
 } from '../../lib/api/revenueSharing';
 import { submitClaim, translateClaimError, fetchOfficerClaims } from '../../lib/api/claimShare';
 import { applyServiceClosedPoints } from '../../lib/api/autoPoints';
+import {
+  canSubmitServiceRecord, SERVICE_SUBMIT_DENIED_MESSAGE,
+} from '../../lib/serviceSubmitPermission';
 import { toLocalDateTimeInputValue } from '../../lib/utils';
 
 export function ServiceFeesPage() {
   const { officer, isCommissioner } = useAuth();
+  /** มีสิทธิ์ "สร้าง" รายการแจ้งค่าบริการหรือไม่ (ดู/รับชำระยังได้ทุกคน) */
+  const canSubmit = canSubmitServiceRecord(officer);
   const [records, setRecords] = useState<ServiceRecord[]>([]);
   const [rates, setRates] = useState<ServiceRate[]>([]);
   const [citizens, setCitizens] = useState<Citizen[]>([]);
@@ -783,19 +788,34 @@ export function ServiceFeesPage() {
     <div>
       <PageHeader
         icon={<DollarSign size={26} />}
-        title="ค่าบริการ"
-        subtitle={`จัดการรายการค่าบริการและหลักฐาน · ทั้งหมด ${records.length.toLocaleString('th-TH')} รายการ`}
+        title="แจ้งค่าบริการ"
+        subtitle={`รายการค่าบริการและหลักฐาน · ทั้งหมด ${records.length.toLocaleString('th-TH')} รายการ`}
         actions={
           <div className="flex items-center gap-2">
             <button onClick={() => fetchAll()} className="btn-secondary flex items-center gap-2" title="ดึงข้อมูลล่าสุด">
               <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> รีเฟรช
             </button>
-            <button onClick={() => { setEditRecord(null); resetForm(); setShowAdd(true); }} className="btn-primary flex items-center gap-2">
-              <Plus size={16} /> เพิ่มรายการ
-            </button>
+            {canSubmit && (
+              <button onClick={() => { setEditRecord(null); resetForm(); setShowAdd(true); }} className="btn-primary flex items-center gap-2">
+                <Plus size={16} /> เพิ่มรายการ
+              </button>
+            )}
           </div>
         }
       />
+
+      {/* ผู้ไม่มีสิทธิ์สร้างรายการ — ยังดูรายการและรับชำระได้ตามปกติ */}
+      {!canSubmit && (
+        <div className="flex items-start gap-2.5 text-[12px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3.5 py-2.5">
+          <AlertCircle size={15} className="mt-0.5 flex-shrink-0" />
+          <div className="space-y-0.5">
+            <div className="font-semibold">{SERVICE_SUBMIT_DENIED_MESSAGE}</div>
+            <div className="text-[11px] text-amber-300/80">
+              คุณยังสามารถดูรายการและบันทึกการรับชำระเงินได้ตามปกติ
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3 mb-6 relative">
@@ -963,7 +983,7 @@ export function ServiceFeesPage() {
 
       {/* Add/Edit Modal */}
       {showAdd && (
-        <Modal title={editRecord ? 'แก้ไขรายการค่าบริการ' : 'เพิ่มรายการค่าบริการ'} onClose={() => { setShowAdd(false); setEditRecord(null); resetForm(); }} size="lg">
+        <Modal title={editRecord ? 'แก้ไขรายการแจ้งค่าบริการ' : 'เพิ่มรายการแจ้งค่าบริการ'} onClose={() => { setShowAdd(false); setEditRecord(null); resetForm(); }} size="lg">
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Citizen Selector */}
             <div>
@@ -1290,7 +1310,7 @@ export function ServiceFeesPage() {
       {/* Delete Confirm */}
       {deleteRecord && (
         <ConfirmDialog
-          title="ลบรายการค่าบริการ"
+          title="ลบรายการแจ้งค่าบริการ"
           message={`ต้องการลบรายการ "${deleteRecord.service_name}" ของ ${deleteRecord.roblox_username || deleteRecord.discord_username} ใช่หรือไม่?`}
           confirmLabel="ลบ"
           danger

@@ -49,7 +49,7 @@ const navSections: { id: 'ops' | 'admin' | 'general'; label: string; adminOnly: 
 const navItems: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'operations', label: 'ปฏิบัติการ', icon: <Shield size={18} />, commissionerOnly: false, section: 'ops' },
-  { id: 'service-fees', label: 'ค่าบริการ', icon: <DollarSign size={18} />, commissionerOnly: false, section: 'ops' },
+  { id: 'service-fees', label: 'แจ้งค่าบริการ', icon: <DollarSign size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: <Siren size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'vehicles', label: 'ยานพาหนะ', icon: <Car size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'leave', label: 'จัดการการลา', icon: <CalendarDays size={18} />, commissionerOnly: false, section: 'ops' },
