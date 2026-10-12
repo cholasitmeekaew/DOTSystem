@@ -117,50 +117,64 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
   }, [isCommissioner, officer]);
 
   async function load() {
-    if (!targetId) return;
+    if (!targetId) {
+      // ไม่มี id ให้ดึงข้อมูล — ต้องปิด loading ด้วย ไม่งั้นค้างที่ "กำลังโหลด" ถาวร
+      setLoadErrors(['ไม่พบรหัสเจ้าหน้าที่ที่จะดู']);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
 
-    const [oRes, rRes, lRes, qRes, dRes] = await Promise.all([
-      supabase.from('officers').select('*').eq('id', targetId).single(),
-      supabase.from('work_reports').select('*').eq('officer_id', targetId)
-        .order('created_at', { ascending: false }).limit(60),
-      supabase.from('officer_leaves').select('*').eq('officer_id', targetId)
-        .order('start_date', { ascending: false }).limit(60),
-      supabase.from('leave_quotas').select('*'),
-      supabase.from('duty_logs').select('clock_in, clock_out, deleted_at')
-        .eq('officer_id', targetId).is('deleted_at', null),
-    ]);
+    try {
+      const [oRes, rRes, lRes, qRes, dRes] = await Promise.all([
+        // maybeSingle: ไม่ error เมื่อไม่พบแถว (single จะ error ถ้า 0 แถว)
+        supabase.from('officers').select('*').eq('id', targetId).maybeSingle(),
+        supabase.from('work_reports').select('*').eq('officer_id', targetId)
+          .order('created_at', { ascending: false }).limit(60),
+        supabase.from('officer_leaves').select('*').eq('officer_id', targetId)
+          .order('start_date', { ascending: false }).limit(60),
+        supabase.from('leave_quotas').select('*'),
+        supabase.from('duty_logs').select('clock_in, clock_out, deleted_at')
+          .eq('officer_id', targetId).is('deleted_at', null),
+      ]);
 
-    setData((oRes.data as unknown as Officer) ?? null);
-    setReports((rRes.data ?? []) as WorkReport[]);
-    setLeaves((lRes.data ?? []) as unknown as OfficerLeave[]);
+      setData((oRes.data as unknown as Officer) ?? null);
+      setReports((rRes.data ?? []) as WorkReport[]);
+      setLeaves((lRes.data ?? []) as unknown as OfficerLeave[]);
 
-    // เก็บ error จริงไว้โชว์ แทนที่จะแสดงว่า "ไม่มีข้อมูล" เฉย ๆ
-    // (เช่น ตารางยังไม่ถูก migrate หรือ policy บล็อก)
-    const errs: string[] = [];
-    for (const [label, res] of [
-      ['ข้อมูลเจ้าหน้าที่', oRes],
-      ['รายงานปฏิบัติงาน', rRes],
-      ['ใบลา', lRes],
-      ['โควตาลา', qRes],
-      ['ประวัติเวร', dRes],
-    ] as const) {
-      if (res.error) errs.push(`${label}: ${res.error.message}`);
+      // เก็บ error จริงไว้โชว์ แทนที่จะแสดงว่า "ไม่มีข้อมูล" เฉย ๆ
+      // (เช่น ตารางยังไม่ถูก migrate หรือ policy บล็อก)
+      const errs: string[] = [];
+      for (const [label, res] of [
+        ['ข้อมูลเจ้าหน้าที่', oRes],
+        ['รายงานปฏิบัติงาน', rRes],
+        ['ใบลา', lRes],
+        ['โควตาลา', qRes],
+        ['ประวัติเวร', dRes],
+      ] as const) {
+        if (res.error) errs.push(`${label}: ${res.error.message}`);
+      }
+      setLoadErrors(errs);
+
+      // leave_quotas เป็นตารางกลาง หนึ่งแถวต่อชนิดการลา (ไม่มีคอลัมน์ month)
+      setQuotaRows(qRes.data as unknown as LeaveQuota[]);
+
+      // รวมชั่วโมงเข้าเวรจาก duty_logs
+      const rows = (dRes.data ?? []) as Array<{ clock_in: string | null; clock_out: string | null }>;
+      let ms = 0;
+      for (const r of rows) {
+        if (!r.clock_in || !r.clock_out) continue;
+        const diff = new Date(r.clock_out).getTime() - new Date(r.clock_in).getTime();
+        if (diff > 0 && diff < 24 * 3600 * 1000) ms += diff;
+      }
+      setHours({ total: Math.round(ms / 360000) / 10, shifts: rows.filter((r) => r.clock_out).length });
+    } catch (e) {
+      // เครือข่ายล้ม/โค้ดพัง — ต้องโชว์ error ไม่ใช่ค้างหน้าโหลด
+      setLoadErrors([`โหลดข้อมูลไม่สำเร็จ: ${(e as Error).message}`]);
+    } finally {
+      // เส้นทางเดียวที่ปิดสถานะ loading — ทั้งสำเร็จ ล้มเหลว และไม่มี targetId
+      setLoading(false);
     }
-    setLoadErrors(errs);
-
-    // leave_quotas เป็นตารางกลาง หนึ่งแถวต่อชนิดการลา (ไม่มีคอลัมน์ month)
-    setQuotaRows(qRes.data as unknown as LeaveQuota[]);
-
-    // รวมชั่วโมงเข้าเวรจาก duty_logs
-    const rows = (dRes.data ?? []) as Array<{ clock_in: string | null; clock_out: string | null }>;
-    let ms = 0;
-    for (const r of rows) {
-      if (!r.clock_in || !r.clock_out) continue;
-      const diff = new Date(r.clock_out).getTime() - new Date(r.clock_in).getTime();
-      if (diff > 0 && diff < 24 * 3600 * 1000) ms += diff;
-    }
-    setHours({ total: Math.round(ms / 360000) / 10, shifts: rows.filter((r) => r.clock_out).length });
   }
 
   useEffect(() => { void load(); }, [targetId]);
