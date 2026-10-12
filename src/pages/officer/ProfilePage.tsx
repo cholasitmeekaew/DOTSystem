@@ -7,24 +7,24 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import {
-  UserCircle, CalendarDays, FileText, Palmtree, DollarSign, BookOpen,
+  UserCircle, FileText, Palmtree, DollarSign,
   Shield, Clock, Award, TrendingUp, TrendingDown, History, Loader2, AlertTriangle,
   CheckCircle2, XCircle, ChevronDown, ChevronUp, User, MapPin, BadgeCheck,
-  Siren, Layers,
+  Layers,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/PageHeader';
 import {
   RANK_LABELS, DEPARTMENT_LABELS, WORK_REPORT_STATUS_LABELS,
-  getPointsLevel, getNextPointsLevel,
+  getPointsLevel, getNextPointsLevel, POINTS_LEVELS,
   type Officer, type WorkReport, type OfficerLeave, type LeaveType, type LeaveQuota,
 } from '../../lib/types';
 import {
   resolveQuotas, buildQuotaUsage, formatQuotaLine, currentMonthKey,
 } from '../../lib/leaveQuota';
 import type { OfficerPage } from '../../components/OfficerLayout';
-import { ProfileExtraTabs, type ProfileTabId } from '../../components/ProfileSections';
+import { ProfileExtraTabs, PersonalAttendanceTable, type ProfileTabId } from '../../components/ProfileSections';
 import { fetchProfileExtra, type ProfileExtra } from '../../lib/profileData';
 
 interface Props {
@@ -34,39 +34,6 @@ interface Props {
 }
 
 /* ---------- การ์ดทางลัด ---------- */
-
-interface QuickLink {
-  id: string;
-  label: string;
-  icon: typeof CalendarDays;
-  tint: string;
-  onClick: () => void;
-}
-
-function QuickNavGrid({ links }: { links: QuickLink[] }) {
-  return (
-    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2.5 mb-5">
-      {links.map((l) => {
-        const Icon = l.icon;
-        return (
-          <button
-            key={l.id}
-            onClick={l.onClick}
-            className="card px-3 py-3.5 flex flex-col items-center gap-2 text-center
-                       hover:border-amber-500/40 transition-colors group"
-          >
-            <span className={`p-2 rounded-xl ${l.tint} group-hover:scale-105 transition-transform`}>
-              <Icon size={19} />
-            </span>
-            <span className="text-[11px] leading-snug text-gray-300 group-hover:text-white transition-colors">
-              {l.label}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 /* ---------- ชิ้นย่อย ---------- */
 
@@ -233,7 +200,14 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
     ? Math.min(100, Math.round(((points - level.min) / (next.min - level.min)) * 100))
     : 100;
 
+  /** เกณฑ์เต็ม = ขีดต่ำสุดของระดับสูงสุด (1,000 คะแนน) */
+  const POINTS_FULL = 1000;
+  const fullProgress = Math.min(100, Math.round((points / POINTS_FULL) * 100));
+
   /* ---------- โควตาลา ---------- */
+  /** โควตาที่แสดงในหน้าส่วนตัว — ชนิดที่จำกัดจำนวนวันจริง */
+  const MAIN_QUOTA_TYPES: LeaveType[] = ['sick', 'personal', 'vacation'];
+
   const quotaUsage = useMemo(() => {
     if (!quotaRows || quotaRows.length === 0) return null;
     return buildQuotaUsage(leaves, resolveQuotas(quotaRows), currentMonthKey());
@@ -242,21 +216,6 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
   const visibleLogs = showAllLogs ? pointsLog : pointsLog.slice(0, 5);
   const visibleReports = showAllReports ? reports : reports.slice(0, 5);
   const visibleLeaves = showAllLeaves ? leaves : leaves.slice(0, 5);
-
-  const quickLinks: QuickLink[] = [
-    { id: 'roster', label: 'ตารางเวรปฏิบัติงาน', icon: CalendarDays,
-      tint: 'bg-blue-500/15 text-blue-300', onClick: () => onOpenOpsTab('roster') },
-    { id: 'reports', label: 'ส่งรายงานปฏิบัติงาน', icon: FileText,
-      tint: 'bg-purple-500/15 text-purple-300', onClick: () => onOpenOpsTab('duty') },
-    { id: 'leave', label: 'ระบบยื่นใบลา', icon: Palmtree,
-      tint: 'bg-emerald-500/15 text-emerald-300', onClick: () => onNavigate('leave') },
-    { id: 'service', label: 'แจ้งค่าบริการ', icon: DollarSign,
-      tint: 'bg-amber-500/15 text-amber-300', onClick: () => onNavigate('service-fees') },
-    { id: 'manual', label: 'คู่มือกรมขนส่ง', icon: BookOpen,
-      tint: 'bg-cyan-500/15 text-cyan-300', onClick: () => onNavigate('manual') },
-    { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: Siren,
-      tint: 'bg-red-500/15 text-red-300', onClick: () => onNavigate('emergency') },
-  ];
 
   if (!officer) return null;
 
@@ -312,8 +271,6 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
       )}
 
       {/* การ์ดทางลัด */}
-      <QuickNavGrid links={quickLinks} />
-
       {loading ? (
         <div className="text-center text-gray-400 py-12 flex items-center justify-center gap-2">
           <Loader2 size={16} className="animate-spin" /> กำลังโหลด...
@@ -388,6 +345,19 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
                 <StatBox label="จำนวนกะ" value={`${hours.shifts} ครั้ง`} />
               </div>
             </div>
+
+            {/* ---------- ประวัติการเข้าเวรส่วนตัว ---------- */}
+            <div className="card p-4">
+              <div className="flex items-center gap-1.5 mb-3">
+                <Clock size={14} className="text-blue-400" />
+                <h3 className="text-xs font-semibold text-gray-300">ประวัติการเข้าเวรส่วนตัว</h3>
+              </div>
+              {loading ? (
+                <div className="text-[11px] text-gray-600 py-6 text-center">กำลังโหลด...</div>
+              ) : (
+                <PersonalAttendanceTable rows={extra?.attendance ?? []} />
+              )}
+            </div>
           </div>
 
           {/* ---------- คอลัมน์ขวา ---------- */}
@@ -412,6 +382,42 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
                 </span>
               </div>
 
+              {/* แถบความคืบหน้าเทียบเกณฑ์เต็ม 1,000 คะแนน */}
+              <div className="mb-3">
+                <div className="flex items-center justify-between text-[10px] text-gray-500 mb-1.5">
+                  <span>ความคืบหน้าเทียบเกณฑ์เต็ม</span>
+                  <span className="font-mono text-gray-400">
+                    {points.toLocaleString('th-TH')} / {POINTS_FULL.toLocaleString('th-TH')}
+                    <span className="text-gray-600"> ({fullProgress}%)</span>
+                  </span>
+                </div>
+                <div className="relative h-2.5 rounded-full bg-navy-800 overflow-hidden">
+                  {/* ส่วนที่ทำได้แล้ว — สีตามระดับปัจจุบัน */}
+                  <div
+                    className={`h-full transition-all duration-500 ${level.bgClass.replace('/10', '/70')} ${level.textClass.replace('text-', 'bg-')}`}
+                    style={{ width: `${fullProgress}%` }}
+                  />
+                  {/* ขีดแบ่งระดับ */}
+                  {POINTS_LEVELS.filter((l) => l.min > 0).map((l) => (
+                    <span
+                      key={l.min}
+                      className="absolute top-0 bottom-0 w-px bg-navy-900/80"
+                      style={{ left: `${Math.min(100, (l.min / POINTS_FULL) * 100)}%` }}
+                      title={`${l.label} · ${l.min.toLocaleString('th-TH')}`}
+                    />
+                  ))}
+                </div>
+                <div className="flex justify-between text-[9px] text-gray-600 mt-1 font-mono">
+                  <span>0</span>
+                  <span>100</span>
+                  <span>250</span>
+                  <span>500</span>
+                  <span>800</span>
+                  <span>1,000</span>
+                </div>
+              </div>
+
+              {/* แถบความคืบหน้ายังระดับถัดไป */}
               {next ? (
                 <>
                   <div className="h-1.5 rounded-full bg-navy-800 overflow-hidden mb-1.5">
@@ -534,7 +540,9 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
                 <div className="text-[11px] text-gray-500">ยังไม่มีการตั้งค่าโควตาของเดือนนี้</div>
               ) : (
                 <div className="space-y-2">
-                  {(Object.keys(quotaUsage) as LeaveType[]).map((t) => {
+                  {/* แสดงเฉพาะโควตาหลัก 3 ชนิด ที่เหลือ (มีครรภ/บวช) ไม่จำกัดโควตา
+                      จึงไม่ต้องแสดงในหน้าสรุปส่วนตัว */}
+                  {MAIN_QUOTA_TYPES.map((t) => {
                     const u = quotaUsage[t];
                     return (
                       <div key={t}>

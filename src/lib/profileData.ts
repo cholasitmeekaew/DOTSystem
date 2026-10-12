@@ -63,6 +63,16 @@ export interface IncidentRow {
   role: string;
 }
 
+/** แถวประวัติการเข้าเวรของเจ้าหน้าที่ 1 คน (คำนวณกะ/สถานะฝั่ง UI) */
+export interface DutyRow {
+  id: string;
+  clock_in: string | null;
+  clock_out: string | null;
+  duration_minutes: number | null;
+  forced_by_name: string | null;
+  deleted_at: string | null;
+}
+
 export interface ActivityRow {
   id: string;
   action: string;
@@ -76,6 +86,8 @@ export interface ProfileExtra {
   incidents: { emergency: IncidentRow[]; complaints: IncidentRow[] };
   activity: ActivityRow[];
   announcements: Array<{ id: string; title: string; is_pinned: boolean; created_at: string | null }>;
+  /** ประวัติการเข้าเวรส่วนตัว */
+  attendance: DutyRow[];
   /** ประวัติการเข้าสู่ระบบ — ต้องมี migration 0033 */
   logins: LoginRow[];
   /** true = ยังไม่ได้รัน migration 0033 (ตารางไม่มีอยู่) */
@@ -99,6 +111,7 @@ const EMPTY = (): ProfileExtra => ({
   incidents: { emergency: [], complaints: [] },
   activity: [],
   announcements: [],
+  attendance: [],
   logins: [],
   loginUnavailable: false,
   errors: [],
@@ -118,7 +131,7 @@ export async function fetchProfileExtra(
     createdRes, assignRes, officerRes,
     vehImpRes, vehRelRes,
     emgRes, cmpRes,
-    actRes, annRes, loginRes,
+    actRes, annRes, loginRes, dutyRes,
   ] = await Promise.all([
     // 1) ค่าบริการที่ลงบันทึกเอง
     supabase.from('service_records').select('id, roblox_username, service_name, amount, paid_amount, status, service_date, officer_name, notes')
@@ -144,6 +157,12 @@ export async function fetchProfileExtra(
     // 4b) ประกาศล่าสุด
     supabase.from('announcements').select('id, title, is_pinned, created_at')
       .order('is_pinned', { ascending: false }).order('created_at', { ascending: false }).limit(8),
+    // 2b) ประวัติการเข้าเวรส่วนตัว
+    supabase.from('duty_logs')
+      .select('id, clock_in, clock_out, duration_minutes, forced_by_name, deleted_at')
+      .eq('officer_id', officerId)
+      .is('deleted_at', null)
+      .order('clock_in', { ascending: false }).limit(60),
     // 4c) ประวัติการเข้าสู่ระบบ (migration 0033)
     supabase.from('officer_login_logs')
       .select('id, logged_in_at, ip_address, device')
@@ -161,6 +180,7 @@ export async function fetchProfileExtra(
   collect('เหตุฉุกเฉิน', emgRes);
   collect('เรื่องร้องเรียน', cmpRes);
   collect('กิจกรรม', actRes);
+  collect('ประวัติการเข้าเวร', dutyRes);
   if (loginRes.error && /does not exist|schema cache|PGRST/i.test(loginRes.error.message)) {
     out.loginUnavailable = true;
   } else if (loginRes.error) {
@@ -244,6 +264,7 @@ export async function fetchProfileExtra(
     id: string; title: string; is_pinned: boolean; created_at: string | null;
   }>(annRes.data);
 
+  out.attendance = asArray<DutyRow>(dutyRes.data);
   out.logins = asArray<LoginRow>(loginRes.data);
 
   return out;

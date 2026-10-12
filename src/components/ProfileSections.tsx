@@ -4,13 +4,15 @@
  * ทุกอย่างมาจาก fetchProfileExtra() ซึ่งกรองด้วย officer.id ของผู้ล็อกอิน
  * ============================================================= */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Car, DollarSign, Siren, MessageSquare, Activity, Megaphone, ChevronDown,
-  ChevronUp, CheckCircle2, XCircle, Clock, Pin, Info, Wrench,
+  ChevronUp, CheckCircle2, XCircle, Clock, Pin, Info, Wrench, Search,
+  Globe, LogIn, MonitorSmartphone, Info as InfoIcon,
 } from 'lucide-react';
-import type { ProfileExtra, IncidentRow, ServiceRow } from '../lib/profileData';
-import { Globe, LogIn, MonitorSmartphone, Info as InfoIcon } from 'lucide-react';
+import type { ProfileExtra, IncidentRow, ServiceRow, DutyRow } from '../lib/profileData';
+import { SHIFT_LABELS, type ShiftCode } from '../lib/types';
+import { shiftWindowsFor } from '../lib/dutySchedule';
 
 const fmtDate = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
@@ -316,7 +318,7 @@ function ActivityTab({ data }: { data: ProfileExtra }) {
 const TABS = [
   { id: 'vehicles', label: 'ยานพาหนะ', icon: Car },
   { id: 'services', label: 'ค่าบริการ', icon: DollarSign },
-  { id: 'incidents', label: 'เหตุ / ร้องเรียน', icon: Siren },
+  { id: 'incidents', label: 'รับแจ้งเหตุ / เคส', icon: Siren },
   { id: 'activity', label: 'กิจกรรม', icon: Activity },
 ] as const;
 
@@ -376,3 +378,154 @@ export function ProfileExtraTabs({
 }
 
 export { XCircle, Wrench };
+
+/* ==================== ประวัติการเข้าเวรส่วนตัว ==================== */
+
+/** กะที่ลงเวลาเข้า — เทียบกับช่วงเวลาจริงของวันนั้น (จ–ศ กับ ศ–อ ไม่เหมือนกัน) */
+function shiftOfClockIn(iso: string | null): ShiftCode | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const toMin = (s: string) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+  const win = shiftWindowsFor(d.getDay());
+  const clockIn = d.getHours() * 60 + d.getMinutes();
+  return clockIn < toMin(win.s2.start) ? 's1' : 's2';
+}
+
+function fmtDur(m: number | null): string {
+  if (m == null) return '—';
+  const h = Math.floor(m / 60), r = m % 60;
+  return h > 0 ? `${h} ชม. ${r} นาที` : `${r} นาที`;
+}
+
+export function PersonalAttendanceTable({ rows }: { rows: DutyRow[] }) {
+  const [range, setRange] = useState<'7' | '30' | '90' | 'all'>('30');
+  const [q, setQ] = useState('');
+
+  const filtered = useMemo(() => {
+    const now = Date.now();
+    const cutoff = range === 'all' ? 0 : now - Number(range) * 86400000;
+    const needle = q.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (!r.clock_in) return false;
+      const t = new Date(r.clock_in).getTime();
+      if (t < cutoff) return false;
+      if (needle) {
+        const hay = new Date(r.clock_in).toLocaleDateString('th-TH', {
+          year: 'numeric', month: 'long', day: 'numeric',
+        }).toLowerCase();
+        const sh = shiftOfClockIn(r.clock_in);
+        if (!hay.includes(needle) && !SHIFT_LABELS[sh!].toLowerCase().includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [rows, range, q]);
+
+  const stats = useMemo(() => {
+    const closed = filtered.filter((r) => r.clock_out);
+    return {
+      count: filtered.length,
+      minutes: closed.reduce((s, r) => s + (r.duration_minutes ?? 0), 0),
+      forced: filtered.filter((r) => r.forced_by_name).length,
+      open: filtered.filter((r) => !r.clock_out).length,
+    };
+  }, [filtered]);
+
+  return (
+    <div className="space-y-2.5">
+      {/* ตัวกรอง */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[160px]">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="ค้นหาวันที่ หรือชื่อกะ..."
+            className="input w-full pl-8 text-[11px]"
+          />
+        </div>
+        <select
+          value={range}
+          onChange={(e) => setRange(e.target.value as typeof range)}
+          className="input text-[11px]"
+          title="ช่วงเวลา"
+        >
+          <option value="7">7 วันล่าสุด</option>
+          <option value="30">30 วันล่าสุด</option>
+          <option value="90">90 วันล่าสุด</option>
+          <option value="all">ทั้งหมด</option>
+        </select>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
+        <span>{filtered.length} รายการ</span>
+        <span>· รวม {fmtDur(stats.minutes)}</span>
+        {stats.open > 0 && <span className="text-emerald-400">· กำลังเข้าเวร {stats.open}</span>}
+        {stats.forced > 0 && <span className="text-amber-400">· บังคับออก {stats.forced}</span>}
+      </div>
+
+      {/* ตาราง */}
+      {filtered.length === 0 ? (
+        <div className="text-[11px] text-gray-600 py-6 text-center border border-dashed border-blue-900/40 rounded-lg">
+          {rows.length === 0 ? 'ยังไม่มีประวัติการเข้าเวร' : 'ไม่พบรายการในช่วงเวลาที่เลือก'}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-blue-900/40 overflow-hidden">
+          <table className="w-full text-[11px]">
+            <thead className="bg-navy-800 text-gray-400">
+              <tr>
+                <th className="text-left px-2 py-1.5 font-semibold">วันที่ / เวลาเข้า</th>
+                <th className="text-left px-2 py-1.5 font-semibold">กะ</th>
+                <th className="text-left px-2 py-1.5 font-semibold">ออกเวร / ระยะเวลา</th>
+                <th className="text-left px-2 py-1.5 font-semibold">สถานะ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => {
+                const sh = shiftOfClockIn(r.clock_in);
+                const forced = Boolean(r.forced_by_name);
+                const open = !r.clock_out;
+                return (
+                  <tr key={r.id} className="border-t border-blue-900/25">
+                    <td className="px-2 py-1.5 text-gray-300 whitespace-nowrap">
+                      <div>{fmtDate(r.clock_in)}</div>
+                      <div className="text-gray-500 font-mono text-[10px]">
+                        {r.clock_in && new Date(r.clock_in).toLocaleTimeString('th-TH', {
+                          hour: '2-digit', minute: '2-digit',
+                        })}
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      {sh
+                        ? <span className="px-1.5 py-0.5 rounded border border-blue-500/30 bg-blue-500/10 text-blue-300 text-[10px] whitespace-nowrap">
+                            {SHIFT_LABELS[sh]}
+                          </span>
+                        : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <div className="text-gray-300 font-mono text-[10px]">
+                        {r.clock_out
+                          ? new Date(r.clock_out).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+                          : 'ยังไม่ออกเวร'}
+                      </div>
+                      <div className="text-gray-500 text-[10px]">{fmtDur(r.duration_minutes)}</div>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap ${
+                        open ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                          : forced ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                            : 'bg-blue-500/15 text-blue-300 border-blue-500/40'
+                      }`}>
+                        {open ? 'กำลังเข้าเวร' : forced ? 'บังคับออกเวร' : 'สำเร็จ'}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
