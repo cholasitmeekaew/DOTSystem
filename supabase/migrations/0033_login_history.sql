@@ -101,7 +101,20 @@ end $$;
 
 grant execute on function public.log_officer_login(uuid, text) to anon, authenticated;
 
--- ---------- 5) ตรวจสอบ ----------
+-- ---------- 5) Realtime ----------
+-- ให้หน้าข้อมูลส่วนตัวอัปเดตรายการเข้าสู่ระบบล่าสุดทันทีโดยไม่ต้องรีเฟรช
+-- ตรวจก่อนเพิ่ม กัน error ตอนรันซ้ำ
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'officer_login_logs'
+  ) then
+    alter publication supabase_realtime add table officer_login_logs;
+  end if;
+end $$;
+
+-- ---------- 6) ตรวจสอบ ----------
 do $$
 declare
   v_ok boolean;

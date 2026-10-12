@@ -147,7 +147,8 @@ end $$;
 commit;
 
 -- =====================================================================
--- ส่วนที่ 3 — 0033: ประวัติการเข้าสู่ระบบ (เว้นวรรคเพราะมี begin/commit ของตัวเอง)
+-- =====================================================================
+-- ส่วนที่ 3 — 0033 + 0034: ประวัติการเข้าสู่ระบบ / สวิตช์รายงานปฏิบัติงาน
 -- =====================================================================
 create table if not exists officer_login_logs (
   id uuid primary key default gen_random_uuid(),
@@ -225,6 +226,16 @@ end $$;
 grant execute on function public.log_officer_login(uuid, text) to anon, authenticated;
 
 do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'officer_login_logs'
+  ) then
+    alter publication supabase_realtime add table officer_login_logs;
+  end if;
+end $$;
+
+do $$
 declare
   v_ok boolean;
 begin
@@ -240,7 +251,8 @@ begin
   end if;
 end $$;
 
--- ---- 0034 ----
+-- ---------- 0034 ----------
+
 alter table system_settings
   add column if not exists work_reports_enabled boolean not null default true;
 
@@ -264,7 +276,6 @@ begin
   end if;
 end $$;
 
--- =====================================================================
 -- ส่วนที่ 4 — seed: ย้ายเนื้อหาคู่มือเดิมเข้าตาราง (18 บท / 95 หมวด / 337 บล็อก)
 -- =====================================================================
 begin;

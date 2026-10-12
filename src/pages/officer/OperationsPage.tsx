@@ -28,6 +28,7 @@ import {
   isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
   AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
+import { addOfficerPoints } from '../../lib/api/points';
 
 type ReportCaseDraft = {
   case_name: string;
@@ -120,6 +121,8 @@ export function OperationsPage({
 
   // ---- ระบบอนุมัติรายงานปฏิบัติงาน ----
   const [reviewingWorkReport, setReviewingWorkReport] = useState<WorkReport | null>(null);
+  const [deletingWorkReport, setDeletingWorkReport] = useState<WorkReport | null>(null);
+  const [deletingReportBusy, setDeletingReportBusy] = useState(false);
   const [reportReviewAction, setReportReviewAction] = useState<'approved' | 'rejected'>('approved');
   const [reportReviewNote, setReportReviewNote] = useState('');
 
@@ -382,6 +385,64 @@ export function OperationsPage({
     setReviewingWorkReport(null);
     setReportReviewNote('');
     await fetchData();
+  }
+
+  /**
+   * ลบรายงานปฏิบัติงาน + คืนคะแนนที่เคยให้ไป (ถ้าอนุมัติแล้ว)
+   *
+   * ต้องคืนคะแนนด้วยเพราะ points_log เป็น ledger ที่บันทึกไปแล้ว
+   * ถ้าลบรายงานทิ้งอย่างเดียว คะแนน +10 จะค้างโดยไม่มีที่มาของรายงานแล้ว
+   * และ points_award_marks จะยังกันไม่ให้อนุมัติซ้ำได้ ต้องลบ mark ทิ้งด้วย
+   */
+  async function deleteWorkReport(target: WorkReport) {
+    if (!officer) return;
+    setDeletingReportBusy(true);
+    try {
+      const awarded = target.reviewed_points ?? 0;
+      const markKey = `report:${target.id}`;
+      const { data: mark } = await supabase
+        .from('points_award_marks').select('id').eq('mark_key', markKey).maybeSingle();
+
+      // คืนคะแนน — ใช้ addOfficerPoints ตรง ๆ ไม่ผ่านสวิตช์ PPS
+      // เพราะการคืนของที่ "เคยให้ไปแล้ว" ไม่ควรขึ้นกับสวิตช์เปิด/ปิดตอนนี้
+      if (mark && awarded > 0 && target.officer_id) {
+        await addOfficerPoints(
+          target.officer_id,
+          -awarded,
+          'ยกเลิกรายงานปฏิบัติงานที่เคยอนุมัติ (ลบรายงาน)',
+          officer.id,
+          officer.name,
+        );
+      }
+      if (mark) await supabase.from('points_award_marks').delete().eq('mark_key', markKey);
+
+      // ลบรายงาน (work_report_cases ถูก cascade ลบตาม on delete cascade)
+      const { error } = await supabase.from('work_reports').delete().eq('id', target.id);
+      if (error) throw error;
+
+      await supabase.from('audit_logs').insert({
+        action: 'DELETE_WORK_REPORT',
+        target_type: 'work_report',
+        target_id: target.id,
+        performed_by: officer.id,
+        performed_by_name: officer.name,
+        details: {
+          officer_name: target.officer_name,
+          status_before: target.status ?? 'pending',
+          points_reverted: mark && awarded > 0 ? awarded : 0,
+        },
+      });
+
+      setDeletingWorkReport(null);
+      await fetchData();
+      if (viewReport?.id === target.id) { setViewReport(null); setViewReportCases([]); }
+      flash('ok', `ลบรายงานของ ${target.officer_name} แล้ว`
+        + (mark && awarded > 0 ? ` · คืนคะแนน ${awarded}` : ''));
+    } catch (e) {
+      flash('err', `ลบรายงานไม่สำเร็จ: ${(e as Error).message}`);
+    } finally {
+      setDeletingReportBusy(false);
+    }
   }
 
   function openReportReview(report: WorkReport, action: 'approved' | 'rejected') {
@@ -972,6 +1033,7 @@ export function OperationsPage({
           rejected={rejectedReports}
           caseCounts={reportCaseCounts}
           onReview={openReportReview}
+          onDelete={(r) => setDeletingWorkReport(r)}
         />
       )}
 
@@ -1627,6 +1689,70 @@ export function OperationsPage({
         />
       )}
 
+      {/* ---------- Modal: ยืนยันลบรายงานปฏิบัติงาน ---------- */}
+      {deletingWorkReport && (
+        <Modal
+          title="ยืนยันการลบรายงานปฏิบัติงาน"
+          onClose={() => setDeletingWorkReport(null)}
+          size="sm"
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-gray-200 leading-relaxed">
+              คุณต้องการลบรายงานปฏิบัติงานของ{' '}
+              <strong className="text-white">{deletingWorkReport.officer_name}</strong>{' '}
+              ใช่หรือไม่
+            </p>
+
+            <div className="text-[11px] text-gray-400 bg-navy-900/50 border border-blue-900/40 rounded-lg px-3 py-2.5 space-y-1">
+              <div className="flex justify-between gap-3">
+                <span className="text-gray-500">สถานะปัจจุบัน</span>
+                <span>{WORK_REPORT_STATUS_LABELS[(deletingWorkReport.status ?? 'pending') as WorkReportStatus]}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-gray-500">ส่งเมื่อ</span>
+                <span>{formatTimestamp(deletingWorkReport.created_at)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-gray-500">จำนวนเคส</span>
+                <span>{reportCaseCounts[deletingWorkReport.id] ?? 0} เคส</span>
+              </div>
+            </div>
+
+            {(deletingWorkReport.reviewed_points ?? 0) > 0 && (
+              <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2.5 leading-relaxed">
+                รายงานนี้เคยได้รับการอนุมัติและให้คะแนน{' '}
+                <strong className="text-amber-200">+{deletingWorkReport.reviewed_points}</strong> ไปแล้ว
+                ระบบจะ<strong className="text-amber-200">คืนคะแนนกลับ</strong>ให้เจ้าหน้าที่คนนั้นในขั้นตอนเดียวกัน
+              </div>
+            )}
+
+            <p className="text-[11px] text-red-300/90 leading-relaxed">
+              รายงานและเคสทั้งหมดในรายงานนี้จะถูกลบถาวร ย้อนกลับไม่ได้
+            </p>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => deleteWorkReport(deletingWorkReport)}
+                disabled={deletingReportBusy}
+                className="btn-danger flex-1 flex items-center justify-center gap-1.5 text-xs disabled:opacity-40"
+              >
+                {deletingReportBusy
+                  ? <Loader2 size={14} className="animate-spin" />
+                  : <Trash2 size={14} />}
+                ยืนยันลบ
+              </button>
+              <button
+                onClick={() => setDeletingWorkReport(null)}
+                disabled={deletingReportBusy}
+                className="btn-secondary text-xs"
+              >
+                ยกเลิก
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {/* ---------- Modal: ตรวจ/ไม่อนุมัติรายงานปฏิบัติงาน ---------- */}
       {reviewingWorkReport && (
         <Modal
@@ -1740,13 +1866,14 @@ function TabButton({
 
 /* ---------- แท็บอนุมัติรายงานปฏิบัติงาน ---------- */
 function WorkReportApprovalPanel({
-  pending, approved, rejected, caseCounts, onReview,
+  pending, approved, rejected, caseCounts, onReview, onDelete,
 }: {
   pending: WorkReport[];
   approved: WorkReport[];
   rejected: WorkReport[];
   caseCounts: Record<string, number>;
   onReview: (r: WorkReport, action: 'approved' | 'rejected') => void;
+  onDelete: (r: WorkReport) => void;
 }) {
   const [tab, setTab] = useState<'pending' | 'approved' | 'rejected'>('pending');
   const list = tab === 'pending' ? pending : tab === 'approved' ? approved : rejected;
@@ -1814,22 +1941,32 @@ function WorkReportApprovalPanel({
                         {r.review_note && <span className="italic">"{r.review_note}"</span>}
                       </div>
                     </div>
-                    {status === 'pending' && (
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <button
-                          onClick={() => onReview(r, 'approved')}
-                          className="bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
-                        >
-                          <CheckCircle2 size={14} /> อนุมัติ
-                        </button>
-                        <button
-                          onClick={() => onReview(r, 'rejected')}
-                          className="bg-red-500/10 text-red-400 hover:bg-red-500/20 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
-                        >
-                          <XCircle size={14} /> ไม่อนุมัติ
-                        </button>
-                      </div>
-                    )}
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {status === 'pending' && (
+                        <>
+                          <button
+                            onClick={() => onReview(r, 'approved')}
+                            className="bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                          >
+                            <CheckCircle2 size={14} /> อนุมัติ
+                          </button>
+                          <button
+                            onClick={() => onReview(r, 'rejected')}
+                            className="bg-red-500/10 text-red-400 hover:bg-red-500/20 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                          >
+                            <XCircle size={14} /> ไม่อนุมัติ
+                          </button>
+                        </>
+                      )}
+                      {/* ลบได้ทุกสถานะ: รอตรวจ / อนุมัติแล้ว / ไม่อนุมัติ */}
+                      <button
+                        onClick={() => onDelete(r)}
+                        className="bg-red-500/5 text-red-400/80 hover:text-red-300 hover:bg-red-500/15 px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border border-red-500/20 hover:border-red-500/40"
+                        title="ลบรายงานนี้"
+                      >
+                        <Trash2 size={14} /> ลบ
+                      </button>
+                    </div>
                   </div>
                 </div>
               );

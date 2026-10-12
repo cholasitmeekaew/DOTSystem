@@ -186,6 +186,22 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
 
   useEffect(() => { void load(); }, [targetId]);
 
+  /**
+   * ซิงก์แบบเรียลไทม — ไม่ต้องรีเฟรชหน้าเพื่อเห็นผลอนุมัติ/ลบรายงาน
+   * ครอบคลุม 4 อย่าง: โปรไฟล์+คะแนน, รายงานปฏิบัติงาน, การลา, เวลาเข้าเวร
+   */
+  useEffect(() => {
+    const target = `profile_rt_${targetId || 'none'}`;
+    const channel = supabase
+      .channel(target)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'work_reports' }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'officer_leaves' }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'officers' }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'officer_login_logs' }, () => { void load(); })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [targetId]);
+
   /** ข้อมูลประวัติส่วนเสริม — ใช้ "ชื่อ" ด้วย เพราะบางตารางเก็บเป็น text ไม่ใช่ id */
   useEffect(() => {
     let cancelled = false;
