@@ -127,48 +127,76 @@ export async function fetchProfileExtra(
   const out = EMPTY();
   if (!officerId) return out;
 
-  const [
-    createdRes, assignRes, officerRes,
-    vehImpRes, vehRelRes,
-    emgRes, cmpRes,
-    actRes, annRes, loginRes, dutyRes,
-  ] = await Promise.all([
+  /**
+   * คืนเป็นออบเจกต์แยกชื่อ ไม่ใช้ลำดับตำแหน่ง
+   * (เคยสลับ loginRes/dutyRes กัน เพราะอาศัย index ของ Promise.all
+   *  ทำให้ประวัติเข้าเวรไปอ่านจากตาราง logins ซึ่งว่างเปล่า)
+   */
+  const { createdRes, assignRes, officerRes, vehImpRes, vehRelRes, emgRes, cmpRes,
+          actRes, annRes, dutyRes, loginRes } = Object.assign({}, ...await Promise.all([
     // 1) ค่าบริการที่ลงบันทึกเอง
-    supabase.from('service_records').select('id, roblox_username, service_name, amount, paid_amount, status, service_date, officer_name, notes')
-      .eq('officer_id', officerId).order('service_date', { ascending: false }).limit(60),
+    {
+      createdRes: supabase.from('service_records')
+        .select('id, roblox_username, service_name, amount, paid_amount, status, service_date, officer_name, notes, officer_id')
+        .eq('officer_id', officerId).order('service_date', { ascending: false }).limit(60),
+    },
     // 1b) ค่าบริการที่ถูกมอบหมายให้ร่วมทำ
-    supabase.from('service_record_officers').select('service_record_id')
-      .eq('officer_id', officerId),
-    supabase.from('officers').select('accumulated_share').eq('id', officerId).maybeSingle(),
+    {
+      assignRes: supabase.from('service_record_officers').select('service_record_id')
+        .eq('officer_id', officerId),
+    },
+    {
+      officerRes: supabase.from('officers').select('accumulated_share').eq('id', officerId).maybeSingle(),
+    },
     // 2) รถที่ตนยึด / ปลดยึด (impounded_by_name เป็น text ไม่มี FK)
-    supabase.from('vehicles').select('id, license_plate, owner_name, brand_model, color, is_impounded, impound_reason, impound_location, impounded_at, released_at')
-      .eq('impounded_by_name', officerName).order('impounded_at', { ascending: false }).limit(40),
-    supabase.from('vehicles').select('id, license_plate, owner_name, brand_model, color, is_impounded, impound_reason, impound_location, impounded_at, released_at')
-      .eq('released_by_name', officerName).order('released_at', { ascending: false }).limit(40),
+    {
+      vehImpRes: supabase.from('vehicles')
+        .select('id, license_plate, owner_name, brand_model, color, is_impounded, impound_reason, impound_location, impounded_at, released_at')
+        .eq('impounded_by_name', officerName).order('impounded_at', { ascending: false }).limit(40),
+    },
+    {
+      vehRelRes: supabase.from('vehicles')
+        .select('id, license_plate, owner_name, brand_model, color, is_impounded, impound_reason, impound_location, impounded_at, released_at')
+        .eq('released_by_name', officerName).order('released_at', { ascending: false }).limit(40),
+    },
     // 3) เหตุฉุกเฉินที่ตนไปรับช่วยเหลือ (responded_by เป็น uuid จริง)
-    supabase.from('emergency_reports').select('id, discord_username, report_type, details, location, status, created_at')
-      .eq('responded_by', officerId).order('created_at', { ascending: false }).limit(40),
+    {
+      emgRes: supabase.from('emergency_reports')
+        .select('id, discord_username, report_type, details, location, status, created_at')
+        .eq('responded_by', officerId).order('created_at', { ascending: false }).limit(40),
+    },
     // 3b) เรื่องร้องเรียน (officer_name เป็น text → เทียบด้วยชื่อ)
-    supabase.from('complaints').select('id, complainant_name, category, description, status, created_at')
-      .eq('officer_name', officerName).order('created_at', { ascending: false }).limit(40),
+    {
+      cmpRes: supabase.from('complaints')
+        .select('id, complainant_name, category, description, status, created_at')
+        .eq('officer_name', officerName).order('created_at', { ascending: false }).limit(40),
+    },
     // 4) กิจกรรมล่าสุดของตัวเอง
-    supabase.from('audit_logs').select('id, action, target_type, created_at')
-      .eq('performed_by', officerId).order('created_at', { ascending: false }).limit(30),
+    {
+      actRes: supabase.from('audit_logs').select('id, action, target_type, created_at')
+        .eq('performed_by', officerId).order('created_at', { ascending: false }).limit(30),
+    },
     // 4b) ประกาศล่าสุด
-    supabase.from('announcements').select('id, title, is_pinned, created_at')
-      .order('is_pinned', { ascending: false }).order('created_at', { ascending: false }).limit(8),
+    {
+      annRes: supabase.from('announcements').select('id, title, is_pinned, created_at')
+        .order('is_pinned', { ascending: false }).order('created_at', { ascending: false }).limit(8),
+    },
     // 2b) ประวัติการเข้าเวรส่วนตัว
-    supabase.from('duty_logs')
-      .select('id, clock_in, clock_out, duration_minutes, forced_by_name, deleted_at')
-      .eq('officer_id', officerId)
-      .is('deleted_at', null)
-      .order('clock_in', { ascending: false }).limit(60),
+    {
+      dutyRes: supabase.from('duty_logs')
+        .select('id, clock_in, clock_out, duration_minutes, forced_by_name, deleted_at')
+        .eq('officer_id', officerId)
+        .is('deleted_at', null)
+        .order('clock_in', { ascending: false }).limit(60),
+    },
     // 4c) ประวัติการเข้าสู่ระบบ (migration 0033)
-    supabase.from('officer_login_logs')
-      .select('id, logged_in_at, ip_address, device')
-      .eq('officer_id', officerId)
-      .order('logged_in_at', { ascending: false }).limit(20),
-  ]);
+    {
+      loginRes: supabase.from('officer_login_logs')
+        .select('id, logged_in_at, ip_address, device')
+        .eq('officer_id', officerId)
+        .order('logged_in_at', { ascending: false }).limit(20),
+    },
+  ]));
 
   const collect = (label: string, r: { error: { message: string } | null }) => {
     if (r.error) out.errors.push(`${label}: ${r.error.message}`);
