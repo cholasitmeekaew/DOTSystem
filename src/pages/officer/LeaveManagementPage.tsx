@@ -54,7 +54,12 @@ function thaiMonthLabel(month: string) {
   return `${names[idx] ?? m} ${month.slice(0, 4)}`;
 }
 
-export function LeaveManagementPage() {
+export function LeaveManagementPage({
+  approvalsOnly = false,
+}: {
+  /** true = เข้าจากเมนู Admin — ซ่อนฟอร์มยื่นลา เหลือเฉพาะตารางพิจารณาคำขอ */
+  approvalsOnly?: boolean;
+} = {}) {
   const { officer, isCommissioner } = useAuth();
   const [leaves, setLeaves] = useState<OfficerLeave[]>([]);
   const [loading, setLoading] = useState(true);
@@ -271,22 +276,30 @@ export function LeaveManagementPage() {
     setReviewNote(l.review_note || '');
   }
 
-  const filtered = leaves.filter((l) => {
+  /**
+   * เจ้าหน้าที่ทั่วไปเห็นเฉพาะใบลาของตัวเองเท่านั้น
+   * (เดิมใช้ `leaves` ทั้งหมด → ทุกคนเห็นใบลาของทุกคน แม้ปุ่มอนุมัติจะถูกซ่อน)
+   */
+  const scope = isCommissioner ? leaves : myLeaves;
+
+  const filtered = scope.filter((l) => {
     if (filterStatus !== 'all' && l.status !== filterStatus) return false;
     if (filterType !== 'all' && l.leave_type !== filterType) return false;
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
-      if (!l.officer_name.toLowerCase().includes(q) && !(l.reason || '').toLowerCase().includes(q)) return false;
+      // คนทั่วไปค้นด้วยเหตุผลอย่างเดียว (ไม่เห็นรายการคนอื่นอยู่แล้ว)
+      const byName = isCommissioner && l.officer_name.toLowerCase().includes(q);
+      if (!byName && !(l.reason || '').toLowerCase().includes(q)) return false;
     }
     return true;
   });
 
   const stats = {
-    total: leaves.length,
-    pending: leaves.filter((l) => l.status === 'pending').length,
-    approved: leaves.filter((l) => l.status === 'approved').length,
-    rejected: leaves.filter((l) => l.status === 'rejected').length,
-    onLeaveToday: leaves.filter((l) => {
+    total: scope.length,
+    pending: scope.filter((l) => l.status === 'pending').length,
+    approved: scope.filter((l) => l.status === 'approved').length,
+    rejected: scope.filter((l) => l.status === 'rejected').length,
+    onLeaveToday: scope.filter((l) => {
       if (l.status !== 'approved') return false;
       const today = new Date().toISOString().slice(0, 10);
       return l.start_date <= today && l.end_date >= today;
@@ -299,16 +312,20 @@ export function LeaveManagementPage() {
       <PageHeader
         icon={<CalendarDays size={26} />}
         title="จัดการการลา"
-        subtitle="ระบบบันทึกและอนุมัติการลาของเจ้าหน้าที่"
-        actions={
+        subtitle={approvalsOnly
+          ? 'พิจารณาคำขอลาของเจ้าหน้าที่ทั้งหน่วยงาน'
+          : isCommissioner
+            ? 'ระบบบันทึกและอนุมัติการลาของเจ้าหน้าที่'
+            : 'ยื่นใบลาและตรวจสอบประวัติการลาของคุณ'}
+        actions={!approvalsOnly && (
           <button onClick={openAdd} className="btn-primary px-5 py-2.5 flex items-center gap-2">
             <Plus size={18} /> แจ้งลา
           </button>
-        }
+        )}
       />
 
-      {/* โควตาของฉันในเดือนนี้ */}
-      <MyQuotaStrip quotas={quotas} leaves={myLeaves} />
+      {/* โควตาของฉันในเดือนนี้ — ไม่เกี่ยวกับหน้าพิจารณาคำขอ */}
+      {!approvalsOnly && <MyQuotaStrip quotas={quotas} leaves={myLeaves} />}
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -341,7 +358,7 @@ export function LeaveManagementPage() {
         <div className="relative flex-1 min-w-[200px]">
           <input
             className="input-field pl-9"
-            placeholder="ค้นหาชื่อเจ้าหน้าที่หรือเหตุผล..."
+            placeholder={isCommissioner ? 'ค้นหาชื่อเจ้าหน้าที่หรือเหตุผล...' : 'ค้นหาเหตุผลของคุณ...'}
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
           />

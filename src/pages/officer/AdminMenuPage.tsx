@@ -7,9 +7,10 @@
 
 import {
   MessageSquare, Megaphone, Tag, Users, UserCog, Award, Wallet,
-  Siren, Car, ShieldAlert, Settings, FileCheck2,
+  Siren, Car, ShieldAlert, Settings, FileCheck2, CalendarCheck,
 } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
+import { DepartmentStatsPanel } from '../../components/DepartmentStatsPanel';
 import type { OfficerPage } from '../../components/OfficerLayout';
 
 interface Props {
@@ -78,6 +79,9 @@ const GROUPS: Array<{ title: string; note: string; items: AdminCard[] }> = [
       { id: 'report-approvals', label: 'อนุมัติรายงานปฏิบัติงาน',
         desc: 'ตรวจ อนุมัติ หรือไม่อนุมัติรายงานของเจ้าหน้าที่',
         icon: FileCheck2, tint: 'bg-lime-500/15 text-lime-300', ring: 'hover:border-lime-500/50' },
+      { id: 'leave-approvals', label: 'พิจารณาคำขอลา',
+        desc: 'อนุมัติ / ไม่อนุมัติ / แก้ไข / ลบ คำขอลาของทุกคน',
+        icon: CalendarCheck, tint: 'bg-teal-500/15 text-teal-300', ring: 'hover:border-teal-500/50' },
     ],
   },
   {
@@ -140,6 +144,15 @@ export function AdminMenuPage({ onNavigate }: Props) {
           </section>
         ))}
       </div>
+
+      {/* สถิติการปฏิบัติหน้าที่ — ย้ายมาจากหน้าปฏิบัติงาน */}
+      <section className="mt-8">
+        <div className="flex items-baseline gap-2 mb-2.5">
+          <h2 className="text-sm font-bold text-white">สถิติการปฏิบัติหน้าที่ — รวมทั้งกรม</h2>
+          <span className="text-[11px] text-gray-500">ดูแล้วย้ายมาจากหน้าปฏิบัติงาน</span>
+        </div>
+        <DepartmentStatsPanel />
+      </section>
     </div>
   );
 }

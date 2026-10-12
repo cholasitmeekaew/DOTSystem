@@ -14,6 +14,7 @@ export type OfficerPage =
   | 'admin-menu'
   | 'admin-settings'
   | 'report-approvals'
+  | 'leave-approvals'
   | 'operations'
   | 'service-fees'
   | 'complaints'

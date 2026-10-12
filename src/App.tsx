@@ -80,7 +80,7 @@ function OfficerApp() {
     'points-management', 'department-balance', 'service-rates',
     'complaints', 'announcements',
     'emergency', 'vehicles',
-    'admin-settings', 'report-approvals',
+    'admin-settings', 'report-approvals', 'leave-approvals',
   ];
   const isDenied = commissionerOnlyPages.includes(currentPage) && !isCommissioner;
 
@@ -109,6 +109,9 @@ function OfficerApp() {
           <>
             {currentPage === 'dashboard' && <DashboardPage />}
             {currentPage === 'admin-settings' && <AdminSettingsPage />}
+            {currentPage === 'leave-approvals' && (
+              <LeaveManagementPage approvalsOnly />
+            )}
             {currentPage === 'report-approvals' && (
               <OperationsPage initialTab="approvals" approvalsOnly />
             )}
