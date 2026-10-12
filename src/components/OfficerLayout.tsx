@@ -1,7 +1,7 @@
 import { ReactNode, useState } from 'react';
 import {
   Truck, LayoutDashboard, Shield, DollarSign, Megaphone,
-  Users, LogOut, Menu, X, ChevronRight, Tag, MessageSquare, Siren, Car, UserCog, CalendarDays, BookOpen, Award, Wallet, Newspaper, UserCircle,
+  Users, LogOut, Menu, X, ChevronRight, Tag, MessageSquare, Siren, Car, UserCog, CalendarDays, BookOpen, Award, Newspaper, UserCircle, ShieldAlert,
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { RANK_LABELS, DEPARTMENT_LABELS } from '../lib/types';
@@ -11,6 +11,7 @@ const LOGO_URL = '/logo.png';
 export type OfficerPage =
   | 'dashboard'
   | 'profile'
+  | 'admin-menu'
   | 'operations'
   | 'service-fees'
   | 'complaints'
@@ -47,23 +48,31 @@ const navSections: { id: 'ops' | 'admin' | 'general'; label: string; adminOnly: 
   { id: 'general', label: 'ทั่วไป', adminOnly: false },
 ];
 
+/**
+ * ฟังก์ชันที่หัวหน้ากรมใช้ (ย้ายออกจาก sidebar ไปรวมที่หน้า "เมนู Admin")
+ * รายการนี้คือแหล่งความจริงของหน้า AdminMenuPage — ถ้าเพิ่ม/ลบเมนูให้แก้ที่นี่
+ */
+export const ADMIN_MENU_ITEMS = [
+  { id: 'officer-management', label: 'จัดการเจ้าหน้าที่' },
+  { id: 'citizen-management', label: 'จัดการข้อมูลประชาชน' },
+  { id: 'points-management', label: 'จัดการคะแนน' },
+  { id: 'department-balance', label: 'การเงิน & สัดส่วน' },
+  { id: 'service-rates', label: 'อัตราค่าบริการ' },
+  { id: 'complaints', label: 'เรื่องร้องเรียน' },
+  { id: 'emergency', label: 'ระบบแจ้งเหตุฉุกเฉิน' },
+  { id: 'announcements', label: 'ประกาศ' },
+  { id: 'vehicles', label: 'ระบบยานพาหนะ' },
+] as const;
+
 const navItems: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'profile', label: 'ข้อมูลส่วนตัว', icon: <UserCircle size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'operations', label: 'ปฏิบัติการ', icon: <Shield size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'service-fees', label: 'แจ้งค่าบริการ', icon: <DollarSign size={18} />, commissionerOnly: false, section: 'ops' },
-  { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: <Siren size={18} />, commissionerOnly: false, section: 'ops' },
-  { id: 'vehicles', label: 'ยานพาหนะ', icon: <Car size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'leave', label: 'จัดการการลา', icon: <CalendarDays size={18} />, commissionerOnly: false, section: 'ops' },
-  { id: 'complaints', label: 'เรื่องร้องเรียน', icon: <MessageSquare size={18} />, commissionerOnly: true, section: 'admin' },
-  { id: 'announcements', label: 'ประกาศ', icon: <Megaphone size={18} />, commissionerOnly: true, section: 'admin' },
-  { id: 'service-rates', label: 'อัตราค่าบริการ', icon: <Tag size={18} />, commissionerOnly: true, section: 'admin' },
-  { id: 'officer-management', label: 'จัดการเจ้าหน้าที่', icon: <Users size={18} />, commissionerOnly: true, section: 'admin' },
-  { id: 'citizen-management', label: 'จัดการข้อมูลประชาชน', icon: <UserCog size={18} />, commissionerOnly: true, section: 'admin' },
-  { id: 'points-management', label: 'จัดการคะแนน', icon: <Award size={18} />, commissionerOnly: true, section: 'admin' },
-  { id: 'department-balance', label: 'การเงิน & สัดส่วน', icon: <Wallet size={18} />, commissionerOnly: true, section: 'admin' },
   { id: 'manual', label: 'คู่มือการใช้งาน', icon: <BookOpen size={18} />, commissionerOnly: false, section: 'general' },
   { id: 'my-points', label: 'คะแนน PPS ของฉัน', icon: <Award size={18} />, commissionerOnly: false, section: 'general' },
+  { id: 'admin-menu', label: 'เมนู Admin', icon: <ShieldAlert size={18} />, commissionerOnly: true, section: 'admin' },
 ];
 
 export function OfficerLayout({ children, currentPage, onNavigate, onLogout }: Props) {

@@ -33,6 +33,7 @@ const LeaveManagementPage = lazy(() => import('./pages/officer/LeaveManagementPa
 const ManualPage = lazy(() => import('./pages/public/ManualPage').then((m) => ({ default: m.ManualPage })));
 const MyPointsPage = lazy(() => import('./pages/officer/MyPointsPage').then((m) => ({ default: m.MyPointsPage })));
 const ProfilePage = lazy(() => import('./pages/officer/ProfilePage').then((m) => ({ default: m.ProfilePage })));
+const AdminMenuPage = lazy(() => import('./pages/officer/AdminMenuPage').then((m) => ({ default: m.AdminMenuPage })));
 const PointsManagementPage = lazy(() => import('./pages/officer/PointsManagementPage').then((m) => ({ default: m.PointsManagementPage })));
 const DepartmentBalancePage = lazy(() => import('./pages/officer/DepartmentBalancePage').then((m) => ({ default: m.DepartmentBalancePage })));
 
@@ -70,7 +71,15 @@ function OfficerApp() {
 
   if (!officer) return null;
 
-  const commissionerOnlyPages: OfficerPage[] = ['announcements', 'service-rates', 'officer-management', 'citizen-management', 'complaints'];
+  // ต้องครอบคลุมทุกหน้าใน ADMIN_MENU_ITEMS + หน้า hub เอง
+  // (เดิมพลาดไป 4 หน้า: points-management, department-balance, emergency, vehicles)
+  const commissionerOnlyPages: OfficerPage[] = [
+    'admin-menu',
+    'officer-management', 'citizen-management',
+    'points-management', 'department-balance', 'service-rates',
+    'complaints', 'announcements',
+    'emergency', 'vehicles',
+  ];
   const isDenied = commissionerOnlyPages.includes(currentPage) && !isCommissioner;
 
   function handleNavigate(page: OfficerPage) {
@@ -97,6 +106,9 @@ function OfficerApp() {
         ) : (
           <>
             {currentPage === 'dashboard' && <DashboardPage />}
+            {currentPage === 'admin-menu' && (
+              <AdminMenuPage onNavigate={handleNavigate} />
+            )}
             {currentPage === 'profile' && (
               <ProfilePage onNavigate={handleNavigate} onOpenOpsTab={navigateToOpsTab} />
             )}
