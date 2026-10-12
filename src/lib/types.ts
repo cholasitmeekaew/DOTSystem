@@ -433,6 +433,8 @@ export interface SystemSettings {
   login_enabled: boolean;
   /** สวิตช์เปิด/ปิดการให้คะแนนอัตโนมัติ (migration 0028) */
   auto_points_enabled?: boolean;
+  /** สวิตช์เปิด/ปิดการรายงานปฏิบัติงาน (migration 0034) */
+  work_reports_enabled?: boolean;
   updated_at: string;
   updated_by: string | null;
   updated_by_name: string | null;

@@ -528,6 +528,13 @@ export function VehicleManagementPage() {
                   <Trash2 size={15} /> ลบ
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setViewVehicle(null)}
+                className="btn-secondary px-4 py-2 text-sm"
+              >
+                ปิด
+              </button>
             </div>
           </div>
         </Modal>

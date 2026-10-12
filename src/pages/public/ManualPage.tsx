@@ -605,13 +605,23 @@ export function ManualPage({
                 <img src={imagePreview} alt="preview" className="mt-3 max-h-48 rounded-lg border border-blue-900/40" />
               )}
             </div>
-            <button
-              type="submit"
-              disabled={saving}
-              className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-navy-900 font-semibold rounded-lg"
-            >
-              {saving ? 'กำลังบันทึก...' : 'เพิ่มรายการ'}
-            </button>
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => { setShowForm(false); setForm({ title: '', content: '' }); setImageFile(null); setImagePreview(null); }}
+                disabled={saving}
+                className="btn-secondary flex-1 py-2.5 text-sm disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-navy-900 font-semibold rounded-lg"
+              >
+                {saving ? 'กำลังบันทึก...' : 'เพิ่มรายการ'}
+              </button>
+            </div>
           </form>
         </Modal>
       )}

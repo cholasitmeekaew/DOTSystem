@@ -240,6 +240,30 @@ begin
   end if;
 end $$;
 
+-- ---- 0034 ----
+alter table system_settings
+  add column if not exists work_reports_enabled boolean not null default true;
+
+comment on column system_settings.work_reports_enabled is
+  'true = เจ้าหน้าที่ส่งรายงานปฏิบัติงานได้ / false = ปิดการส่งรายงานทั้งระบบ';
+
+do $$
+declare
+  v_has boolean;
+begin
+  select exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'system_settings'
+      and column_name = 'work_reports_enabled'
+  ) into v_has;
+
+  if v_has then
+    raise notice '0034 สำเร็จ: system_settings.work_reports_enabled พร้อมใช้งาน';
+  else
+    raise exception '0034 ล้มเหลว: ไม่พบคอลัมน์ work_reports_enabled';
+  end if;
+end $$;
+
 -- =====================================================================
 -- ส่วนที่ 4 — seed: ย้ายเนื้อหาคู่มือเดิมเข้าตาราง (18 บท / 95 หมวด / 337 บล็อก)
 -- =====================================================================

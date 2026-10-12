@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw,
+  Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw, FileText,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
@@ -134,6 +134,41 @@ export function AdminSettingsPage() {
     }
   }
 
+  /* ---------- การรายงานปฏิบัติงาน ---------- */
+  async function toggleWorkReports() {
+    if (!officer || !settings || busy) return;
+    const next = !settings.work_reports_enabled;
+    setSettings({ ...settings, work_reports_enabled: next });
+    setNotice(null);
+
+    const { error } = await supabase.from('system_settings').update({
+      work_reports_enabled: next,
+      updated_at: new Date().toISOString(),
+      updated_by: officer.id,
+      updated_by_name: officer.name,
+    }).eq('id', 1);
+
+    if (error) {
+      setSettings({ ...settings, work_reports_enabled: !next });
+      setNotice({ kind: 'err', text: `เปลี่ยนสวิตช์ไม่สำเร็จ: ${error.message}` });
+      return;
+    }
+
+    await supabase.from('audit_logs').insert({
+      action: next ? 'ENABLE_WORK_REPORTS' : 'DISABLE_WORK_REPORTS',
+      target_type: 'system',
+      performed_by: officer.id,
+      performed_by_name: officer.name,
+      details: {},
+    });
+    setNotice({
+      kind: 'ok',
+      text: next
+        ? 'เปิดการรายงานปฏิบัติงานแล้ว — เจ้าหน้าที่ส่งรายงานได้ตามปกติ'
+        : 'ปิดการรายงานปฏิบัติงานแล้ว — เจ้าหน้าที่จะส่งรายงานไม่ได้ (รายงานที่ส่งไปแล้วยังอยู่ครบ)',
+    });
+  }
+
   /* ---------- ระบบเข้าเวร ---------- */
   async function toggleDutySystem() {
     if (!officer || !settings || busy) return;
@@ -191,6 +226,7 @@ export function AdminSettingsPage() {
 
   const autoPoints = settings?.auto_points_enabled ?? false;
   const dutyEnabled = settings?.duty_system_enabled ?? true;
+  const reportsEnabled = settings?.work_reports_enabled ?? true;
 
   return (
     <div>
@@ -312,6 +348,42 @@ export function AdminSettingsPage() {
             </div>
           </div>
 
+          {/* การรายงานปฏิบัติงาน */}
+          <div className={`card p-4 sm:p-5 border-2 ${reportsEnabled ? 'border-blue-500/30' : 'border-red-500/30'}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                  reportsEnabled ? 'bg-blue-500/15 text-blue-400' : 'bg-red-500/15 text-red-400'
+                }`}
+                >
+                  <FileText size={20} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-bold text-white">การรายงานปฏิบัติงาน</h2>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {reportsEnabled
+                      ? 'เปิดอยู่ — เจ้าหน้าที่ส่งรายงานปฏิบัติงานได้ตามปกติ'
+                      : 'ปิดอยู่ — เจ้าหน้าที่จะส่งรายงานไม่ได้ (หัวหน้ากรมยังอนุมัติรายงานที่ส่งไปแล้วได้)'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={toggleWorkReports}
+                disabled={busy}
+                className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                  reportsEnabled ? 'bg-blue-500' : 'bg-red-500'
+                }`}
+                aria-label="เปิด/ปิดการรายงานปฏิบัติงาน"
+                aria-pressed={reportsEnabled}
+              >
+                <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-lg transition-transform ${
+                  reportsEnabled ? 'translate-x-8' : ''
+                }`}
+                />
+              </button>
+            </div>
+          </div>
+
           {/* ค่าที่อ่านได้อย่างเดียว */}
           <div className="card p-4 sm:p-5">
             <h2 className="text-xs font-semibold text-gray-300 mb-3">สถานะระบบ</h2>
@@ -326,6 +398,12 @@ export function AdminSettingsPage() {
                 <div className="text-[10px] text-gray-500">PPS Engine</div>
                 <div className={`text-sm font-bold mt-0.5 ${autoPoints ? 'text-amber-400' : 'text-gray-400'}`}>
                   {autoPoints ? 'ทำงาน' : 'ปิดอยู่'}
+                </div>
+              </div>
+              <div className="rounded-lg bg-navy-900/50 border border-blue-900/40 px-3 py-2.5">
+                <div className="text-[10px] text-gray-500">รายงานปฏิบัติงาน</div>
+                <div className={`text-sm font-bold mt-0.5 ${reportsEnabled ? 'text-blue-400' : 'text-red-400'}`}>
+                  {reportsEnabled ? 'เปิดอยู่' : 'ปิดอยู่'}
                 </div>
               </div>
               <div className="rounded-lg bg-navy-900/50 border border-blue-900/40 px-3 py-2.5">

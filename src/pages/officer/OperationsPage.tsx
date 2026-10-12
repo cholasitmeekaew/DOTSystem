@@ -522,6 +522,11 @@ export function OperationsPage({
   });
 
   function openReportEditor(target: ReportTarget) {
+    // สวิตช์ระดับระบบปิดการรายงาน (migration 0034) — บล็อกทั้งทางปุ่มและทางฟังก์ชัน
+    if (!workReportsEnabled) {
+      flash('err', 'ระบบปิดการรายงานปฏิบัติงานอยู่ — ติดต่อหัวหน้ากรม');
+      return;
+    }
     setWorkReportTarget(target);
     setWorkReportCategory('patrol');
     setWorkReportSummary('');
@@ -545,6 +550,7 @@ export function OperationsPage({
   }
 
   function canWriteDutyReport(log: DutyLog): boolean {
+    if (!workReportsEnabled) return false;
     return !!officer?.id && log.officer_id === officer.id;
   }
 
@@ -923,6 +929,7 @@ export function OperationsPage({
   }, [filteredDutyLogs, reportByDutyLogId, reportCaseCounts, workReports]);
 
   const dutyEnabled = settings?.duty_system_enabled ?? true;
+  const workReportsEnabled = settings?.work_reports_enabled ?? true;
 
   return (
     <div className="min-w-0 overflow-x-hidden">
@@ -2328,6 +2335,13 @@ function ShiftStaffingModal({
                 title="ล้างข้อยกเว้นของวันนี้ทั้งหมด"
               >
                 <Trash2 size={15} />
+              </button>
+              <button
+                onClick={onClose}
+                disabled={busy}
+                className="btn-secondary px-4 py-2 disabled:opacity-40"
+              >
+                ยกเลิก
               </button>
             </div>
           </div>

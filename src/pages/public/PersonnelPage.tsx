@@ -916,6 +916,13 @@ function OfficerDetailModal({
             </div>
           )}
         </div>
+
+        {/* ปุ่มปิดหน้าต่าง — โมดัลนี้เดิมปิดได้ด้วย X ลอยบนซ้ายบนอย่างเดียว */}
+        <div className="flex justify-end pt-1">
+          <button type="button" onClick={onClose} className="btn-secondary px-5 py-2 text-sm">
+            ปิด
+          </button>
+        </div>
       </div>
     </Modal>
   );
