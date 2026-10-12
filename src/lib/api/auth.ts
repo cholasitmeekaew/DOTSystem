@@ -38,6 +38,13 @@ export function useLogin() {
       if (officer.password_hash !== hash) {
         throw new Error('รหัสผ่านไม่ถูกต้อง');
       }
+
+      // บันทึกประวัติการเข้าสู่ระบบ (เวลา/IP/อุปกรณ์) — ไม่ block การล็อกอินถ้าล้มเหลว
+      void supabase.rpc('log_officer_login', {
+        p_officer_id: officer.id,
+        p_user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+      }).then(() => undefined, () => undefined);
+
       return officer;
     },
   });

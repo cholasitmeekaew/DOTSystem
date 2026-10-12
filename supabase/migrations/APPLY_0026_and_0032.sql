@@ -1,16 +1,16 @@
 -- =====================================================================
--- DOTSystem — รวม migration ที่ยังไม่ถูก apply (0026 + 0032) และ seed ข้อมูล
+-- DOTSystem — รวม migration ที่ยังไม่ถูก apply (0026 + 0032 + 0033) และ seed
 -- ---------------------------------------------------------------------
 -- วิธีใช้: Supabase Dashboard → SQL Editor → New query
 --        วางทั้งไฟล์นี้ → Run  (ทีเดียวจบ)
 --
 -- ตรวจเมื่อ 2026-10-12 พบว่า ณ ฐานข้อมูลจริงยังไม่มีตาราง:
 --   - manual_items                     (0026) — ยังไม่เคยรัน
---   - manual_chapters/sections/blocks  (0032) — เพิ่งเพิ่ม
+--   - manual_chapters/sections/blocks  (0032)
+--   - officer_login_logs               (0033) — ประวัติการเข้าสู่ระบบ
 -- ส่วน migration อื่น (0001 → 0030 นอกจาก 0026) มีครบแล้ว
 --
--- ลำดับสำคัญ: ต้องรัน 0032 ก่อน SEED เสมอ (seed ต้องเขียนลงตารางที่ 0032 สร้าง)
---
+-- ลำดับสำคัญ: ต้องรัน 0032 ก่อน SEED เสมอ
 -- ทุก statement idempotent → รันซ้ำได้ถ้ามีอะไรค้าง
 -- =====================================================================
 
@@ -147,8 +147,103 @@ end $$;
 commit;
 
 -- =====================================================================
--- ส่วนที่ 3 — seed: ย้ายเนื้อหาคู่มือเดิมเข้าตาราง (18 บท / 95 หมวด / 337 บล็อก)
+-- ส่วนที่ 3 — 0033: ประวัติการเข้าสู่ระบบ (เว้นวรรคเพราะมี begin/commit ของตัวเอง)
 -- =====================================================================
+create table if not exists officer_login_logs (
+  id uuid primary key default gen_random_uuid(),
+  officer_id uuid not null references officers(id) on delete cascade,
+  logged_in_at timestamz not null default now(),
+  ip_address text,
+  user_agent text,
+  device text
+);
+
+create index if not exists officer_login_logs_idx
+  on officer_login_logs (officer_id, logged_in_at desc);
+
+alter table officers add column if not exists last_login_at timestamz;
+alter table officers add column if not exists last_login_ip text;
+
+alter table officer_login_logs enable row level security;
+
+drop policy if exists "officer_login_logs read own" on officer_login_logs;
+create policy "officer_login_logs read own" on officer_login_logs
+  for select using (officer_id = auth.uid() or current_rank() = 'commissioner');
+
+create or replace function public.log_officer_login(
+  p_officer_id uuid,
+  p_user_agent text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_headers json;
+  v_ip text;
+  v_ua text;
+  v_device text;
+begin
+  if p_officer_id is null then
+    return;
+  end if;
+
+  begin
+    v_headers := current_setting('request.headers', true)::json;
+  exception when others then
+    v_headers := '{}'::json;
+  end;
+
+  v_ip := nullif(split_part(coalesce(v_headers->>'x-forwarded-for', ''), ',', 1), '');
+  if v_ip is null then
+    v_ip := nullif(split_part(coalesce(v_headers->>'x-real-ip', ''), ',', 1), '');
+  end if;
+
+  v_ua := coalesce(nullif(p_user_agent, ''), v_headers->>'user-agent');
+
+  v_device := case
+    when v_ua is null then null
+    when v_ua ilike '%edg/%'      then 'Microsoft Edge'
+    when v_ua ilike '%chrome/%'   then 'Google Chrome'
+    when v_ua ilike '%firefox/%'  then 'Mozilla Firefox'
+    when v_ua ilike '%safari/%'   then 'Safari'
+    when v_ua ilike '%iphone%' or v_ua ilike '%ipad%'   then 'iOS'
+    when v_ua ilike '%android%'   then 'Android'
+    else 'อื่น ๆ'
+  end;
+
+  insert into officer_login_logs (officer_id, ip_address, user_agent, device)
+  values (p_officer_id, v_ip, left(v_ua, 500), v_device);
+
+  update officers
+     set last_login_at = now(),
+         last_login_ip = v_ip
+   where id = p_officer_id;
+end $$;
+
+grant execute on function public.log_officer_login(uuid, text) to anon, authenticated;
+
+do $$
+declare
+  v_ok boolean;
+begin
+  select exists (
+    select 1 from information_schema.tables
+    where table_schema = 'public' and table_name = 'officer_login_logs'
+  ) into v_ok;
+
+  if v_ok then
+    raise notice '0033 สำเร็จ: officer_login_logs + log_officer_login() พร้อมใช้งาน';
+  else
+    raise exception '0033 ล้มเหลว: ไม่พบตาราง officer_login_logs';
+  end if;
+end $$;
+
+-- =====================================================================
+-- ส่วนที่ 4 — seed: ย้ายเนื้อหาคู่มือเดิมเข้าตาราง (18 บท / 95 หมวด / 337 บล็อก)
+-- =====================================================================
+begin;
 
 delete from manual_blocks   where variant = 'officer';
 delete from manual_sections where variant = 'officer';
@@ -721,12 +816,14 @@ insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_bl
 insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
   ('citizen', 'c-ch6-1', 'text', '<ul class="manual-list"><li><strong>จ่ายเงินแล้วแต่ยอดยังค้าง?</strong> แสดงใบเสร็จให้เจ้าหน้าที่ตรวจสอบทันที</li><li><strong>หาชื่อตัวเองไม่เจอ?</strong> ตรวจตัวสะกดชื่อ Roblox หรือติดต่อเจ้าหน้าที่ให้เพิ่มข้อมูล</li><li><strong>ขอใบเสร็จย้อนหลังได้ไหม?</strong> ได้ โดยแจ้งเลขบิลหรือช่วงวันที่ใช้บริการ</li><li><strong>ติดต่อกรมขนส่งช่องทางไหน?</strong> ผ่านเมนูแจ้งเหตุ ร้องเรียน หรือเจ้าหน้าที่ที่ปฏิบัติหน้าที่</li></ul>', null, 0, '{}'::jsonb);
 
+commit;
 
 -- =====================================================================
--- ส่วนที่ 4 — ตรวจผล (ควรได้ 18 / 95 / 337)
+-- ส่วนที่ 5 — ตรวจผล
 -- =====================================================================
 select 'manual_chapters' as tbl, count(*) as rows from manual_chapters
 union all select 'manual_sections', count(*) from manual_sections
 union all select 'manual_blocks', count(*) from manual_blocks
 union all select 'manual_items', count(*) from manual_items
+union all select 'officer_login_logs', count(*) from officer_login_logs
 order by tbl;

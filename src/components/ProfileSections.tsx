@@ -10,6 +10,7 @@ import {
   ChevronUp, CheckCircle2, XCircle, Clock, Pin, Info, Wrench,
 } from 'lucide-react';
 import type { ProfileExtra, IncidentRow, ServiceRow } from '../lib/profileData';
+import { Globe, LogIn, MonitorSmartphone, Info as InfoIcon } from 'lucide-react';
 
 const fmtDate = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
@@ -214,13 +215,70 @@ function IncidentsTab({ data }: { data: ProfileExtra }) {
 
 /* ============================ กิจกรรม ============================ */
 
+function LoginHistory({ data }: { data: ProfileExtra }) {
+  if (data.loginUnavailable) {
+    return (
+      <NotStored
+        what="ยังไม่ได้เปิดใช้ประวัติการเข้าสู่ระบบ"
+        why="ต้องรัน migration 0033_login_history.sql ก่อน (สร้างตาราง officer_login_logs และฟังก์ชัน log_officer_login)"
+      />
+    );
+  }
+
+  const first = data.logins[0];
+
+  return (
+    <div className="space-y-2.5">
+      {first && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          <div className="rounded-lg bg-navy-900/50 border border-blue-900/40 px-3 py-2">
+            <div className="text-[10px] text-gray-500 flex items-center gap-1">
+              <LogIn size={10} /> เข้าสู่ระบบล่าสุด
+            </div>
+            <div className="text-[11px] font-semibold text-white mt-0.5">{fmtDateTime(first.logged_in_at)}</div>
+          </div>
+          <div className="rounded-lg bg-navy-900/50 border border-blue-900/40 px-3 py-2">
+            <div className="text-[10px] text-gray-500 flex items-center gap-1">
+              <Globe size={10} /> IP Address
+            </div>
+            <div className="text-[11px] font-mono text-cyan-300 mt-0.5">{first.ip_address ?? 'ไม่ทราบ'}</div>
+          </div>
+          <div className="rounded-lg bg-navy-900/50 border border-blue-900/40 px-3 py-2">
+            <div className="text-[10px] text-gray-500 flex items-center gap-1">
+              <MonitorSmartphone size={10} /> อุปกรณ์
+            </div>
+            <div className="text-[11px] font-semibold text-gray-200 mt-0.5">{first.device ?? 'ไม่ทราบ'}</div>
+          </div>
+        </div>
+      )}
+
+      <Accordion title="ประวัติการเข้าสู่ระบบ" count={data.logins.length} icon={LogIn} tone="text-cyan-300" defaultOpen>
+        {data.logins.length === 0 ? (
+          <div className="text-[11px] text-gray-600 py-1">ยังไม่มีประวัติ (จะเริ่มบันทึกตั้งแต่การเข้าสู่ระบบครั้งถัดไป)</div>
+        ) : data.logins.map((l) => (
+          <div key={l.id} className="flex items-center gap-2 rounded px-2 py-1.5 bg-navy-900/40 border border-blue-900/30">
+            <LogIn size={12} className="text-cyan-400 flex-shrink-0" />
+            <span className="text-[11px] text-gray-300 flex-1 min-w-0 truncate font-mono">
+              {l.ip_address ?? 'ไม่ทราบ IP'}
+            </span>
+            <span className="text-[10px] text-gray-500 flex-shrink-0">{l.device ?? '—'}</span>
+            <span className="text-[10px] text-gray-600 flex-shrink-0">{fmtDateTime(l.logged_in_at)}</span>
+          </div>
+        ))}
+      </Accordion>
+
+      <p className="text-[10px] text-gray-600 leading-relaxed flex items-start gap-1">
+        <InfoIcon size={10} className="mt-0.5 flex-shrink-0" />
+        IP ถูกอ่านฝั่งเซิร์ฟเวอร์จาก x-forwarded-for จึงแก้ไขจากฝั่งผู้ใช้ไม่ได้
+      </p>
+    </div>
+  );
+}
+
 function ActivityTab({ data }: { data: ProfileExtra }) {
   return (
     <div className="space-y-3">
-      <NotStored
-        what="ยังไม่มีประวัติการเข้าสู่ระบบ (IP / อุปกรณ์ / Last Login)"
-        why="ระบบล็อกอินด้วยตาราง officers + localStorage ไม่มีการบันทึกเวลาเข้าใช้หรือ IP ลงฐานข้อมูล"
-      />
+      <LoginHistory data={data} />
 
       <Accordion title="ประกาศล่าสุด" count={data.announcements.length} icon={Megaphone} tone="text-indigo-300">
         {data.announcements.length === 0

@@ -76,7 +76,18 @@ export interface ProfileExtra {
   incidents: { emergency: IncidentRow[]; complaints: IncidentRow[] };
   activity: ActivityRow[];
   announcements: Array<{ id: string; title: string; is_pinned: boolean; created_at: string | null }>;
+  /** ประวัติการเข้าสู่ระบบ — ต้องมี migration 0033 */
+  logins: LoginRow[];
+  /** true = ยังไม่ได้รัน migration 0033 (ตารางไม่มีอยู่) */
+  loginUnavailable: boolean;
   errors: string[];
+}
+
+export interface LoginRow {
+  id: string;
+  logged_in_at: string | null;
+  ip_address: string | null;
+  device: string | null;
 }
 
 const EMPTY = (): ProfileExtra => ({
@@ -88,6 +99,8 @@ const EMPTY = (): ProfileExtra => ({
   incidents: { emergency: [], complaints: [] },
   activity: [],
   announcements: [],
+  logins: [],
+  loginUnavailable: false,
   errors: [],
 });
 
@@ -105,13 +118,13 @@ export async function fetchProfileExtra(
     createdRes, assignRes, officerRes,
     vehImpRes, vehRelRes,
     emgRes, cmpRes,
-    actRes, annRes,
+    actRes, annRes, loginRes,
   ] = await Promise.all([
     // 1) ค่าบริการที่ลงบันทึกเอง
     supabase.from('service_records').select('id, roblox_username, service_name, amount, paid_amount, status, service_date, officer_name, notes')
       .eq('officer_id', officerId).order('service_date', { ascending: false }).limit(60),
     // 1b) ค่าบริการที่ถูกมอบหมายให้ร่วมทำ
-    supabase.from('service_record_officers').select('service_record_id, primary')
+    supabase.from('service_record_officers').select('service_record_id')
       .eq('officer_id', officerId),
     supabase.from('officers').select('accumulated_share').eq('id', officerId).maybeSingle(),
     // 2) รถที่ตนยึด / ปลดยึด (impounded_by_name เป็น text ไม่มี FK)
@@ -131,6 +144,11 @@ export async function fetchProfileExtra(
     // 4b) ประกาศล่าสุด
     supabase.from('announcements').select('id, title, is_pinned, created_at')
       .order('is_pinned', { ascending: false }).order('created_at', { ascending: false }).limit(8),
+    // 4c) ประวัติการเข้าสู่ระบบ (migration 0033)
+    supabase.from('officer_login_logs')
+      .select('id, logged_in_at, ip_address, device')
+      .eq('officer_id', officerId)
+      .order('logged_in_at', { ascending: false }).limit(20),
   ]);
 
   const collect = (label: string, r: { error: { message: string } | null }) => {
@@ -143,6 +161,11 @@ export async function fetchProfileExtra(
   collect('เหตุฉุกเฉิน', emgRes);
   collect('เรื่องร้องเรียน', cmpRes);
   collect('กิจกรรม', actRes);
+  if (loginRes.error && /does not exist|schema cache|PGRST/i.test(loginRes.error.message)) {
+    out.loginUnavailable = true;
+  } else if (loginRes.error) {
+    out.errors.push(`ประวัติการเข้าสู่ระบบ: ${loginRes.error.message}`);
+  }
 
   /* ---- ค่าบริการ ---- */
   const created = asArray<ServiceRow>(createdRes.data);
@@ -220,6 +243,8 @@ export async function fetchProfileExtra(
   out.announcements = asArray<{
     id: string; title: string; is_pinned: boolean; created_at: string | null;
   }>(annRes.data);
+
+  out.logins = asArray<LoginRow>(loginRes.data);
 
   return out;
 }
