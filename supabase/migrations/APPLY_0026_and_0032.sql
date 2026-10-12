@@ -67,7 +67,7 @@ create table if not exists manual_chapters (
   is_hidden boolean not null default false,
   updated_by uuid references officers(id) on delete set null,
   updated_by_name text,
-  updated_at timestamz not null default now(),
+  updated_at timestamptz not null default now(),
   primary key (variant, id)
 );
 
@@ -81,7 +81,7 @@ create table if not exists manual_sections (
   uses_blocks boolean not null default false,
   updated_by uuid references officers(id) on delete set null,
   updated_by_name text,
-  updated_at timestamz not null default now(),
+  updated_at timestamptz not null default now(),
   primary key (variant, id)
 );
 
@@ -97,7 +97,7 @@ create table if not exists manual_blocks (
   meta jsonb not null default '{}'::jsonb,
   updated_by uuid references officers(id) on delete set null,
   updated_by_name text,
-  updated_at timestamz not null default now()
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists manual_blocks_section_idx
@@ -153,7 +153,7 @@ commit;
 create table if not exists officer_login_logs (
   id uuid primary key default gen_random_uuid(),
   officer_id uuid not null references officers(id) on delete cascade,
-  logged_in_at timestamz not null default now(),
+  logged_in_at timestamptz not null default now(),
   ip_address text,
   user_agent text,
   device text
@@ -162,7 +162,7 @@ create table if not exists officer_login_logs (
 create index if not exists officer_login_logs_idx
   on officer_login_logs (officer_id, logged_in_at desc);
 
-alter table officers add column if not exists last_login_at timestamz;
+alter table officers add column if not exists last_login_at timestamptz;
 alter table officers add column if not exists last_login_ip text;
 
 alter table officer_login_logs enable row level security;

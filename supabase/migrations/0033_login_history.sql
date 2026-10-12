@@ -16,7 +16,7 @@
 create table if not exists officer_login_logs (
   id uuid primary key default gen_random_uuid(),
   officer_id uuid not null references officers(id) on delete cascade,
-  logged_in_at timestamz not null default now(),
+  logged_in_at timestamptz not null default now(),
   ip_address text,
   user_agent text,
   device text
@@ -26,7 +26,7 @@ create index if not exists officer_login_logs_idx
   on officer_login_logs (officer_id, logged_in_at desc);
 
 -- ---------- 2) ค่าล่าสุดบนตาราง officers (แสดง "Last Login" ได้โดยไม่ต้อง query ประวัติ) ----------
-alter table officers add column if not exists last_login_at timestamz;
+alter table officers add column if not exists last_login_at timestamptz;
 alter table officers add column if not exists last_login_ip text;
 
 -- ---------- 3) RLS ----------

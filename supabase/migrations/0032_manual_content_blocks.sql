@@ -31,7 +31,7 @@ create table if not exists manual_chapters (
   is_hidden boolean not null default false,
   updated_by uuid references officers(id) on delete set null,
   updated_by_name text,
-  updated_at timestamz not null default now(),
+  updated_at timestamptz not null default now(),
   primary key (variant, id)
 );
 
@@ -47,7 +47,7 @@ create table if not exists manual_sections (
   uses_blocks boolean not null default false,
   updated_by uuid references officers(id) on delete set null,
   updated_by_name text,
-  updated_at timestamz not null default now(),
+  updated_at timestamptz not null default now(),
   primary key (variant, id)
 );
 
@@ -64,7 +64,7 @@ create table if not exists manual_blocks (
   meta jsonb not null default '{}'::jsonb,
   updated_by uuid references officers(id) on delete set null,
   updated_by_name text,
-  updated_at timestamz not null default now()
+  updated_at timestamptz not null default now()
 );
 
 -- ไม่ใส่ unique บน (variant, section_id, order_index) เพราะตอนสลับลำดับ
