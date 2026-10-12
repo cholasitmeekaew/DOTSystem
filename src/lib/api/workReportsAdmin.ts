@@ -1,0 +1,84 @@
+/* =============================================================
+ * workReportsAdmin.ts
+ * -------------------------------------------------------------
+ * ฟังก์ชันจัดการรายงานปฏิบัติงานสำหรับหัวหน้ากรม (ใช้ร่วมกันหลายหน้า)
+ * ============================================================= */
+
+import { supabase } from '../supabase';
+import { addOfficerPoints } from './points';
+import type { WorkReport } from '../types';
+
+/** ป้ายประเภทงานของรายงาน */
+export const DUTY_CATEGORY_LABELS: Record<string, string> = {
+  patrol: 'ลาดตระเวน',
+  incident: 'รับแจ้งเหตุ',
+  ticket: 'ออกใบสั่ง',
+  traffic: 'จัดการจราจร',
+  rescue: 'ช่วยเหลือ/กู้ภัย',
+  other: 'อื่นๆ',
+};
+
+export function dutyCategoryLabel(value: string | null | undefined): string {
+  return value ? (DUTY_CATEGORY_LABELS[value] ?? value) : '—';
+}
+
+export interface DeleteReportResult {
+  pointsReverted: number;
+}
+
+/**
+ * ลบรายงานปฏิบัติงาน + คืนคะแนนที่เคยให้ไป (ถ้าอนุมัติแล้ว)
+ *
+ * ต้องคืนคะแนนด้วย เพราะ applyReportApprovalPoints เขียน +10 ลง
+ * points_award_marks (mark_key = report:<id>) และ points_log ซึ่งเป็น
+ * ledger ที่บันทึก balance_after ไว้แล้ว ถ้าลบรายงานทิ้งอย่างเดียว
+ * คะแนนจะค้างโดยไม่มีรายงานรองรับ และ mark จะยังกันไม่ให้ให้คะแนนซ้ำ
+ *
+ * ใช้ addOfficerPoints ตรง ๆ (ไม่ผ่าน addAutomaticPoints) เพราะการคืน
+ * ของที่ "เคยให้ไปแล้ว" ไม่ควรขึ้นกับสวิตช์ PPS ที่เปิด/ปิดอยู่ตอนนี้
+ *
+ * work_report_cases ถูกลบตาม (on delete cascade)
+ */
+export async function deleteWorkReport(
+  target: Pick<WorkReport, 'id' | 'officer_id' | 'officer_name' | 'reviewed_points' | 'status'>,
+  actor: { id: string; name: string },
+): Promise<DeleteReportResult> {
+  const awarded = target.reviewed_points ?? 0;
+  const markKey = `report:${target.id}`;
+
+  const { data: mark } = await supabase
+    .from('points_award_marks').select('id').eq('mark_key', markKey).maybeSingle();
+
+  let pointsReverted = 0;
+  if (mark && awarded > 0 && target.officer_id) {
+    await addOfficerPoints(
+      target.officer_id,
+      -awarded,
+      'ยกเลิกรายงานปฏิบัติงานที่เคยอนุมัติ (ลบรายงาน)',
+      actor.id,
+      actor.name,
+    );
+    pointsReverted = awarded;
+  }
+
+  // ลบ mark ทิ้ง เผื่อมีการส่งรายงานเดิมนี้เข้ามาใหม่ในภายหลัง
+  if (mark) await supabase.from('points_award_marks').delete().eq('mark_key', markKey);
+
+  const { error } = await supabase.from('work_reports').delete().eq('id', target.id);
+  if (error) throw error;
+
+  await supabase.from('audit_logs').insert({
+    action: 'DELETE_WORK_REPORT',
+    target_type: 'work_report',
+    target_id: target.id,
+    performed_by: actor.id,
+    performed_by_name: actor.name,
+    details: {
+      officer_name: target.officer_name,
+      status_before: target.status ?? 'pending',
+      points_reverted: pointsReverted,
+    },
+  });
+
+  return { pointsReverted };
+}

@@ -18,6 +18,7 @@ export type OfficerPage =
   | 'roster-admin'
   | 'manual-edit'
   | 'duty-logs-admin'
+  | 'work-reports-admin'
   | 'operations'
   | 'service-fees'
   | 'complaints'

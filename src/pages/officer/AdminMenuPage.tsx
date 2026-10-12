@@ -8,7 +8,7 @@
 import {
   MessageSquare, Megaphone, Tag, Users, UserCog, Award, Wallet,
   Siren, Car, ShieldAlert, Settings, FileCheck2, CalendarCheck, CalendarRange,
-  BookOpen, Clock,
+  BookOpen, Clock, FileText,
 } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { DepartmentStatsPanel } from '../../components/DepartmentStatsPanel';
@@ -80,6 +80,9 @@ const GROUPS: Array<{ title: string; note: string; items: AdminCard[] }> = [
       { id: 'report-approvals', label: 'อนุมัติรายงานปฏิบัติงาน',
         desc: 'ตรวจ อนุมัติ หรือไม่อนุมัติรายงานของเจ้าหน้าที่',
         icon: FileCheck2, tint: 'bg-lime-500/15 text-lime-300', ring: 'hover:border-lime-500/50' },
+      { id: 'work-reports-admin', label: 'ประวัติรายงานปฏิบัติงานทั้งหมด',
+        desc: 'ค้นหา ตรวจสอบ และลบรายงานปฏิบัติงานของทุกคน',
+        icon: FileText, tint: 'bg-purple-500/15 text-purple-300', ring: 'hover:border-purple-500/50' },
       { id: 'duty-logs-admin', label: 'ประวัติการเข้าเวรทั้งหมด',
         desc: 'ค้นหา ตรวจสอบ และลบประวัติการเข้า–ออกเวรของทุกคน',
         icon: Clock, tint: 'bg-teal-500/15 text-teal-300', ring: 'hover:border-teal-500/50' },

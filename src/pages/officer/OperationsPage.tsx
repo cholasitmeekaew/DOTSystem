@@ -28,7 +28,7 @@ import {
   isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
   AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
-import { addOfficerPoints } from '../../lib/api/points';
+import { deleteWorkReport as deleteWorkReportShared } from '../../lib/api/workReportsAdmin';
 
 type ReportCaseDraft = {
   case_name: string;
@@ -398,46 +398,12 @@ export function OperationsPage({
     if (!officer) return;
     setDeletingReportBusy(true);
     try {
-      const awarded = target.reviewed_points ?? 0;
-      const markKey = `report:${target.id}`;
-      const { data: mark } = await supabase
-        .from('points_award_marks').select('id').eq('mark_key', markKey).maybeSingle();
-
-      // คืนคะแนน — ใช้ addOfficerPoints ตรง ๆ ไม่ผ่านสวิตช์ PPS
-      // เพราะการคืนของที่ "เคยให้ไปแล้ว" ไม่ควรขึ้นกับสวิตช์เปิด/ปิดตอนนี้
-      if (mark && awarded > 0 && target.officer_id) {
-        await addOfficerPoints(
-          target.officer_id,
-          -awarded,
-          'ยกเลิกรายงานปฏิบัติงานที่เคยอนุมัติ (ลบรายงาน)',
-          officer.id,
-          officer.name,
-        );
-      }
-      if (mark) await supabase.from('points_award_marks').delete().eq('mark_key', markKey);
-
-      // ลบรายงาน (work_report_cases ถูก cascade ลบตาม on delete cascade)
-      const { error } = await supabase.from('work_reports').delete().eq('id', target.id);
-      if (error) throw error;
-
-      await supabase.from('audit_logs').insert({
-        action: 'DELETE_WORK_REPORT',
-        target_type: 'work_report',
-        target_id: target.id,
-        performed_by: officer.id,
-        performed_by_name: officer.name,
-        details: {
-          officer_name: target.officer_name,
-          status_before: target.status ?? 'pending',
-          points_reverted: mark && awarded > 0 ? awarded : 0,
-        },
-      });
-
+      const res = await deleteWorkReportShared(target, { id: officer.id, name: officer.name });
       setDeletingWorkReport(null);
       await fetchData();
       if (viewReport?.id === target.id) { setViewReport(null); setViewReportCases([]); }
       flash('ok', `ลบรายงานของ ${target.officer_name} แล้ว`
-        + (mark && awarded > 0 ? ` · คืนคะแนน ${awarded}` : ''));
+        + (res.pointsReverted > 0 ? ` · คืนคะแนน ${res.pointsReverted}` : ''));
     } catch (e) {
       flash('err', `ลบรายงานไม่สำเร็จ: ${(e as Error).message}`);
     } finally {

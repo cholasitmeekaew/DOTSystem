@@ -34,6 +34,7 @@ const ManualPage = lazy(() => import('./pages/public/ManualPage').then((m) => ({
 const MyPointsPage = lazy(() => import('./pages/officer/MyPointsPage').then((m) => ({ default: m.MyPointsPage })));
 const ProfilePage = lazy(() => import('./pages/officer/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const AdminMenuPage = lazy(() => import('./pages/officer/AdminMenuPage').then((m) => ({ default: m.AdminMenuPage })));
+const WorkReportsAdminPage = lazy(() => import('./pages/officer/WorkReportsAdminPage').then((m) => ({ default: m.WorkReportsAdminPage })));
 const DutyLogsAdminPage = lazy(() => import('./pages/officer/DutyLogsAdminPage').then((m) => ({ default: m.DutyLogsAdminPage })));
 const AdminSettingsPage = lazy(() => import('./pages/officer/AdminSettingsPage').then((m) => ({ default: m.AdminSettingsPage })));
 const PointsManagementPage = lazy(() => import('./pages/officer/PointsManagementPage').then((m) => ({ default: m.PointsManagementPage })));
@@ -81,7 +82,7 @@ function OfficerApp() {
     'points-management', 'department-balance', 'service-rates',
     'complaints', 'announcements', 'vehicles',
     'admin-settings', 'report-approvals', 'leave-approvals', 'roster-admin',
-    'manual-edit', 'duty-logs-admin',
+    'manual-edit', 'duty-logs-admin', 'work-reports-admin',
   ];
   const isDenied = commissionerOnlyPages.includes(currentPage) && !isCommissioner;
 
@@ -118,6 +119,7 @@ function OfficerApp() {
             )}
             {currentPage === 'manual-edit' && <ManualPage adminEdit />}
             {currentPage === 'duty-logs-admin' && <DutyLogsAdminPage />}
+            {currentPage === 'work-reports-admin' && <WorkReportsAdminPage />}
             {currentPage === 'roster-admin' && (
               <OperationsPage initialTab="roster" adminTools />
             )}
