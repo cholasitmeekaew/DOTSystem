@@ -7,7 +7,7 @@
 
 import {
   MessageSquare, Megaphone, Tag, Users, UserCog, Award, Wallet,
-  Siren, Car, ShieldAlert,
+  Siren, Car, ShieldAlert, Settings, FileCheck2,
 } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import type { OfficerPage } from '../../components/OfficerLayout';
@@ -66,6 +66,18 @@ const GROUPS: Array<{ title: string; note: string; items: AdminCard[] }> = [
       { id: 'announcements', label: 'ประกาศ',
         desc: 'ประกาศและประกาศรับสมัครภายในหน่วยงาน',
         icon: Megaphone, tint: 'bg-indigo-500/15 text-indigo-300', ring: 'hover:border-indigo-500/50' },
+    ],
+  },
+  {
+    title: 'ควบคุมและตั้งค่าระบบ',
+    note: 'สวิตช์ที่มีผลกับทั้งหน่วยงาน',
+    items: [
+      { id: 'admin-settings', label: 'ตั้งค่าระบบ',
+        desc: 'สวิตช์ PPS Engine, ระบบเข้าเวร และสถานะระบบ',
+        icon: Settings, tint: 'bg-gray-500/15 text-gray-300', ring: 'hover:border-gray-500/50' },
+      { id: 'report-approvals', label: 'อนุมัติรายงานปฏิบัติงาน',
+        desc: 'ตรวจ อนุมัติ หรือไม่อนุมัติรายงานของเจ้าหน้าที่',
+        icon: FileCheck2, tint: 'bg-lime-500/15 text-lime-300', ring: 'hover:border-lime-500/50' },
     ],
   },
   {

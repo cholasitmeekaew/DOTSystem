@@ -12,6 +12,8 @@ export type OfficerPage =
   | 'dashboard'
   | 'profile'
   | 'admin-menu'
+  | 'admin-settings'
+  | 'report-approvals'
   | 'operations'
   | 'service-fees'
   | 'complaints'
@@ -63,6 +65,11 @@ export const ADMIN_MENU_ITEMS = [
   { id: 'announcements', label: 'ประกาศ' },
   { id: 'vehicles', label: 'ระบบยานพาหนะ' },
 ] as const;
+
+/** เมนูที่ต้องเข้าผ่าน OperationsPage (ไม่ใช่หน้าเต็มของตัวเอง) */
+export const ADMIN_VIA_OPS: ReadonlyArray<{ id: OfficerPage; tab: 'approvals' }> = [
+  { id: 'report-approvals', tab: 'approvals' },
+];
 
 const navItems: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} />, commissionerOnly: false, section: 'ops' },
@@ -193,6 +200,19 @@ export function OfficerLayout({ children, currentPage, onNavigate, onLogout }: P
             </h1>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
+            {isCommissioner && currentPage !== 'admin-menu' && (
+              <button
+                onClick={() => onNavigate('admin-menu')}
+                className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1.5
+                           bg-amber-500/15 text-amber-300 border border-amber-500/40
+                           hover:bg-amber-500/25 hover:text-amber-200 transition-colors"
+                title="เข้าสู่ระบบ Admin — รวมงานบริหารทั้งหมดไว้ที่เดียว"
+              >
+                <ShieldAlert size={13} />
+                <span className="hidden sm:inline">เข้าสู่ระบบ Admin</span>
+                <span className="sm:hidden">Admin</span>
+              </button>
+            )}
             <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${
               officer?.is_on_duty
                 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'

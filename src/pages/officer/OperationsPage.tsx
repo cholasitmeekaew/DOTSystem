@@ -3,7 +3,7 @@ import {
   Clock, LogIn, LogOut, Users, Trash2, Power, AlertCircle, Image as ImageIcon, Shield,
   BarChart3, Zap, Download, Search, Filter, FileText,
   Plus, X, Upload, Loader2, ExternalLink, CalendarDays, ChevronLeft, ChevronRight,
-  CheckCircle2, XCircle, Award, Trophy, Sparkles, Crown, Briefcase, User, Repeat, Shuffle,
+  CheckCircle2, XCircle, Award, Trophy, Crown, Briefcase, User, Repeat, Shuffle,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import {
@@ -22,12 +22,12 @@ import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
 import { uploadImage } from '../../lib/storage';
 import {
   buildWeeklyRoster, shiftWeek, toIso, DEFAULT_REQUIRED_OFFICERS,
-  resolveScheduledOfficerIds, shiftWindowFor, dayTypeLabel, serverHoursFor, SHIFT_ORDER,
+  shiftWindowFor, dayTypeLabel, serverHoursFor, SHIFT_ORDER,
 } from '../../lib/dutySchedule';
 import { isWeekend } from '../../lib/types';
 import {
   isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
-  applyMissingReportPoints, applyWeeklyAbsencePoints, AUTO_POINTS_RULES,
+  AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 
 type ReportCaseDraft = {
@@ -49,12 +49,19 @@ type ReportTarget = {
 
 export function OperationsPage({
   initialTab = 'duty',
+  approvalsOnly = false,
 }: {
   /** ให้ลิงก์ภายนอกเปิดเข้ามาที่แท็บที่ต้องการได้ (เช่น การ์ดทางลัดในหน้าข้อมูลส่วนตัว) */
   initialTab?: 'duty' | 'roster' | 'approvals';
+  /** true = แสดงเฉพาะงานอนุมัติรายงาน (เข้าจากเมนู Admin) — ซ่อนแท็บปฏิบัติงาน/ตารางเวรออก */
+  approvalsOnly?: boolean;
 } = {}) {
   const { officer, setAuth, isCommissioner } = useAuth();
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>(initialTab);
+  // เข้าจากเมนู Admin → บังคับอยู่ที่งานอนุมัติเสมอ
+  useEffect(() => {
+    if (approvalsOnly) setOpsTab('approvals');
+  }, [approvalsOnly]);
   const [onDutyOfficers, setOnDutyOfficers] = useState<Officer[]>([]);
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,8 +112,6 @@ export function OperationsPage({
   const [randomizing, setRandomizing] = useState(false);
   const [requireLeader, setRequireLeader] = useState(true);
   const [randomPreview, setRandomPreview] = useState<RandomizeResult | null>(null);
-  const [pointsBusy, setPointsBusy] = useState(false);
-  const [pointsNotice, setPointsNotice] = useState<string | null>(null);
 
   // ---- ระบบอนุมัติรายงานปฏิบัติงาน ----
   const [reviewingWorkReport, setReviewingWorkReport] = useState<WorkReport | null>(null);
@@ -394,40 +399,6 @@ export function OperationsPage({
   );
 
   // =============== PPS engine ===============
-  async function toggleAutoPoints() {
-    if (!officer || pointsBusy) return;
-    const next = !autoPointsOn;
-
-    // optimistic — ถ้า DB ไม่ผ่านจะย้อนกลับทันที
-    setAutoPointsOn(next);
-    setSettings((s) => (s ? { ...s, auto_points_enabled: next } : s));
-    setPointsNotice(null);
-
-    const { error } = await supabase.from('system_settings').update({
-      auto_points_enabled: next,
-      updated_at: new Date().toISOString(),
-      updated_by: officer.id,
-      updated_by_name: officer.name,
-    }).eq('id', 1);
-
-    if (error) {
-      setAutoPointsOn(!next);                                    // ย้อนค่าใน UI
-      setSettings((s) => (s ? { ...s, auto_points_enabled: !next } : s));
-      setPointsNotice(`เปลี่ยนสวิตช์ไม่สำเร็จ: ${error.message}`);
-      return;
-    }
-
-    await supabase.from('audit_logs').insert({
-      action: next ? 'ENABLE_AUTO_POINTS' : 'DISABLE_AUTO_POINTS',
-      target_type: 'system',
-      performed_by: officer.id,
-      performed_by_name: officer.name,
-      details: {},
-    });
-    setPointsNotice(next
-      ? 'เปิด PPS Engine แล้ว — ระบบจะให้/หักคะแนนอัตโนมัติตามเกณฑ์'
-      : 'ปิด PPS Engine แล้ว — ระบบจะไม่ให้หักคะแนนอัตโนมัติ (หัวหน้ากรมยังให้คะแนนเองได้)');
-  }
 
   /** สลับเวรทั้งสัปดาห์: เขียน override ทุกวันของสัปดาห์ที่แสดงอยู่ */
   /** แท็บ 2 — สลับเวรทั้งสัปดาห์: เขียน override ครบทุกวันของสัปดาห์ที่เปิดอยู่ */
@@ -463,71 +434,6 @@ export function OperationsPage({
   }
 
   /** สแกนหาคะแนนที่ค้าง แล้วให้คะแนน/หักคะแนนตามเกณฑ์ */
-  async function runPointsSweep() {
-    if (!officer || !autoPointsOn) return;
-    setPointsBusy(true);
-    setPointsNotice(null);
-    try {
-      const todayIso = toIso(new Date());
-      const weekStartDate = new Date();
-      weekStartDate.setDate(weekStartDate.getDate() - 7);
-      const weekStart7 = toIso(weekStartDate);
-
-      const [allOfficers, allLogs, allReports, leavesRes, schedRes, ovRes] = await Promise.all([
-        supabase.from('officers').select('*').eq('status', 'active'),
-        supabase.from('duty_logs').select('*').is('deleted_at', null),
-        supabase.from('work_reports').select('*'),
-        supabase.from('officer_leaves').select('officer_id').eq('status', 'approved'),
-        supabase.from('duty_schedules').select('*').eq('is_active', true),
-        supabase
-          .from('schedule_overrides')
-          .select('*')
-          .gte('override_date', weekStart7)
-          .lte('override_date', todayIso),
-      ]);
-
-      const officers = (allOfficers.data ?? []) as Officer[];
-      const logs = (allLogs.data ?? []) as DutyLog[];
-      const reports = (allReports.data ?? []) as WorkReport[];
-      const onLeave = new Set(
-        ((leavesRes.data ?? []) as { officer_id: string | null }[])
-          .map((r) => r.officer_id)
-          .filter((id): id is string => !!id),
-      );
-
-      // ใช้ "ตารางเวร" ตรวจจับว่าใครมีผังเวรแต่ไม่ได้เข้าเวรจริง
-      const scheduledIds = resolveScheduledOfficerIds({
-        schedules: (schedRes.data ?? []) as unknown as DutySchedule[],
-        overrides: (ovRes.data ?? []) as unknown as ScheduleOverride[],
-        fromIso: weekStart7,
-        toIso: todayIso,
-      });
-
-      const results = [
-        ...(await applyMissingReportPoints(logs, new Set(
-          reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
-        ))),
-        ...(await applyWeeklyAbsencePoints({
-          officers,
-          dutyLogs: logs,
-          scheduledOfficerIds: [...scheduledIds],
-          approvedLeaveOfficerIds: [...onLeave],
-        })),
-      ];
-
-      const given = results.filter((r) => r.awarded);
-      setPointsNotice(
-        given.length === 0
-          ? 'ไม่มีเหตุการณ์ที่ต้องให้คะแนน (หรือให้ไปแล้วทั้งหมด)'
-          : `ให้คะแนนอัตโนมัติ ${given.length} รายการ · รวม ${given.reduce((s, r) => s + r.delta, 0)} คะแนน`,
-      );
-      await fetchData();
-    } catch (e) {
-      setPointsNotice(`เรียกใช้ PPS engine ไม่สำเร็จ: ${(e as Error).message}`);
-    } finally {
-      setPointsBusy(false);
-    }
-  }
 
   useEffect(() => {
     fetchScheduleData();
@@ -858,76 +764,6 @@ export function OperationsPage({
     setLoading(false);
   }
 
-  async function toggleDutySystem() {
-    if (!officer || !settings) return;
-    const newValue = !settings.duty_system_enabled;
-    setSettings({ ...settings, duty_system_enabled: newValue });
-    await supabase.from('system_settings').update({
-      duty_system_enabled: newValue,
-      updated_at: new Date().toISOString(),
-      updated_by: officer.id,
-      updated_by_name: officer.name,
-    }).eq('id', 1);
-    await supabase.from('audit_logs').insert({
-      action: newValue ? 'ENABLE_DUTY_SYSTEM' : 'DISABLE_DUTY_SYSTEM',
-      target_type: 'system',
-      performed_by: officer.id,
-      performed_by_name: officer.name,
-      details: {},
-    });
-
-    if (!newValue) {
-      // ปิดระบบเวร → บังคับทุกคนที่กำลังเข้าเวรให้ออกเวรทันที
-      const { data: activeOfficers } = await supabase
-        .from('officers')
-        .select('id, name, is_on_duty')
-        .eq('status', 'active');
-      const onDuty = (activeOfficers ?? []).filter(
-        (o: any) => o.is_on_duty === true || o.is_on_duty === 'true',
-      ) as { id: string; name: string }[];
-      const now = new Date();
-      for (const o of onDuty) {
-        const { data: activeLog } = await supabase
-          .from('duty_logs')
-          .select('*')
-          .eq('officer_id', o.id)
-          .is('clock_out', null)
-          .is('deleted_at', null)
-          .maybeSingle();
-        if (activeLog) {
-          const dur = Math.round((now.getTime() - new Date(activeLog.clock_in).getTime()) / 60000);
-          await supabase.from('duty_logs').update({
-            clock_out: now.toISOString(),
-            duration_minutes: dur,
-            forced_by: officer.id,
-            forced_by_name: officer.name,
-            checkout_method: 'forced',
-          }).eq('id', activeLog.id);
-          // -15 คะแนน เมื่อถูกบังคับให้ออกเวร
-          await applyCheckoutPoints({
-            ...(activeLog as DutyLog),
-            clock_out: now.toISOString(),
-            duration_minutes: dur,
-            forced_by: officer.id,
-            forced_by_name: officer.name,
-            checkout_method: 'forced',
-          } as DutyLog);
-        }
-        await supabase.from('officers').update({ is_on_duty: false, updated_at: now.toISOString() }).eq('id', o.id);
-      }
-      if (onDuty.length > 0) {
-        await supabase.from('audit_logs').insert({
-          action: 'FORCE_CHECKOUT_ALL',
-          target_type: 'system',
-          performed_by: officer.id,
-          performed_by_name: officer.name,
-          details: { count: onDuty.length },
-        });
-      }
-      await fetchData();
-      if (isCommissioner) await fetchAllLogs();
-    }
-  }
 
   async function clockIn() {
     if (!officer || officer.is_on_duty) return;
@@ -1137,9 +973,13 @@ export function OperationsPage({
       {/* ---------- แท็บ ---------- */}
       <div className="card p-1.5 mb-5 flex items-center gap-1.5 overflow-x-auto">
         <span className="ph-corner ph-corner-tl" aria-hidden />
-        <TabButton active={opsTab === 'duty'} onClick={() => setOpsTab('duty')} icon={<Clock size={14} />} label="ปฏิบัติงาน" />
-        <TabButton active={opsTab === 'roster'} onClick={() => setOpsTab('roster')} icon={<CalendarDays size={14} />} label="ตารางเวร" />
-        {isCommissioner && (
+        {!approvalsOnly && (
+          <TabButton active={opsTab === 'duty'} onClick={() => setOpsTab('duty')} icon={<Clock size={14} />} label="ปฏิบัติงาน" />
+        )}
+        {!approvalsOnly && (
+          <TabButton active={opsTab === 'roster'} onClick={() => setOpsTab('roster')} icon={<CalendarDays size={14} />} label="ตารางเวร" />
+        )}
+        {isCommissioner && !approvalsOnly && (
           <TabButton
             active={opsTab === 'approvals'}
             onClick={() => setOpsTab('approvals')}
@@ -1182,46 +1022,7 @@ export function OperationsPage({
 
       {opsTab === 'duty' && (
         <>
-      {/* PPS Engine Kill Switch (commissioner only) */}
-      {isCommissioner && (
-        <AutoPointsSwitch
-          enabled={autoPointsOn}
-          busy={pointsBusy}
-          notice={pointsNotice}
-          canEdit={!!isCommissioner}
-          onToggle={toggleAutoPoints}
-          onRun={runPointsSweep}
-        />
-      )}
 
-      {/* Commissioner Duty System Toggle — prominent */}
-      {isCommissioner && (
-        <div className={`card p-3 sm:p-5 mb-4 sm:mb-6 border-2 ${dutyEnabled ? 'border-emerald-500/30' : 'border-red-500/30'}`}>
-          <span className="ph-corner ph-corner-tl" aria-hidden />
-          <span className="ph-corner ph-corner-br" aria-hidden />
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                dutyEnabled ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'
-              }`}>
-                <Power size={22} />
-              </div>
-              <div>
-                <h2 className="text-sm font-bold text-white">ระบบเข้าเวร</h2>
-                <p className="text-xs text-gray-400 mt-0.5">
-                  {dutyEnabled ? 'เปิดใช้งาน — เจ้าหน้าที่สามารถลงชื่อเข้าเวรได้' : 'ปิดชั่วคราว — เจ้าหน้าที่ไม่สามารถเข้าเวรได้'}
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={toggleDutySystem}
-              className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 ${dutyEnabled ? 'bg-emerald-500' : 'bg-red-500'}`}
-            >
-              <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-lg transition-transform ${dutyEnabled ? 'translate-x-8' : ''}`} />
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Duty Statistics (commissioner only) */}
       {isCommissioner && (
@@ -2035,63 +1836,6 @@ function TabButton({
         </span>
       )}
     </button>
-  );
-}
-
-/* ---------- สวิตช์คะแนนอัตโนมัติ ---------- */
-function AutoPointsSwitch({
-  enabled, busy, notice, canEdit, onToggle, onRun,
-}: {
-  enabled: boolean;
-  busy: boolean;
-  notice: string | null;
-  canEdit: boolean;
-  onToggle: () => void;
-  onRun: () => void;
-}) {
-  return (
-    <div className={`card p-3 sm:p-4 mb-5 border-2 ${enabled ? 'border-amber-500/30' : 'border-blue-900/40'}`}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
-            enabled ? 'bg-amber-500/15 text-amber-400' : 'bg-navy-700 text-gray-500'
-          }`}>
-            <Award size={20} />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-sm font-bold text-white">PPS Engine — คะแนนอัตโนมัติ</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
-              {enabled
-                ? 'ทำงานอัตโนมัติ — +5/ชม. ออกเวร · +10 รายงานได้รับอนุมัติ · +5 ปิดเคส · หักเมื่อขาดเวร/ไม่ส่งรายงาน/ถูกบังคับออกเวร/ร้องเรียนผลเป็นจริง'
-                : 'ปิดอยู่ — ระบบจะไม่ให้หักคะแนนอัตโนมัติ (หัวหน้ากรมยังให้/หักคะแนนเองได้)'}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onRun}
-            disabled={!enabled || busy}
-            className="btn-secondary text-xs py-2 px-3 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-            title="สแกนหาคะแนนที่ค้างแล้วให้คะแนน/หักคะแนนตามเกณฑ์"
-          >
-            {busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-            สแกนคะแนนค้าง
-          </button>
-          {canEdit && (
-            <button
-              onClick={onToggle}
-              className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-amber-500' : 'bg-navy-600'}`}
-              aria-label="เปิด/ปิดคะแนนอัตโนมัติ"
-            >
-              <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-lg transition-transform ${enabled ? 'translate-x-8' : ''}`} />
-            </button>
-          )}
-        </div>
-      </div>
-      {notice && (
-        <p className="text-[11px] text-amber-300 mt-2.5 pt-2.5 border-t border-blue-900/40">{notice}</p>
-      )}
-    </div>
   );
 }
 

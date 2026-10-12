@@ -34,6 +34,7 @@ const ManualPage = lazy(() => import('./pages/public/ManualPage').then((m) => ({
 const MyPointsPage = lazy(() => import('./pages/officer/MyPointsPage').then((m) => ({ default: m.MyPointsPage })));
 const ProfilePage = lazy(() => import('./pages/officer/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const AdminMenuPage = lazy(() => import('./pages/officer/AdminMenuPage').then((m) => ({ default: m.AdminMenuPage })));
+const AdminSettingsPage = lazy(() => import('./pages/officer/AdminSettingsPage').then((m) => ({ default: m.AdminSettingsPage })));
 const PointsManagementPage = lazy(() => import('./pages/officer/PointsManagementPage').then((m) => ({ default: m.PointsManagementPage })));
 const DepartmentBalancePage = lazy(() => import('./pages/officer/DepartmentBalancePage').then((m) => ({ default: m.DepartmentBalancePage })));
 
@@ -79,6 +80,7 @@ function OfficerApp() {
     'points-management', 'department-balance', 'service-rates',
     'complaints', 'announcements',
     'emergency', 'vehicles',
+    'admin-settings', 'report-approvals',
   ];
   const isDenied = commissionerOnlyPages.includes(currentPage) && !isCommissioner;
 
@@ -106,6 +108,10 @@ function OfficerApp() {
         ) : (
           <>
             {currentPage === 'dashboard' && <DashboardPage />}
+            {currentPage === 'admin-settings' && <AdminSettingsPage />}
+            {currentPage === 'report-approvals' && (
+              <OperationsPage initialTab="approvals" approvalsOnly />
+            )}
             {currentPage === 'admin-menu' && (
               <AdminMenuPage onNavigate={handleNavigate} />
             )}
