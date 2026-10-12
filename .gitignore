@@ -29,3 +29,6 @@ Thumbs.db
 
 # Vite cache
 .vite/
+
+# Supabase CLI local state (ไม่ควร commit)
+supabase/.temp/
