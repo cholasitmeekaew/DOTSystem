@@ -7,7 +7,8 @@
 
 import {
   MessageSquare, Megaphone, Tag, Users, UserCog, Award, Wallet,
-  Siren, Car, ShieldAlert, Settings, FileCheck2, CalendarCheck,
+  Siren, Car, ShieldAlert, Settings, FileCheck2, CalendarCheck, CalendarRange,
+  BookOpen,
 } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { DepartmentStatsPanel } from '../../components/DepartmentStatsPanel';
@@ -79,6 +80,12 @@ const GROUPS: Array<{ title: string; note: string; items: AdminCard[] }> = [
       { id: 'report-approvals', label: 'อนุมัติรายงานปฏิบัติงาน',
         desc: 'ตรวจ อนุมัติ หรือไม่อนุมัติรายงานของเจ้าหน้าที่',
         icon: FileCheck2, tint: 'bg-lime-500/15 text-lime-300', ring: 'hover:border-lime-500/50' },
+      { id: 'manual-edit', label: 'แก้ไขคู่มือกรมขนส่ง',
+        desc: 'เพิ่มบท แก้ชื่อหมวด และจัดลำดับบล็อกเนื้อหา+รูปภาพ',
+        icon: BookOpen, tint: 'bg-indigo-500/15 text-indigo-300', ring: 'hover:border-indigo-500/50' },
+      { id: 'roster-admin', label: 'จัดการตารางเวร',
+        desc: 'สุ่มเวรประจำสัปดาห์ แก้ไขผัง และสลับเวรรายวัน',
+        icon: CalendarRange, tint: 'bg-amber-500/15 text-amber-300', ring: 'hover:border-amber-500/50' },
       { id: 'leave-approvals', label: 'พิจารณาคำขอลา',
         desc: 'อนุมัติ / ไม่อนุมัติ / แก้ไข / ลบ คำขอลาของทุกคน',
         icon: CalendarCheck, tint: 'bg-teal-500/15 text-teal-300', ring: 'hover:border-teal-500/50' },

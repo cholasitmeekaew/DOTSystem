@@ -31,9 +31,16 @@ interface Props {
   showBackButton?: boolean;
   /** officer = ระเบียบภายใน / citizen = คู่มือการใช้บริการสำหรับประชาชน */
   variant?: 'officer' | 'citizen';
+  /**
+   * true = เปิดปุ่มแก้ไขเนื้อหา (เข้าจากการ์ด "แก้ไขคู่มือ" ในเมนู Admin เท่านั้น)
+   * หน้าคู่มือปกติเป็นโหมดอ่านสำหรับทุกคน รวมถึงหัวหน้ากรม
+   */
+  adminEdit?: boolean;
 }
 
-export function ManualPage({ onBack, showBackButton = true, variant = 'officer' }: Props) {
+export function ManualPage({
+  onBack, showBackButton = true, variant = 'officer', adminEdit = false,
+}: Props) {
   const chapters = variant === 'citizen' ? citizenManualChapters : manualChapters;
   const { officer, isCommissioner } = useAuth();
   const [items, setItems] = useState<ManualItem[]>([]);
@@ -62,7 +69,7 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
 
 
   /* ---------- ระบบแก้ไขเนื้อหาคู่มือ ---------- */
-  const canEdit = isCommissioner;
+  const canEdit = adminEdit && isCommissioner;
 
   /** โครงสร้างที่ใช้แสดงผล: ถ้าต่อ DB ได้ใช้ของ DB ครอบ ถ้าไม่ได้ใช้ของเดิมจากโค้ด */
   const view = dbReady && chaptersDb.length > 0

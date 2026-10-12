@@ -49,13 +49,21 @@ type ReportTarget = {
 export function OperationsPage({
   initialTab = 'duty',
   approvalsOnly = false,
+  adminTools = false,
 }: {
   /** ให้ลิงก์ภายนอกเปิดเข้ามาที่แท็บที่ต้องการได้ (เช่น การ์ดทางลัดในหน้าข้อมูลส่วนตัว) */
   initialTab?: 'duty' | 'roster' | 'approvals';
   /** true = แสดงเฉพาะงานอนุมัติรายงาน (เข้าจากเมนู Admin) — ซ่อนแท็บปฏิบัติงาน/ตารางเวรออก */
   approvalsOnly?: boolean;
+  /**
+   * true = เปิดเครื่องมือบริหาร (แก้ตารางเวร สุ่มเวร กำหนดเรท ลบประวัติ)
+   * ใช้เฉพาะตอนเข้าจากเมนู Admin — หน้าหลักเป็นโหมดดู/ปฏิบัติงานประจำวัน
+   * ยังตรวจ isCommissioner ซ้ำอีกชั้นเพื่อไม่ให้เปิดผิดทาง
+   */
+  adminTools?: boolean;
 } = {}) {
   const { officer, setAuth, isCommissioner } = useAuth();
+  const canAdmin = adminTools && isCommissioner;
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>(initialTab);
   // เข้าจากเมนู Admin → บังคับอยู่ที่งานอนุมัติเสมอ
   useEffect(() => {
@@ -439,7 +447,7 @@ export function OperationsPage({
 
   useEffect(() => {
     fetchData();
-    if (!isCommissioner) return;
+    if (!canAdmin) return;
     fetchAllLogs();
     const statsCh = supabase.channel('duty_logs_rt_stats')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'duty_logs' }, () => fetchAllLogs())
@@ -631,7 +639,7 @@ export function OperationsPage({
       }
       closeReportEditor();
       await fetchData();
-      if (isCommissioner) await fetchAllLogs();
+      if (canAdmin) await fetchAllLogs();
     } else {
       console.error('create_work_report_with_cases error:', error.message);
     }
@@ -701,12 +709,12 @@ export function OperationsPage({
 
   async function fetchData() {
     setLoading(true);
-    const reportsQuery = isCommissioner
+    const reportsQuery = canAdmin
       ? supabase.from('work_reports').select('*').order('created_at', { ascending: false })
       : supabase.from('work_reports').select('*').eq('officer_id', officer?.id).order('created_at', { ascending: false });
     const [duty, logs, settingsRes, reportsRes, citizensRes, casesRes] = await Promise.all([
       supabase.from('officers').select('*').eq('is_on_duty', true).eq('status', 'active').order('name'),
-      isCommissioner
+      canAdmin
         ? supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }).limit(200)
         : supabase.from('duty_logs').select('*').eq('officer_id', officer?.id).is('deleted_at', null).order('clock_in', { ascending: false }).limit(100),
       supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
@@ -745,7 +753,7 @@ export function OperationsPage({
       await supabase.from('officers').update({ is_on_duty: true, updated_at: new Date().toISOString() }).eq('id', officer.id);
       setAuth({ ...officer, is_on_duty: true });
       await fetchData();
-      if (isCommissioner) await fetchAllLogs();
+      if (canAdmin) await fetchAllLogs();
     }
     setClockLoading(false);
   }
@@ -783,7 +791,7 @@ export function OperationsPage({
     await supabase.from('officers').update({ is_on_duty: false, updated_at: new Date().toISOString() }).eq('id', officer.id);
     setAuth({ ...officer, is_on_duty: false });
     await fetchData();
-    if (isCommissioner) await fetchAllLogs();
+    if (canAdmin) await fetchAllLogs();
     setClockLoading(false);
     // +5 คะแนน/ชม. เมื่อออกเวรตามปกติ
     await applyCheckoutPoints({
@@ -844,7 +852,7 @@ export function OperationsPage({
 
     setForceTarget(null);
     await fetchData();
-    if (isCommissioner) await fetchAllLogs();
+    if (canAdmin) await fetchAllLogs();
   }
 
   async function handleDelete() {
@@ -868,7 +876,7 @@ export function OperationsPage({
     setDeleteTarget(null);
     setDeleteReason('');
     await fetchData();
-    if (isCommissioner) await fetchAllLogs();
+    if (canAdmin) await fetchAllLogs();
   }
 
   async function showIdCard(o: Officer) {
@@ -924,7 +932,7 @@ export function OperationsPage({
         subtitle="จัดการการเข้า-ออกเวรและสถานะการปฏิบัติหน้าที่"
         actions={
           <div className="flex items-center gap-2">
-            {isCommissioner && (
+            {canAdmin && (
               <button
                 onClick={() => setShowBatchDutyModal(true)}
                 className="btn-secondary flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 border-amber-500/30 py-2 px-3"
@@ -946,19 +954,11 @@ export function OperationsPage({
         {!approvalsOnly && (
           <TabButton active={opsTab === 'roster'} onClick={() => setOpsTab('roster')} icon={<CalendarDays size={14} />} label="ตารางเวร" />
         )}
-        {isCommissioner && !approvalsOnly && (
-          <TabButton
-            active={opsTab === 'approvals'}
-            onClick={() => setOpsTab('approvals')}
-            icon={<FileText size={14} />}
-            label="อนุมัติรายงาน"
-            badge={pendingReports.length > 0 ? pendingReports.length : undefined}
-          />
-        )}
+        {/* แท็บอนุมัติรายงาน ถูกถอดออกจากหน้าหลักแล้ว — เข้าผ่านการ์ด "อนุมัติรายงาน" ในเมนู Admin เท่านั้น */}
       </div>
 
       {/* ---------- แท็บ: อนุมัติรายงานปฏิบัติงาน ---------- */}
-      {opsTab === 'approvals' && isCommissioner && (
+      {opsTab === 'approvals' && canAdmin && (
         <WorkReportApprovalPanel
           pending={pendingReports}
           approved={approvedReports}
@@ -976,14 +976,14 @@ export function OperationsPage({
           onPrev={() => setWeekAnchor((w) => shiftWeek(w, -1))}
           onNext={() => setWeekAnchor((w) => shiftWeek(w, 1))}
           onToday={() => setWeekAnchor(toIso(new Date()))}
-          canEdit={!!isCommissioner}
+          canEdit={canAdmin}
           onEditCell={setEditingCell}
           officers={rosterOfficers}
           onSaveBase={saveScheduleSlot}
           onSaveOverride={saveOverrideSlot}
           onClearOverride={clearOverride}
           onSwapWeek={swapShiftForWeek}
-          onRandomize={isCommissioner ? () => setShowRandomize(true) : undefined}
+          onRandomize={canAdmin ? () => setShowRandomize(true) : undefined}
         />
       )}
 
@@ -1120,7 +1120,7 @@ export function OperationsPage({
             <div className="px-3 sm:px-5 py-3 sm:py-4 border-b border-amber-500/15 flex flex-wrap items-center justify-between gap-2 sm:gap-3">
               <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap min-w-0">
                 <h2 className="text-sm font-semibold text-white">
-                  {isCommissioner ? 'ประวัติการปฏิบัติหน้าที่ทั้งหมด' : 'ประวัติของฉัน'}
+                  {canAdmin ? 'ประวัติการปฏิบัติหน้าที่ทั้งหมด' : 'ประวัติของฉัน'}
                 </h2>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 whitespace-nowrap">
                   {filteredDutyLogs.length} รายการ
@@ -1209,7 +1209,7 @@ export function OperationsPage({
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">ระยะเวลา</th>
                       <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">รายงานปฏิบัติงาน</th>
                       <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">สถานะ</th>
-                      {isCommissioner && <th className="px-4 py-3" />}
+                      {canAdmin && <th className="px-4 py-3" />}
                     </tr>
                   </thead>
                   <tbody>
@@ -1251,7 +1251,7 @@ export function OperationsPage({
                               {log.clock_out ? 'เสร็จสิ้น' : 'กำลังปฏิบัติหน้าที่'}
                             </Badge>
                           </td>
-                          {isCommissioner && (
+                          {canAdmin && (
                             <td className="px-4 py-3">
                               <button
                                 onClick={() => setDeleteTarget(log)}
@@ -1579,13 +1579,13 @@ export function OperationsPage({
           onSaved={async () => {
             setShowBatchDutyModal(false);
             await fetchData();
-            if (isCommissioner) await fetchAllLogs();
+            if (canAdmin) await fetchAllLogs();
           }}
         />
       )}
 
       {/* ---------- Modal: สุ่มเวรอัตโนมัติ ---------- */}
-      {isCommissioner && (
+      {canAdmin && (
         <RandomizeRosterModal
           open={showRandomize}
           onClose={() => { setShowRandomize(false); setRandomPreview(null); }}

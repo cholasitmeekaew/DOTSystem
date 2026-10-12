@@ -277,10 +277,12 @@ export function LeaveManagementPage({
   }
 
   /**
-   * เจ้าหน้าที่ทั่วไปเห็นเฉพาะใบลาของตัวเองเท่านั้น
-   * (เดิมใช้ `leaves` ทั้งหมด → ทุกคนเห็นใบลาของทุกคน แม้ปุ่มอนุมัติจะถูกซ่อน)
+   * หน้าหลัก /leave = มุมมองเดียวกันทุกคน คือ "ใบลาของฉัน" ไม่ว่าจะมีตำแหน่งอะไร
+   * หน้าพิจารณาคำขอลา (approvalsOnly, เข้าจากเมนู Admin) จึงเป็นที่เดียวที่เห็นของทั้งหน่วยงาน
+   * (เดิมกรองด้วย isCommissioner → หัวหน้ากรมเห็นของทุกคนแม้เปิดจากเมนูปกติ)
    */
-  const scope = isCommissioner ? leaves : myLeaves;
+  const scope = approvalsOnly ? leaves : myLeaves;
+  const canApprove = approvalsOnly && isCommissioner;
 
   const filtered = scope.filter((l) => {
     if (filterStatus !== 'all' && l.status !== filterStatus) return false;
@@ -288,7 +290,7 @@ export function LeaveManagementPage({
     if (searchQ.trim()) {
       const q = searchQ.toLowerCase();
       // คนทั่วไปค้นด้วยเหตุผลอย่างเดียว (ไม่เห็นรายการคนอื่นอยู่แล้ว)
-      const byName = isCommissioner && l.officer_name.toLowerCase().includes(q);
+      const byName = canApprove && l.officer_name.toLowerCase().includes(q);
       if (!byName && !(l.reason || '').toLowerCase().includes(q)) return false;
     }
     return true;
@@ -314,9 +316,7 @@ export function LeaveManagementPage({
         title="จัดการการลา"
         subtitle={approvalsOnly
           ? 'พิจารณาคำขอลาของเจ้าหน้าที่ทั้งหน่วยงาน'
-          : isCommissioner
-            ? 'ระบบบันทึกและอนุมัติการลาของเจ้าหน้าที่'
-            : 'ยื่นใบลาและตรวจสอบประวัติการลาของคุณ'}
+          : 'ยื่นใบลาและตรวจสอบประวัติการลาของคุณ'}
         actions={!approvalsOnly && (
           <button onClick={openAdd} className="btn-primary px-5 py-2.5 flex items-center gap-2">
             <Plus size={18} /> แจ้งลา
@@ -358,7 +358,7 @@ export function LeaveManagementPage({
         <div className="relative flex-1 min-w-[200px]">
           <input
             className="input-field pl-9"
-            placeholder={isCommissioner ? 'ค้นหาชื่อเจ้าหน้าที่หรือเหตุผล...' : 'ค้นหาเหตุผลของคุณ...'}
+            placeholder={canApprove ? 'ค้นหาชื่อเจ้าหน้าที่หรือเหตุผล...' : 'ค้นหาเหตุผลของคุณ...'}
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
           />
@@ -389,7 +389,7 @@ export function LeaveManagementPage({
         ) : (
           <div className="space-y-3">
             {filtered.map((l) => {
-              const canEdit = isCommissioner || (officer && l.officer_id === officer.id);
+              const canEdit = canApprove || (officer && l.officer_id === officer.id);
               const days = daysBetween(l.start_date, l.end_date);
               return (
                 <div key={l.id} className="card p-4">
@@ -430,7 +430,7 @@ export function LeaveManagementPage({
                     </div>
 
                     <div className="flex items-center gap-2 flex-wrap">
-                      {isCommissioner && l.status === 'pending' && (
+                      {canApprove && l.status === 'pending' && (
                         <>
                           <button onClick={() => openReview(l, 'approved')} className="bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1">
                             <CheckCircle2 size={14} /> อนุมัติ
