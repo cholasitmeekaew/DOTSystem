@@ -29,7 +29,9 @@ import {
   isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
   AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
-import { deleteWorkReport as deleteWorkReportShared } from '../../lib/api/workReportsAdmin';
+import {
+  deleteWorkReport as deleteWorkReportShared, loadReportCases,
+} from '../../lib/api/workReportsAdmin';
 
 type ReportCaseDraft = {
   case_name: string;
@@ -683,13 +685,7 @@ export function OperationsPage({
 
   async function openReportViewer(report: WorkReport) {
     setViewReport(report);
-    const { data, error } = await supabase.rpc('get_work_report_cases', { p_work_report_id: report.id });
-    if (!error) {
-      setViewReportCases((data ?? []) as WorkReportCase[]);
-      return;
-    }
-    const fallback = await supabase.from('work_report_cases').select('*').eq('work_report_id', report.id).order('created_at');
-    setViewReportCases((fallback.data ?? []) as WorkReportCase[]);
+    setViewReportCases(await loadReportCases(report.id));
   }
 
   async function openCitizenProfileFromCase(item: WorkReportCase) {

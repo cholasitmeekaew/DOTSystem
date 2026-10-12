@@ -18,7 +18,7 @@ import {
   RANK_LABELS, WORK_REPORT_STATUS_LABELS,
   type Officer, type OfficerRankRecord, type WorkReport, type WorkReportCase,
 } from '../../lib/types';
-import { deleteWorkReport, dutyCategoryLabel } from '../../lib/api/workReportsAdmin';
+import { deleteWorkReport, dutyCategoryLabel, loadReportCases } from '../../lib/api/workReportsAdmin';
 
 type StatusKey = 'pending' | 'approved' | 'rejected';
 
@@ -134,6 +134,13 @@ export function WorkReportsAdminPage() {
     approved: filtered.filter((r) => statusKeyOf(r) === 'approved').length,
     rejected: filtered.filter((r) => statusKeyOf(r) === 'rejected').length,
   }), [filtered]);
+
+  /** เปิด modal รายละเอียด + โหลดเคส (ใช้ RPC ก่อน เพราะ query ตรงถูก RLS บล็อก) */
+  async function openDetail(r: WorkReport) {
+    setView(r);
+    setViewCases([]);
+    setViewCases(await loadReportCases(r.id));
+  }
 
   async function doDelete() {
     if (!target || !officer) return;
@@ -349,14 +356,7 @@ export function WorkReportsAdminPage() {
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1">
                         <button
-                          onClick={async () => {
-                            setView(r);
-                            const { data } = await supabase
-                              .from('work_report_cases').select('*')
-                              .eq('work_report_id', r.id)
-                              .order('created_at', { ascending: true });
-                            setViewCases((data ?? []) as WorkReportCase[]);
-                          }}
+                          onClick={() => openDetail(r)}
                           className="p-1.5 rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10"
                           title="ดูรายงานฉบับเต็ม"
                         >

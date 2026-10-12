@@ -6,7 +6,7 @@
 
 import { supabase } from '../supabase';
 import { addOfficerPoints } from './points';
-import type { WorkReport } from '../types';
+import type { WorkReport, WorkReportCase } from '../types';
 
 /** ป้ายประเภทงานของรายงาน */
 export const DUTY_CATEGORY_LABELS: Record<string, string> = {
@@ -81,4 +81,29 @@ export async function deleteWorkReport(
   });
 
   return { pointsReverted };
+}
+
+/**
+ * โหลดเคสของรายงาน 1 ฉบับ
+ *
+ * ต้องใช้ RPC get_work_report_cases เป็นตัวแรก
+ * เพราะการ query ตรงจาก work_report_cases ถูก RLS บล็อก (policy ใช้ auth.uid())
+ * และระบบนี้ไม่มี Supabase Auth → ได้ 0 แถวเสมอ โดยไม่ error
+ *
+ * เคยพลาดตรงนี้: หน้าประวัติรายงานทั้งหมด query ตรง จึงขึ้น "ไม่มีเคสในรายงานนี้"
+ * ทั้งที่รายงานนั้นมีเคสจริง
+ */
+export async function loadReportCases(
+  reportId: string,
+): Promise<WorkReportCase[]> {
+  const { data, error } = await supabase.rpc('get_work_report_cases', {
+    p_work_report_id: reportId,
+  });
+  if (!error) return (data ?? []) as WorkReportCase[];
+
+  // fallback ถ้า RPC ยังไม่ถูก grant — จะได้ 0 แถวแต่อย่างน้อยไม่ error
+  const fallback = await supabase
+    .from('work_report_cases').select('*')
+    .eq('work_report_id', reportId).order('created_at');
+  return (fallback.data ?? []) as WorkReportCase[];
 }

@@ -31,10 +31,15 @@ export function caseStatusLabel(value: string | null | undefined): string {
   return value ? (CASE_STATUS_LABELS[value] ?? value) : '-';
 }
 
-const fmtDateTime = (iso: string | null | undefined) =>
-  iso ? new Date(iso).toLocaleString('th-TH', {
-    year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  }) : '—';
+/** รูปแบบเดียวกับหน้าอนุมัติรายงาน — วันที่แบบสั้น ไม่ยาวจนล้นกล่อง */
+const fmtDateTime = (iso: string | null | undefined) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const date = d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+  return `${date} ${time}`;
+};
 
 /* ---------- Banner สถานะรายงาน ---------- */
 
