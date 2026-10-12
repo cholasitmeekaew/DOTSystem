@@ -1,0 +1,732 @@
+-- =====================================================================
+-- DOTSystem — รวม migration ที่ยังไม่ถูก apply (0026 + 0032) และ seed ข้อมูล
+-- ---------------------------------------------------------------------
+-- วิธีใช้: Supabase Dashboard → SQL Editor → New query
+--        วางทั้งไฟล์นี้ → Run  (ทีเดียวจบ)
+--
+-- ตรวจเมื่อ 2026-10-12 พบว่า ณ ฐานข้อมูลจริงยังไม่มีตาราง:
+--   - manual_items                     (0026) — ยังไม่เคยรัน
+--   - manual_chapters/sections/blocks  (0032) — เพิ่งเพิ่ม
+-- ส่วน migration อื่น (0001 → 0030 นอกจาก 0026) มีครบแล้ว
+--
+-- ลำดับสำคัญ: ต้องรัน 0032 ก่อน SEED เสมอ (seed ต้องเขียนลงตารางที่ 0032 สร้าง)
+--
+-- ทุก statement idempotent → รันซ้ำได้ถ้ามีอะไรค้าง
+-- =====================================================================
+
+begin;
+
+-- =====================================================================
+-- ส่วนที่ 1 — 0026: ตารางรายการคู่มือที่เพิ่มเอง
+-- =====================================================================
+create table if not exists manual_items (
+  id uuid primary key default gen_random_uuid(),
+  variant text not null default 'officer',
+  title text not null,
+  content text not null default '',
+  image_url text,
+  created_by uuid references officers(id),
+  created_by_name text,
+  created_at timestamptz not null default now()
+);
+
+alter table manual_items enable row level security;
+
+drop policy if exists "manual_items read" on manual_items;
+create policy "manual_items read" on manual_items for select using (true);
+drop policy if exists "manual_items write" on manual_items;
+create policy "manual_items write" on manual_items for all using (true) with check (true);
+
+insert into storage.buckets (id, name, public)
+values ('manual', 'manual', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "manual app upload" on storage.objects;
+create policy "manual app upload" on storage.objects for insert
+  with check (bucket_id = 'manual');
+drop policy if exists "manual app update" on storage.objects;
+create policy "manual app update" on storage.objects for update
+  using (bucket_id = 'manual')
+  with check (bucket_id = 'manual');
+drop policy if exists "manual app delete" on storage.objects;
+create policy "manual app delete" on storage.objects for delete
+  using (bucket_id = 'manual');
+drop policy if exists "manual read" on storage.objects;
+create policy "manual read" on storage.objects for select
+  using (bucket_id = 'manual');
+
+-- =====================================================================
+-- ส่วนที่ 2 — 0032: บท / หมวดย่อย / บล็อกเนื้อหา (แก้ไขได้)
+-- =====================================================================
+create table if not exists manual_chapters (
+  variant text not null default 'officer',
+  id text not null,
+  title text,
+  number text,
+  sort_order integer,
+  is_hidden boolean not null default false,
+  updated_by uuid references officers(id) on delete set null,
+  updated_by_name text,
+  updated_at timestamz not null default now(),
+  primary key (variant, id)
+);
+
+create table if not exists manual_sections (
+  variant text not null default 'officer',
+  id text not null,
+  chapter_id text not null,
+  title text,
+  sort_order integer,
+  is_hidden boolean not null default false,
+  uses_blocks boolean not null default false,
+  updated_by uuid references officers(id) on delete set null,
+  updated_by_name text,
+  updated_at timestamz not null default now(),
+  primary key (variant, id)
+);
+
+create table if not exists manual_blocks (
+  id uuid primary key default gen_random_uuid(),
+  variant text not null default 'officer',
+  section_id text not null,
+  type text not null default 'text'
+    check (type in ('text','image','table','callout','html')),
+  content text not null default '',
+  caption text,
+  order_index integer not null default 0,
+  meta jsonb not null default '{}'::jsonb,
+  updated_by uuid references officers(id) on delete set null,
+  updated_by_name text,
+  updated_at timestamz not null default now()
+);
+
+create index if not exists manual_blocks_section_idx
+  on manual_blocks (variant, section_id, order_index);
+
+create index if not exists manual_sections_chapter_idx
+  on manual_sections (variant, chapter_id, sort_order);
+
+alter table manual_chapters enable row level security;
+alter table manual_sections enable row level security;
+alter table manual_blocks enable row level security;
+
+drop policy if exists "manual_chapters read" on manual_chapters;
+create policy "manual_chapters read" on manual_chapters for select using (true);
+drop policy if exists "manual_chapters write" on manual_chapters;
+create policy "manual_chapters write" on manual_chapters for all using (true) with check (true);
+
+drop policy if exists "manual_sections read" on manual_sections;
+create policy "manual_sections read" on manual_sections for select using (true);
+drop policy if exists "manual_sections write" on manual_sections;
+create policy "manual_sections write" on manual_sections for all using (true) with check (true);
+
+drop policy if exists "manual_blocks read" on manual_blocks;
+create policy "manual_blocks read" on manual_blocks for select using (true);
+drop policy if exists "manual_blocks write" on manual_blocks;
+create policy "manual_blocks write" on manual_blocks for all using (true) with check (true);
+
+do $$
+declare
+  v_missing text;
+begin
+  select string_agg(t, ', ')
+  into v_missing
+  from unnest(array['manual_chapters','manual_sections','manual_blocks']) as t
+  where not exists (
+    select 1 from information_schema.tables
+    where table_schema = 'public' and table_name = t
+  );
+
+  if v_missing is not null then
+    raise exception '0032 ล้มเหลว: ไม่พบตาราง %', v_missing;
+  else
+    raise notice '0032 สำเร็จ: manual_chapters / manual_sections / manual_blocks พร้อมใช้งาน';
+  end if;
+end $$;
+
+commit;
+
+-- =====================================================================
+-- ส่วนที่ 3 — seed: ย้ายเนื้อหาคู่มือเดิมเข้าตาราง (18 บท / 95 หมวด / 337 บล็อก)
+-- =====================================================================
+
+delete from manual_blocks   where variant = 'officer';
+delete from manual_sections where variant = 'officer';
+delete from manual_chapters where variant = 'officer';
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'preface', 'คำนำ', '', 0);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'preface-intro', 'preface', null, 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'preface-intro', 'text', '<p class="font-semibold text-amber-400">คู่มือกรมขนส่ง (Department of Transportation : DOT)</p>', null, 0, '{}'::jsonb),
+  ('officer', 'preface-intro', 'text', '<p>คู่มือระเบียบการปฏิบัติราชการของกรมขนส่ง (Department of Transportation : DOT) จัดทำขึ้นเพื่อกำหนดแนวทาง มาตรฐาน และระเบียบในการปฏิบัติหน้าที่ของเจ้าหน้าที่ทุกนาย ให้เป็นไปในทิศทางเดียวกัน โปร่งใส มีระเบียบวินัย และสามารถให้บริการประชาชนได้อย่างมีประสิทธิภาพ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'preface-intro', 'text', '<p>เจ้าหน้าที่ทุกนายมีหน้าที่ศึกษาคู่มือฉบับนี้ และถือปฏิบัติโดยเคร่งครัด การไม่ทราบระเบียบ มิอาจยกเป็นข้ออ้างในการหลีกเลี่ยงความรับผิดชอบได้</p>', null, 2, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch1', 'โครงสร้างองค์กรและระบบตำแหน่ง', 'บทที่ 1', 1);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch1-1', 'ch1', 'หมวดที่ 1: โครงสร้างการบังคับบัญชา (Chain of Command)', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch1-1', 'text', '<p>กรมขนส่ง (DOT) อยู่ภายใต้การกำกับดูแลของฝ่ายบริหารเมือง โดยมีโครงสร้างการบังคับบัญชาแบบลำดับขั้น เพื่อให้การดำเนินงานมีประสิทธิภาพและเป็นระบบ</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch1-1', 'text', '<p class="font-semibold text-amber-400">ลำดับการบังคับบัญชา:</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch1-1', 'text', '<ol class="manual-list"><li>หัวหน้ากรมขนส่ง (Director of Transportation)</li><li>รองหัวหน้ากรมขนส่ง (Deputy Director)</li><li>ผู้คุมสอบ (Supervisor / Examiner)</li><li>พนักงานกรมขนส่ง (DOT Employee)</li></ol>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch1-2', 'ch1', 'หมวดที่ 2: รายละเอียดตำแหน่ง', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch1-2', 'text', '<ul class="manual-list"><li><strong>หัวหน้ากรมขนส่ง:</strong> บริหารงานโดยรวม วางแผนกลยุทธ์ ควบคุมมาตรฐานการปฏิบัติงาน และเป็นผู้ตัดสินใจสูงสุด</li><li><strong>รองหัวหน้ากรมขนส่ง:</strong> ช่วยเหลือหัวหน้าในการบริหารงาน ดูแลฝ่ายปฏิบัติการและการฝึกอบรม</li><li><strong>ผู้คุมสอบ:</strong> รับผิดชอบการฝึกอบรม การสอบประเมิน และการควบคุมมาตรฐานของพนักงาน</li><li><strong>พนักงานกรมขนส่ง:</strong> ปฏิบัติหน้าที่ภาคสนามตามคำสั่ง เช่น การลากรถ การช่วยเหลือ การควบคุมจราจร และการบำรุงรักษา</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch1-3', 'ch1', 'หมวดที่ 3: ตำแหน่งและฝ่าย', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch1-3', 'text', '<p>กรมขนส่ง (Department of Transportation : DOT) กำหนดตำแหน่งเจ้าหน้าที่เพื่อแบ่งระดับอำนาจหน้าที่ ความรับผิดชอบ และสายการบังคับบัญชา โดยเจ้าหน้าที่ทุกนายต้องปฏิบัติหน้าที่ตามตำแหน่งที่ได้รับการแต่งตั้ง และเคารพลำดับการบังคับบัญชาอย่างเคร่งครัด</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch1-3', 'text', '<p class="font-semibold text-amber-400">การกำหนดฝ่าย</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch1-3', 'callout', '', null, 2, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>ฝ่าย</th><th>รับผิดชอบ</th></tr></thead><tbody><tr><td>โยธาและซ่อมบำรุง</td><td>งานก่อสร้าง ซ่อมถนน ป้ายจราจร</td></tr><tr><td>กู้ภัยรถยก</td><td>ลากรถ กู้รถ รถเสีย</td></tr><tr><td>การไฟฟ้า</td><td>ซ่อมไฟถนน ไฟจราจร ระบบไฟฟ้า</td></tr><tr><td>จัดการจราจร</td><td>ปิดถนน อำนวยการจราจร</td></tr><tr><td>ช่วยเหลือฉุกเฉิน</td><td>รถเสียทั่วไป แบตหมด น้ำมันหมด ยางแตก</td></tr></tbody></table></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch1-4', 'ch1', 'หมวดที่ 4: หลักการบังคับบัญชา', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch1-4', 'text', '<p>ทุกตำแหน่งต้องเคารพลำดับชั้นการบังคับบัญชา การสื่อสารต้องผ่านช่องทางที่ถูกต้อง ห้ามข้ามขั้นโดยไม่มีเหตุจำเป็น เพื่อรักษาความเป็นระเบียบและความปลอดภัยในการปฏิบัติงาน</p>', null, 0, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch2', 'กฎ ระเบียบ และวินัย', 'บทที่ 2', 2);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-1', 'ch2', 'หมวดที่ 1: หลักการทั่วไป', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-1', 'text', '<p class="font-semibold text-amber-400">วัตถุประสงค์</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<p>กรมขนส่ง (Department of Transportation : DOT) เป็นหน่วยงานราชการที่มีหน้าที่รับผิดชอบด้านการจัดการจราจร การช่วยเหลือผู้ใช้รถใช้ถนน การเคลื่อนย้ายยานพาหนะ การสนับสนุนหน่วยงาน และการอำนวยความสะดวกด้านความปลอดภัยบนท้องถนน</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<p class="font-semibold text-amber-400 mt-4">การบังคับใช้ระเบียบ</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<p>ระเบียบฉบับนี้ใช้บังคับกับเจ้าหน้าที่กรมขนส่งทุกตำแหน่ง ได้แก่</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<ul class="manual-list"><li>หัวหน้ากรมขนส่ง</li><li>รองหัวหน้ากรมขนส่ง</li><li>ผู้คุมสอบ</li><li>พนักงาน</li></ul>', null, 4, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<p>ทุกนายมีหน้าที่ศึกษา ทำความเข้าใจ และถือปฏิบัติตามระเบียบนี้โดยเคร่งครัด การอ้างว่า ไม่ทราบระเบียบ ไม่อาจใช้เป็นเหตุยกเว้นความรับผิดทางวินัยได้</p>', null, 5, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<p class="font-semibold text-amber-400 mt-4">หลักปฏิบัติราชการ</p>', null, 6, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<p>เจ้าหน้าที่ต้องยึดหลัก</p>', null, 7, '{}'::jsonb),
+  ('officer', 'ch2-1', 'text', '<ul class="manual-list"><li>ความซื่อสัตย์สุจริต</li><li>ความรับผิดชอบต่อหน้าที่</li><li>ความมีวินัย</li><li>ความเป็นกลาง</li><li>ความสุภาพ</li><li>ความเป็นมืออาชีพ</li><li>การเคารพสายการบังคับบัญชา</li><li>การทำงานเป็นทีม</li><li>ความปลอดภัยของประชาชนเป็นอันดับแรก</li><li>การรักษาภาพลักษณ์ของกรม</li></ul>', null, 8, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-2', 'ch2', 'หมวดที่ 2: ระเบียบการปฏิบัติราชการ', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-2', 'text', '<p>เจ้าหน้าที่ทุกนายต้องเข้าปฏิบัติหน้าที่ด้วยเครื่องแบบที่ถูกต้อง ครบถ้วน และอยู่ในสภาพเรียบร้อย ก่อนเริ่มปฏิบัติหน้าที่ทุกครั้ง เจ้าหน้าที่ต้อง</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<ul class="manual-list"><li>ลงเวลาเข้าเวร</li><li>ตรวจสอบเครื่องแบบ</li><li>ตรวจสอบรถราชการ</li><li>ตรวจสอบอุปกรณ์ประจำตัว</li><li>ตรวจสอบวิทยุสื่อสาร</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p>หากพบข้อบกพร่อง ต้องดำเนินการแก้ไขก่อนออกปฏิบัติหน้าที่</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p class="font-semibold text-amber-400 mt-4">ข้อ 2.1</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p>เจ้าหน้าที่ต้องปฏิบัติตามคำสั่งของผู้บังคับบัญชาตามสายการบังคับบัญชา ดังนี้</p>', null, 4, '{}'::jsonb),
+  ('officer', 'ch2-2', 'callout', '', null, 5, '{"html":"<div class=\\"chain-of-command\\"><div>หัวหน้ากรมขนส่ง</div><div class=\\"chain-arrow\\">↓</div><div>รองหัวหน้ากรมขนส่ง</div><div class=\\"chain-arrow\\">↓</div><div>ผู้คุมสอบ</div><div class=\\"chain-arrow\\">↓</div><div>พนักงาน</div></div>"}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p>ห้ามข้ามสายการบังคับบัญชา เว้นแต่เป็นเหตุฉุกเฉิน หรือได้รับอนุญาต</p>', null, 6, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p class="font-semibold text-amber-400 mt-4">ข้อ 2.2</p>', null, 7, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p>เจ้าหน้าที่ต้องรายงานตัวผ่านวิทยุเมื่อ</p>', null, 8, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<ul class="manual-list"><li>รับเวร</li><li>รับภารกิจ</li><li>ถึงจุดเกิดเหตุ</li><li>ขอการสนับสนุน</li><li>เสร็จสิ้นภารกิจ</li><li>ออกเวร</li></ul>', null, 9, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p class="font-semibold text-amber-400 mt-4">ข้อ 2.3</p>', null, 10, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p>เจ้าหน้าที่ต้องรักษาความสุภาพต่อประชาชน เจ้าหน้าที่ทุกหน่วย และผู้บังคับบัญชา</p>', null, 11, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p class="font-semibold text-amber-400 mt-4">ข้อ 2.4</p>', null, 12, '{}'::jsonb),
+  ('officer', 'ch2-2', 'text', '<p>เจ้าหน้าที่ต้องปฏิบัติหน้าที่ภายใต้ SOP ของกรมเท่านั้น ห้ามดำเนินการนอกเหนืออำนาจหน้าที่</p>', null, 13, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-3', 'ch2', 'หมวดที่ 3: วินัยในการปฏิบัติหน้าที่', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-3', 'text', '<p class="font-semibold text-amber-400">ข้อ 3.1</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p>เจ้าหน้าที่ทุกนายต้องปฏิบัติงานด้วยความพร้อมตลอดระยะเวลาที่อยู่ในเวร ห้ามละทิ้งหน้าที่โดยไม่ได้รับอนุญาต</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ข้อ 3.2</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p>เจ้าหน้าที่ต้องตอบรับคำสั่งของศูนย์วิทยุหรือผู้บังคับบัญชาโดยเร็ว การเพิกเฉยต่อคำสั่งโดยไม่มีเหตุผล ถือเป็นการกระทำผิดวินัย</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ข้อ 3.3</p>', null, 4, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p>เจ้าหน้าที่ต้องรักษาความลับของทางราชการ ห้ามเปิดเผย</p>', null, 5, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<ul class="manual-list"><li>แผนการปฏิบัติ</li><li>ข้อมูลภายในกรม</li><li>ข้อมูลเจ้าหน้าที่</li><li>ข้อมูลประชาชน</li><li>เอกสารราชการ</li></ul>', null, 6, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p>แก่บุคคลภายนอกโดยไม่ได้รับอนุญาต</p>', null, 7, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p>เจ้าหน้าที่ต้องช่วยเหลือเพื่อนร่วมงานและหน่วยงานอื่นเมื่อได้รับการร้องขอ และอยู่ภายในขอบเขตอำนาจหน้าที่ของกรม</p>', null, 8, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p>เจ้าหน้าที่ต้องรักษาความสะอาดของสำนักงาน รถราชการ และอุปกรณ์ราชการ</p>', null, 9, '{}'::jsonb),
+  ('officer', 'ch2-3', 'text', '<p>เจ้าหน้าที่ต้องปฏิบัติหน้าที่ด้วยความเท่าเทียม ไม่เลือกปฏิบัติ ไม่ใช้อำนาจหน้าที่เพื่อแสวงหาผลประโยชน์ส่วนตน</p>', null, 10, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-4', 'ch2', 'หมวดที่ 4: ข้อห้าม', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-4', 'text', '<p>เจ้าหน้าที่กรมขนส่ง ห้าม กระทำการดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-4', 'text', '<ul class="manual-list"><li>ห้ามใช้อำนาจเกินขอบเขตหน้าที่</li><li>ห้ามจับกุม ค้นตัว ยึดทรัพย์ หรือสอบสวนประชาชน ซึ่งเป็นอำนาจของ Police เว้นแต่ได้รับมอบหมายตามเหตุการณ์พิเศษของเซิร์ฟ (ซึ่ง DOT ก็ไม่สามารถทำแบบนี้ได้)</li><li>ห้ามเรียกรับเงิน สิ่งของ หรือผลประโยชน์จากประชาชน</li><li>ห้ามใช้รถราชการเพื่อประโยชน์ส่วนตัว</li><li>ห้ามขับรถโดยประมาท แข่งรถ ดริฟต์ ขับย้อนศร หรือกระทำการใดที่ก่อให้เกิดอันตรายแก่ประชาชน เว้นแต่มีเหตุจำเป็นตามภารกิจ</li><li>ห้ามเปิดไฟฉุกเฉินหรือไซเรนโดยไม่มีเหตุอันสมควร</li><li>ห้ามแต่งเครื่องแบบผิดระเบียบหรือสวมเครื่องแบบอื่นที่ไม่ได้รับอนุญาติขณะปฏิบัติหน้าที่</li><li>ห้ามใช้วิทยุเพื่อสนทนาเรื่องส่วนตัว ใช้คำหยาบ หรือเผยแพร่ข้อมูลเท็จ</li><li>ห้ามเผยแพร่ข้อมูล เอกสาร ภาพถ่าย หรืออัดคลิปจากการปฏิบัติหน้าที่ โดยไม่ได้รับอนุญาตจากหัวหน้า</li><li>ห้ามปล่อยให้บุคคลภายนอกใช้รถราชการหรืออุปกรณ์ราชการ</li><li>ห้ามเล่นการพนัน ซื้อขายสิ่งผิดกฎหมาย หรือกระทำการที่ขัดต่อกฎของเซิร์ฟขณะดำรงตำแหน่งเจ้าหน้าที่ DOT</li><li>ห้ามแอบอ้างตำแหน่ง ใช้ชื่อ หรือเครื่องหมายของกรมเพื่อประโยชน์ส่วนตัว</li><li>ห้ามใช้อำนาจในทางมิชอบ</li><li>ห้ามเล่น Roleplay ที่ไม่เหมาะสมหรือขัดต่อกฎเมือง</li><li>ห้ามนำอุปกรณ์ราชการไปใช้โดยไม่ได้รับอนุญาต</li></ul>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-5', 'ch2', 'หมวดที่ 5: การใช้รถราชการ', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-5', 'text', '<p>เจ้าหน้าที่ทุกนายต้อง</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-5', 'text', '<ul class="manual-list"><li>ตรวจสอบสภาพรถก่อนใช้งาน</li><li>ใช้รถตรงตามประเภทภารกิจ</li><li>เติมเชื้อเพลิงหลังใช้งาน</li><li>จอดรถในพื้นที่ที่กำหนด</li><li>รายงานความเสียหายทันที</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch2-5', 'text', '<p>หากรถได้รับความเสียหายจากความประมาทเลินเล่อหรือเกิดอุบัติเหตุ ผู้รับผิดชอบอาจถูกสอบสวนทางวินัย</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-6', 'ch2', 'หมวดที่ 6: การใช้อุปกรณ์ราชการ', 5, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-6', 'text', '<p>อุปกรณ์ราชการทุกชิ้นถือเป็นทรัพย์สินของกรม เจ้าหน้าที่ต้อง</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-6', 'text', '<ul class="manual-list"><li>ตรวจอุปกรณ์ก่อนใช้งาน</li><li>ใช้งานตามวัตถุประสงค์</li><li>ดูแลรักษาให้อยู่ในสภาพพร้อมใช้งาน</li><li>หลังจบเคสให้เก็บ</li><li>รายงานทันทีเมื่ออุปกรณ์ชำรุดหรือบัค</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch2-6', 'text', '<p>ห้ามทิ้งอุปกรณ์หลังจบเคสหรือใช้อุปกรณ์ก่อกวนผู้อื่น</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-7', 'ch2', 'หมวดที่ 7: ความรับผิดชอบต่อทรัพย์สินราชการ', 6, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-7', 'text', '<p>เจ้าหน้าที่ผู้รับมอบรถหรืออุปกรณ์ราชการ ต้องรับผิดชอบต่อ</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-7', 'text', '<ul class="manual-list"><li>ความสะอาด</li><li>ความพร้อมใช้งาน</li><li>ความเสียหายจากการประมาท</li><li>การสูญหาย</li><li>การใช้งานผิดวัตถุประสงค์</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch2-7', 'text', '<p>ผู้ฝ่าฝืนอาจต้องรับผิดทางวินัย และชดใช้ความเสียหายตามระเบียบของกรม</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-8', 'ch2', 'หมวดที่ 8: มาตรการทางวินัย', 7, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-8', 'text', '<p>การลงโทษทางวินัยแบ่งเป็น 5 ระดับ</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-8', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>ระดับ</th><th>โทษ</th></tr></thead><tbody><tr><td>1</td><td>ตักเตือนด้วยวาจา</td></tr><tr><td>2</td><td>ตักเตือนเป็นลายลักษณ์อักษร / บันทึกประวัติ</td></tr><tr><td>3</td><td>ภาคทัณฑ์ / พักการปฏิบัติหน้าที่ / ตัดสิทธิ์เข้ารับการเลื่อนตำแหน่ง</td></tr><tr><td>4</td><td>ลดตำแหน่ง / พักงานไม่มีกำหนด / พิจารณาให้ออกจากตำแหน่ง</td></tr><tr><td>5</td><td>ปลดออกจากกรมขนส่ง</td></tr></tbody></table></div>"}'::jsonb),
+  ('officer', 'ch2-8', 'text', '<p>การลงโทษต้องผ่านการสอบสวนและพิจารณาตามหลักฐาน โดยยึดหลักความเป็นธรรม โปร่งใส และตรวจสอบได้</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch2-9', 'ch2', 'หมวดที่ 9: บทบัญญัติท้ายบท', 8, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch2-9', 'text', '<p>เจ้าหน้าที่ทุกนายมีหน้าที่ศึกษาระเบียบฉบับนี้ และถือปฏิบัติอย่างเคร่งครัด หากมีข้อสงสัยให้สอบถามผู้บังคับบัญชา ตามสายการบังคับบัญชา</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch2-9', 'text', '<p>กรณีที่ระเบียบฉบับนี้มิได้กำหนดไว้ ให้หัวหน้ากรมขนส่งเป็นผู้พิจารณาและวินิจฉัย โดยยึดหลักการของกรม ผลประโยชน์ของประชาชน กฎของเซิร์ฟ BIT CITY RP และรูปแบบการปฏิบัติงานของ ER:LC เป็นสำคัญ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch2-9', 'callout', '', null, 2, '{"html":"<div class=\\"pledge-box\\"><p class=\\"font-semibold text-amber-400 mb-2\\">คำปฏิญาณเจ้าหน้าที่กรมขนส่ง</p><p class=\\"italic text-gray-300\\">ข้าพเจ้าจะปฏิบัติหน้าที่ด้วยความซื่อสัตย์ สุจริต มีวินัย เคารพกฎหมาย ปฏิบัติตามคำสั่งของผู้บังคับบัญชา รักษาผลประโยชน์ของทางราชการ ดูแลความปลอดภัยของประชาชน และธำรงไว้ซึ่งเกียรติ ศักดิ์ศรี และชื่อเสียงของกรมขนส่ง ตลอดเวลาที่ดำรงตำแหน่งเจ้าหน้าที่กรมขนส่ง</p></div>"}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch3', 'เครื่องแบบและการแต่งกาย', 'บทที่ 3', 3);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch3-1', 'ch3', 'หมวดที่ 1: หลักการทั่วไป', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch3-1', 'text', '<p class="font-semibold text-amber-400">วัตถุประสงค์</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch3-1', 'text', '<p>เครื่องแบบของกรมขนส่ง (Department of Transportation : DOT) เป็นสัญลักษณ์แห่งอำนาจหน้าที่ ความรับผิดชอบ และความน่าเชื่อถือของเจ้าหน้าที่ผู้ปฏิบัติราชการ การแต่งกายอย่างถูกต้องตามระเบียบเป็นการสร้างภาพลักษณ์ที่ดีให้แก่หน่วยงาน และสร้างความเชื่อมั่นแก่ประชาชนผู้รับบริการ เจ้าหน้าที่ทุกนายมีหน้าที่แต่งกายให้ถูกต้องตามระเบียบของกรมตลอดระยะเวลาที่ปฏิบัติหน้าที่ เว้นแต่ได้รับอนุญาตเป็นกรณีพิเศษจากผู้บังคับบัญชา</p>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch3-2', 'ch3', 'หมวดที่ 2: เครื่องแบบประจำหน่วยปฏิบัติการ', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch3-2', 'text', '<p>กรมขนส่งแบ่งเจ้าหน้าที่ออกเป็น 5 หน่วยปฏิบัติการ ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch3-2', 'callout', '', null, 1, '{"html":"<div class=\\"unit-card\\"><h3>1. หน่วยโยธาและซ่อมบำรุง</h3><img src=\\"/unit-civil.png\\" alt=\\"เครื่องแบบหน่วยโยธาและซ่อมบำรุง\\" loading=\\"lazy\\" decoding=\\"async\\" class=\\"unit-image\\"/><p class=\\"text-sm text-gray-400 mb-2\\">รับผิดชอบงานด้านโครงสร้างพื้นฐานของเมือง ได้แก่</p><ul class=\\"manual-list text-sm\\"><li>ซ่อมแซมถนน</li><li>ซ่อมป้ายจราจร</li><li>ติดตั้งแบริเออร์</li><li>งานก่อสร้าง</li><li>งานซ่อมสะพาน</li><li>งานบำรุงรักษาทางหลวง</li><li>สนับสนุนกิจกรรมของเมือง</li></ul></div>"}'::jsonb),
+  ('officer', 'ch3-2', 'callout', '', null, 2, '{"html":"<div class=\\"unit-card\\"><h3>2. หน่วยกู้ภัยรถยก</h3><img src=\\"/unit-tow.png\\" alt=\\"เครื่องแบบหน่วยกู้ภัยรถยก\\" loading=\\"lazy\\" decoding=\\"async\\" class=\\"unit-image\\"/><p class=\\"text-sm text-gray-400 mb-2\\">รับผิดชอบ</p><ul class=\\"manual-list text-sm\\"><li>รถเสีย</li><li>รถพลิกคว่ำ</li><li>รถตกข้างทาง</li><li>รถถูกอายัด</li><li>ลากรถ</li><li>เคลียร์พื้นที่อุบัติเหตุ</li></ul></div>"}'::jsonb),
+  ('officer', 'ch3-2', 'callout', '', null, 3, '{"html":"<div class=\\"unit-card\\"><h3>3. หน่วยการไฟฟ้า</h3><img src=\\"/unit-power.png\\" alt=\\"เครื่องแบบหน่วยการไฟฟ้า\\" loading=\\"lazy\\" decoding=\\"async\\" class=\\"unit-image\\"/><p class=\\"text-sm text-gray-400 mb-2\\">รับผิดชอบ</p><ul class=\\"manual-list text-sm\\"><li>ระบบไฟถนน</li><li>ไฟจราจร</li><li>เสาไฟ</li><li>ป้ายไฟ</li><li>ระบบไฟฟ้าสาธารณะ</li><li>งานซ่อมฉุกเฉินหลังอุบัติเหตุ</li></ul></div>"}'::jsonb),
+  ('officer', 'ch3-2', 'callout', '', null, 4, '{"html":"<div class=\\"unit-card\\"><h3>4. หน่วยจัดการจราจร</h3><img src=\\"/unit-traffic.png\\" alt=\\"เครื่องแบบหน่วยจัดการจราจร\\" loading=\\"lazy\\" decoding=\\"async\\" class=\\"unit-image\\"/><p class=\\"text-sm text-gray-400 mb-2\\">รับผิดชอบ</p><ul class=\\"manual-list text-sm\\"><li>ควบคุมการจราจร</li><li>ปิดถนน</li><li>อุบัติเหตุ</li><li>งานกิจกรรมพิเศษ</li><li>VIP Escort</li><li>เปิดเส้นทางรถฉุกเฉิน</li></ul></div>"}'::jsonb),
+  ('officer', 'ch3-2', 'callout', '', null, 5, '{"html":"<div class=\\"unit-card\\"><h3>5. หน่วยช่วยเหลือฉุกเฉิน</h3><img src=\\"/unit-emergency.png\\" alt=\\"เครื่องแบบหน่วยช่วยเหลือฉุกเฉิน\\" loading=\\"lazy\\" decoding=\\"async\\" class=\\"unit-image\\"/><p class=\\"text-sm text-gray-400 mb-2\\">รับผิดชอบ</p><ul class=\\"manual-list text-sm\\"><li>รถน้ำมันหมด</li><li>แบตหมด</li><li>ยางแตก</li><li>รถสตาร์ทไม่ติด</li><li>ล็อกรถ</li><li>เหตุช่วยเหลือทั่วไป</li></ul></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch3-3', 'ch3', 'หมวดที่ 3: การเลือกใช้เครื่องแบบและการตรวจเครื่องแบบ', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch3-3', 'text', '<p>เจ้าหน้าที่ต้องสวมเครื่องแบบให้ตรงกับหน่วยที่ได้รับมอบหมาย ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch3-3', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>หน่วย</th><th>งานที่รับผิดชอบ</th></tr></thead><tbody><tr><td>โยธาและซ่อมบำรุง</td><td>งานก่อสร้าง ซ่อมถนน ป้ายจราจร</td></tr><tr><td>กู้ภัยรถยก</td><td>ลากรถ กู้รถ รถเสีย</td></tr><tr><td>การไฟฟ้า</td><td>ซ่อมไฟถนน ไฟจราจร ระบบไฟฟ้า</td></tr><tr><td>จัดการจราจร</td><td>ปิดถนน อำนวยการจราจร</td></tr><tr><td>ช่วยเหลือฉุกเฉิน</td><td>รถเสียทั่วไป แบตหมด น้ำมันหมด ยางแตก</td></tr></tbody></table></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch3-4', 'ch3', 'หมวดที่ 4: การควบคุมเครื่องแบบและอุปกรณ์ประจำหน่วย', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch3-4', 'text', '<p>เครื่องแบบและอุปกรณ์ประจำหน่วยถือเป็นทรัพย์สินของกรมขนส่ง ห้ามมิให้ใช้ในกิจกรรมส่วนตัวหรือมอบให้บุคคลอื่นใช้งานโดยไม่ได้รับอนุญาต เจ้าหน้าที่ต้องรับผิดชอบต่อการดูแลรักษา ทำความสะอาด และตรวจสอบความพร้อมก่อนและหลังการปฏิบัติงานทุกครั้ง หากเกิดความเสียหายจากความประมาทหรือการใช้งานผิดวัตถุประสงค์ อาจถูกดำเนินการทางวินัยและชดใช้ค่าเสียหายตามระเบียบของกรม</p>', null, 0, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch4', 'รถราชการและอุปกรณ์', 'บทที่ 4', 4);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch4-1', 'ch4', 'หมวดที่ 1: หลักการใช้รถราชการ', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch4-1', 'text', '<p class="font-semibold text-amber-400">วัตถุประสงค์</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p>รถราชการของกรมขนส่ง (Department of Transportation : DOT) เป็นทรัพย์สินของทางราชการที่จัดไว้เพื่อสนับสนุน การปฏิบัติหน้าที่ของเจ้าหน้าที่ในการให้บริการประชาชน การบำรุงรักษาสาธารณูปโภค การอำนวยความสะดวกด้านการจราจร การกู้ภัยยานพาหนะ และการสนับสนุนหน่วยงานราชการอื่น เจ้าหน้าที่ทุกนายมีหน้าที่ใช้รถราชการด้วยความระมัดระวัง ซื่อสัตย์ และคำนึงถึงประโยชน์ของทางราชการเป็นสำคัญ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p>ใช้เพื่อภารกิจราชการเท่านั้น</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p class="font-semibold text-amber-400 mt-4">ผู้มีสิทธิใช้รถราชการ</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p>ผู้มีสิทธิใช้รถราชการ ได้แก่</p>', null, 4, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<ul class="manual-list"><li>หัวหน้ากรมขนส่ง</li><li>รองหัวหน้ากรมขนส่ง</li><li>ผู้คุมสอบ</li><li>พนักงานที่ได้รับอนุญาต</li></ul>', null, 5, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p>ห้ามบุคคลภายนอกหรือเจ้าหน้าที่ที่ไม่ได้รับมอบหมายขับหรือใช้งานรถราชการโดยเด็ดขาด</p>', null, 6, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p class="font-semibold text-amber-400 mt-4">การเบิกรถราชการ</p>', null, 7, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<ul class="manual-list"><li>ตรวจสอบสภาพรถ</li><li>ตรวจสอบระดับเชื้อเพลิง</li><li>ตรวจสอบไฟส่องสว่างและไฟฉุกเฉิน</li><li>ตรวจสอบลมยาง</li><li>ตรวจสอบวิทยุสื่อสาร</li><li>ตรวจสอบอุปกรณ์ประจำรถ</li><li>รับอนุญาตจากผู้บังคับบัญชา (หากเป็นรถเฉพาะทาง)</li></ul>', null, 8, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p class="font-semibold text-amber-400 mt-4">การขับขี่</p>', null, 9, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p>เจ้าหน้าที่ต้อง</p>', null, 10, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<ul class="manual-list"><li>ปฏิบัติตามกฎหมายจราจรของเซิร์ฟ</li><li>ขับรถด้วยความระมัดระวัง</li><li>เว้นระยะห่างจากรถคันหน้า</li><li>ใช้ความเร็วให้เหมาะสม</li><li>คำนึงถึงความปลอดภัยของประชาชนเป็นอันดับแรก</li></ul>', null, 11, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p>การใช้ไฟฉุกเฉินและไซเรนให้ใช้เฉพาะภารกิจที่ได้รับอนุญาตหรือสถานการณ์เร่งด่วนตามระเบียบของกรมและกฎของเซิร์ฟ</p>', null, 12, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p class="font-semibold text-amber-400 mt-4">หลังเสร็จสิ้นภารกิจ</p>', null, 13, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<p>เมื่อเสร็จสิ้นการปฏิบัติหน้าที่ เจ้าหน้าที่ต้อง</p>', null, 14, '{}'::jsonb),
+  ('officer', 'ch4-1', 'text', '<ul class="manual-list"><li>ทำความสะอาดรถ</li><li>เติมเชื้อเพลิง</li><li>ตรวจสอบความเสียหาย</li><li>เก็บอุปกรณ์ให้ครบถ้วน</li><li>จอดรถในพื้นที่ที่กำหนด</li></ul>', null, 15, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch4-2', 'ch4', 'หมวดที่ 2: ประเภทรถราชการ', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch4-2', 'text', '<p>กรมขนส่งแบ่งรถราชการออกเป็นประเภทต่าง ๆ ตามลักษณะภารกิจ ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<h4 class="vehicle-group-title">รถสายตรวจ DOT <span class="vehicle-group-tag">ทุกตำแหน่ง</span></h4>', null, 1, '{}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<p class="vehicle-group-desc">ใช้สำหรับตรวจพื้นที่ / รับแจ้งเหตุ / ตรวจสอบสภาพถนน / สนับสนุนการจราจร</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch4-2', 'callout', '', null, 3, '{"html":"<div class=\\"vehicle-grid\\"><div class=\\"vehicle-card\\"><img src=\\"/veh-vellfire.png\\" alt=\\"1995 Vellfire Crew Cab\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">1995 Vellfire Crew Cab</div><div class=\\"vehicle-card-price free\\">ฟรี</div></div></div><div class=\\"vehicle-card\\"><img src=\\"/veh-falcon-2920.png\\" alt=\\"2920 Falcon Advace 450\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">2920 Falcon Advace 450</div><div class=\\"vehicle-card-price\\">65,000 BC</div></div></div></div>"}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<h4 class="vehicle-group-title">รถช่วยเหลือฉุกเฉิน <span class="vehicle-group-tag emergency">ฝ่ายฉุกเฉิน</span></h4>', null, 4, '{}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<p class="vehicle-group-desc">ใช้สำหรับรถยางแตก / รถน้ำมันหมด / แบตเตอรี่หมด / รถสตาร์ทไม่ติด</p>', null, 5, '{}'::jsonb),
+  ('officer', 'ch4-2', 'callout', '', null, 6, '{"html":"<div class=\\"vehicle-grid\\"><div class=\\"vehicle-card\\"><img src=\\"/veh-falcon-global.png\\" alt=\\"2018 Falcon Global 450 Utility\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">2018 Falcon Global 450 Utility</div><div class=\\"vehicle-card-price\\">39,500 BC</div></div></div></div>"}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<h4 class="vehicle-group-title">รถกู้ภัยและลากจูง <span class="vehicle-group-tag tow">ฝ่ายกู้ภัยรถยก</span></h4>', null, 7, '{}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<p class="vehicle-group-desc">ใช้สำหรับรถเสีย / รถชน / รถพลิกคว่ำ / รถตกข้างทาง / รถอายัดตามคำสั่งของตำรวจ</p>', null, 8, '{}'::jsonb),
+  ('officer', 'ch4-2', 'callout', '', null, 9, '{"html":"<div class=\\"vehicle-grid\\"><div class=\\"vehicle-card\\"><img src=\\"/veh-explorer-transport.png\\" alt=\\"Explorer Flatbed Tow Truck\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">Explorer Flatbed Tow Truck</div><div class=\\"vehicle-card-price free\\">ฟรี</div></div></div><div class=\\"vehicle-card\\"><img src=\\"/veh-falcon-tow.png\\" alt=\\"2020 Falcon Advance 450 Tow Truck\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">2020 Falcon Advance 450 Tow Truck</div><div class=\\"vehicle-card-price free\\">ฟรี</div></div></div><div class=\\"vehicle-card highlight\\"><img src=\\"/veh-213-vinnimade.png\\" alt=\\"213 VINNIMADE Heavy Wrecker\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">213 VINNIMADE Heavy Wrecker</div><div class=\\"vehicle-card-price\\">225,000 BC</div><div class=\\"vehicle-card-note\\">ต้องได้รับอนุญาตก่อนใช้ทุกกรณี</div></div></div></div>"}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<h4 class="vehicle-group-title">รถซ่อมระบบไฟฟ้า <span class="vehicle-group-tag power">ฝ่ายไฟฟ้า</span></h4>', null, 10, '{}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<p class="vehicle-group-desc">ใช้สำหรับซ่อมไฟถนน / ซ่อมไฟจราจร / บำรุงรักษาระบบไฟฟ้า</p>', null, 11, '{}'::jsonb),
+  ('officer', 'ch4-2', 'callout', '', null, 12, '{"html":"<div class=\\"vehicle-grid\\"><div class=\\"vehicle-card\\"><img src=\\"/veh-falcon-bucket.png\\" alt=\\"2020 Falcon Advance 450 Bucket Truck\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">2020 Falcon Advance 450 Bucket Truck</div><div class=\\"vehicle-card-price\\">39,500 BC</div></div></div></div>"}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<h4 class="vehicle-group-title">รถควบคุมการจราจร <span class="vehicle-group-tag traffic">ฝ่ายควบคุมจราจร</span></h4>', null, 13, '{}'::jsonb),
+  ('officer', 'ch4-2', 'text', '<p class="vehicle-group-desc">ใช้สำหรับปิดถนน / อำนวยการจราจร / งานกิจกรรมพิเศษ / สนับสนุน Police และ EMS</p>', null, 14, '{}'::jsonb),
+  ('officer', 'ch4-2', 'callout', '', null, 15, '{"html":"<div class=\\"vehicle-grid\\"><div class=\\"vehicle-card\\"><img src=\\"/veh-falcon-roadside.png\\" alt=\\"2020 Falcon Advabce 450 Roadside Assist\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">2020 Falcon Advabce 450 Roadside Assist</div><div class=\\"vehicle-card-price free\\">ฟรี</div></div></div><div class=\\"vehicle-card\\"><img src=\\"/veh-vellfire.png\\" alt=\\"2015 Explorer Transport Truck\\" loading=\\"lazy\\" decoding=\\"async\\"/><div class=\\"vehicle-card-body\\"><div class=\\"vehicle-card-title\\">2015 Explorer Transport Truck</div><div class=\\"vehicle-card-price free\\">ฟรี</div></div></div></div>"}'::jsonb),
+  ('officer', 'ch4-2', 'callout', '', null, 16, '{"html":"<div class=\\"callout-warning\\"><p class=\\"font-semibold text-amber-400\\">หมายเหตุ: รถ 213 VINNIMADE Heavy Wrecker</p><p>ต้องได้รับอนุญาติก่อนใช้ทุกกรณี โดยไม่มีข้อยกเว้น หากฝ่าฝืนอาจจะถูกพักงาน</p></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch4-3', 'ch4', 'หมวดที่ 3: รถพ่วง', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch4-3', 'text', '<p>อนุญาติให้ใช้ได้ทั้งหมด (แต่ต้องได้รับอนุญาติ)</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch4-4', 'ch4', 'หมวดที่ 4: ข้อห้ามในการใช้รถราชการและอุปกรณ์', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch4-4', 'text', '<p>ห้ามเจ้าหน้าที่กระทำการดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch4-4', 'text', '<ul class="manual-list"><li>ใช้รถราชการเพื่อประโยชน์ส่วนตัว</li><li>นำรถออกนอกพื้นที่ปฏิบัติงานโดยไม่ได้รับอนุญาต</li><li>ให้บุคคลภายนอกขับรถราชการ</li><li>แข่งรถ ดริฟต์ หรือขับรถโดยประมาท</li><li>ดัดแปลงรถราชการ</li><li>ติดตั้งอุปกรณ์ที่ไม่ได้รับอนุญาต</li><li>ใช้ไฟฉุกเฉินโดยไม่มีเหตุจำเป็น</li><li>ใช้ไซเรนโดยไม่อยู่ในภารกิจ</li><li>ถอดอุปกรณ์ประจำรถไปใช้ส่วนตัว</li><li>ละเลยการตรวจสอบสภาพรถก่อนใช้งาน</li><li>บรรทุกผู้โดยสารที่ไม่เกี่ยวข้องกับภารกิจ</li></ul>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch4-5', 'ch4', 'หมวดที่ 7: ความรับผิดและบทกำหนดโทษ', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch4-5', 'text', '<p>เจ้าหน้าที่ผู้รับรถราชการถือเป็นผู้รับผิดชอบรถและอุปกรณ์ตลอดระยะเวลาที่ครอบครอง กรณีเกิดความเสียหายจากการใช้งานโดยประมาท การฝ่าฝืนระเบียบ หรือการนำรถไปใช้ผิดวัตถุประสงค์ ผู้กระทำอาจได้รับโทษดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch4-5', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>ระดับ</th><th>โทษ</th></tr></thead><tbody><tr><td>1</td><td>ตักเตือนด้วยวาจา</td></tr><tr><td>2</td><td>ตักเตือนเป็นลายลักษณ์อักษร / บันทึกประวัติ</td></tr><tr><td>3</td><td>พักสิทธิ์การใช้รถราชการ / พักการปฏิบัติหน้าที่ / ตัดสิทธิ์การเลื่อนตำแหน่ง</td></tr><tr><td>4</td><td>ลดตำแหน่ง / พักงาน / เรียกคืนสิทธิ์การใช้งานรถเฉพาะทาง</td></tr><tr><td>5</td><td>ปลดออกจากกรม / เสนอฝ่ายบริหารเซิร์ฟพิจารณาดำเนินการตามกฎของ BIT CITY</td></tr></tbody></table></div>"}'::jsonb),
+  ('officer', 'ch4-5', 'text', '<p>การพิจารณาโทษต้องดำเนินการตามกระบวนการสอบสวนทางวินัยของกรม โดยยึดหลักความเป็นธรรม โปร่งใส และสามารถตรวจสอบได้</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch4-6', 'ch4', 'บทบัญญัติท้ายบท', 5, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch4-6', 'text', '<p>รถราชการและอุปกรณ์ทุกชิ้นเป็นทรัพย์สินของกรมขนส่งและมีความสำคัญต่อการให้บริการประชาชน เจ้าหน้าที่ทุกนายมีหน้าที่ ใช้ ดูแล และบำรุงรักษาทรัพย์สินดังกล่าวด้วยความรับผิดชอบสูงสุด การใช้ทรัพย์สินราชการอย่างถูกต้องสะท้อนถึง ความเป็นมืออาชีพ วินัย และเกียรติของเจ้าหน้าที่กรมขนส่ง ซึ่งทุกนายพึงยึดถือและปฏิบัติอย่างเคร่งครัด</p>', null, 0, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch5', 'มาตรฐานการปฏิบัติงาน (SOP)', 'บทที่ 5', 5);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-0', 'ch5', 'วัตถุประสงค์', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-0', 'text', '<p>มาตรฐานการปฏิบัติงาน (Standard Operating Procedures : SOP) เป็นแนวทางปฏิบัติราชการของกรมขนส่ง (Department of Transportation : DOT) ที่กำหนดขึ้นเพื่อให้เจ้าหน้าที่ทุกนายปฏิบัติหน้าที่ภายใต้มาตรฐานเดียวกัน มีความถูกต้อง เป็นระบบ และสามารถตรวจสอบได้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch5-0', 'text', '<p>SOP มีวัตถุประสงค์เพื่อกำหนดขั้นตอน วิธีการ และแนวปฏิบัติในการให้บริการประชาชน การบริหารจัดการเหตุการณ์ และการสนับสนุนหน่วยงานภาครัฐอื่นภายในเมือง โดยมุ่งเน้นความปลอดภัย ความรวดเร็ว และประสิทธิภาพสูงสุดในการปฏิบัติราชการ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch5-0', 'text', '<p>เจ้าหน้าที่ทุกนายมีหน้าที่ศึกษา ทำความเข้าใจ และถือปฏิบัติตาม SOP ของกรมอย่างเคร่งครัด การละเลยหรือปฏิบัตินอกเหนือ SOP โดยไม่มีเหตุอันสมควร อาจถือเป็นการกระทำผิดวินัยและต้องเข้าสู่กระบวนการสอบสวนตามระเบียบของกรม</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-s', 'ch5', 'S — Safety (ความปลอดภัย)', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-s', 'text', '<p>ความปลอดภัยถือเป็นหลักการสูงสุดในการปฏิบัติราชการ เจ้าหน้าที่ทุกนายต้องคำนึงถึงความปลอดภัยของประชาชน ผู้ร่วมใช้ทาง เจ้าหน้าที่ผู้ปฏิบัติงาน และทรัพย์สินของทางราชการเป็นอันดับแรก</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch5-s', 'text', '<p>เจ้าหน้าที่ต้องประเมินความเสี่ยงก่อนเริ่มปฏิบัติงานทุกครั้ง และดำเนินการลดความเสี่ยงให้อยู่ในระดับที่สามารถควบคุมได้ โดยใช้อุปกรณ์ป้องกันส่วนบุคคล (PPE) เครื่องหมายจราจร กรวย แบริเออร์ ไฟเตือน และอุปกรณ์นิรภัยอื่นตามประเภทของภารกิจ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch5-s', 'text', '<p>ในกรณีเกิดอุบัติเหตุ เหตุเพลิงไหม้ หรือสถานการณ์อันตราย เจ้าหน้าที่ต้องจัดตั้งเขตปลอดภัย ควบคุมการจราจร และประสานงานกับหน่วย Police Fire และ EMS ก่อนดำเนินการในส่วนที่อยู่ในอำนาจหน้าที่ของกรม</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch5-s', 'text', '<p>เจ้าหน้าที่ต้องไม่ปฏิบัติงานในพื้นที่ที่มีความเสี่ยงเกินกว่าขีดความสามารถของตนเอง และต้องหยุดการปฏิบัติงานทันที เมื่อพบว่าสถานการณ์อาจก่อให้เกิดอันตรายต่อชีวิตหรือทรัพย์สิน จนกว่าจะได้รับการสนับสนุนจากหน่วยงานที่เกี่ยวข้อง</p>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-o', 'ch5', 'O — Order (ความเป็นระเบียบ)', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-o', 'text', '<p>การปฏิบัติงานของกรมขนส่งต้องเป็นไปตามระเบียบราชการ สายการบังคับบัญชา และมาตรฐานการปฏิบัติงานที่กำหนดไว้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch5-o', 'text', '<p>เจ้าหน้าที่ต้องปฏิบัติตามคำสั่งของผู้บังคับบัญชา ไม่ข้ามขั้นตอนการทำงาน และไม่ดำเนินการนอกเหนืออำนาจหน้าที่ เว้นแต่เป็นกรณีฉุกเฉินที่จำเป็นต่อการป้องกันอันตรายแก่ชีวิตหรือทรัพย์สิน</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch5-o', 'text', '<p>การปฏิบัติภารกิจทุกครั้งต้องมีการรับแจ้งเหตุ การตอบรับคำสั่ง การรายงานระหว่างปฏิบัติงาน และการรายงานเมื่อสิ้นสุดภารกิจ ผ่านระบบวิทยุสื่อสารหรือช่องทางที่กรมกำหนด เพื่อให้สามารถติดตาม ตรวจสอบ และประเมินผลการปฏิบัติงานได้อย่างเป็นระบบ</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch5-o', 'text', '<p>เจ้าหน้าที่ต้องจัดเก็บรถราชการ อุปกรณ์ และเอกสารราชการให้เป็นระเบียบ พร้อมใช้งานอยู่เสมอ รวมถึงบันทึกการปฏิบัติงานทุกครั้งตามแบบฟอร์มที่กรมกำหนด</p>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-p', 'ch5', 'P — Professionalism (ความเป็นมืออาชีพ)', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-p', 'text', '<p>เจ้าหน้าที่กรมขนส่งทุกนายต้องปฏิบัติหน้าที่ด้วยความเป็นมืออาชีพ มีความซื่อสัตย์ สุจริต สุภาพ และให้เกียรติประชาชน รวมถึงเจ้าหน้าที่ทุกหน่วยงาน</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch5-p', 'text', '<p>การปฏิบัติหน้าที่ต้องอยู่บนพื้นฐานของความรู้ ความสามารถ และการตัดสินใจอย่างรอบคอบ โดยยึดถือผลประโยชน์ของประชาชน และทางราชการเป็นสำคัญ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch5-p', 'text', '<p>เจ้าหน้าที่ต้องรักษาภาพลักษณ์ของกรม ทั้งในด้านการแต่งกาย การใช้วาจา การใช้รถราชการ การใช้วิทยุสื่อสาร และการประพฤติตนทั้งในและนอกเวลาปฏิบัติหน้าที่ หากการกระทำใดส่งผลกระทบต่อชื่อเสียงของกรม ย่อมถือเป็นการกระทำ ที่ขัดต่อหลักความเป็นมืออาชีพ</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch5-p', 'text', '<p>เจ้าหน้าที่ต้องพัฒนาความรู้ ความสามารถ และทักษะในการปฏิบัติงานอย่างต่อเนื่อง เข้ารับการฝึกอบรมตามที่กรมกำหนด และพร้อมถ่ายทอดองค์ความรู้ให้แก่เจ้าหน้าที่รุ่นใหม่ เพื่อยกระดับมาตรฐานของหน่วยงานอย่างยั่งยืน</p>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-basic', 'ch5', 'หลักปฏิบัติพื้นฐานของเจ้าหน้าที่ DOT', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-basic', 'text', '<p>ในการปฏิบัติหน้าที่ทุกภารกิจ เจ้าหน้าที่ทุกนายต้องยึดถือหลักปฏิบัติพื้นฐาน ดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch5-basic', 'text', '<ul class="manual-list"><li>ปฏิบัติหน้าที่ภายใต้กรอบอำนาจหน้าที่ของกรมขนส่งเท่านั้น</li><li>ปฏิบัติตาม SOP และคำสั่งของผู้บังคับบัญชาอย่างเคร่งครัด</li><li>ให้ความสำคัญกับความปลอดภัยมากกว่าความรวดเร็ว</li><li>ให้บริการประชาชนด้วยความสุภาพ เป็นกลาง และไม่เลือกปฏิบัติ</li><li>ประสานงานกับ Police Fire และ EMS อย่างมีประสิทธิภาพ</li><li>ใช้รถราชการและอุปกรณ์ตามวัตถุประสงค์ของทางราชการ</li><li>รายงานผลการปฏิบัติงานทุกครั้งเมื่อเสร็จสิ้นภารกิจ</li><li>รักษาทรัพย์สินของทางราชการเสมือนทรัพย์สินของตนเอง</li><li>ปฏิบัติตนให้สมกับเกียรติของเจ้าหน้าที่กรมขนส่ง</li><li>พร้อมรับการตรวจสอบจากผู้บังคับบัญชาได้ทุกเวลา</li></ul>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-enforce', 'ch5', 'การบังคับใช้มาตรฐานการปฏิบัติงาน', 5, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-enforce', 'text', '<p>มาตรฐานการปฏิบัติงาน (SOP) ฉบับนี้ ให้ใช้บังคับกับเจ้าหน้าที่ทุกตำแหน่งในสังกัดกรมขนส่ง ได้แก่</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch5-enforce', 'text', '<ul class="manual-list"><li>หัวหน้ากรมขนส่ง</li><li>รองหัวหน้ากรมขนส่ง</li><li>ผู้คุมสอบ</li><li>พนักงาน</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch5-enforce', 'text', '<p>ผู้ใดไม่ปฏิบัติตาม SOP หรือจงใจฝ่าฝืนขั้นตอนการปฏิบัติงาน โดยไม่มีเหตุอันสมควร จะถูกพิจารณาดำเนินการทางวินัย ตามระเบียบของกรม และอาจถูกระงับสิทธิ์ในการปฏิบัติหน้าที่หรือการใช้รถและอุปกรณ์ราชการตามความเหมาะสม</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-final', 'ch5', 'บทบัญญัติท้ายบท', 6, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-final', 'text', '<p>มาตรฐานการปฏิบัติงาน (SOP) ถือเป็นหลักเกณฑ์กลางของกรมขนส่งในการกำกับ ควบคุม และประเมินผลการปฏิบัติราชการของเจ้าหน้าที่ทุกนาย การปฏิบัติตามหลัก Safety – Order – Professionalism อย่างเคร่งครัด จะช่วยให้การดำเนินงานของกรมมีประสิทธิภาพ โปร่งใส ตรวจสอบได้ และสร้างความเชื่อมั่นแก่ประชาชนและหน่วยงานภาครัฐทุกภาคส่วน</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch5-motto', 'ch5', 'คำขวัญประจำบท', 7, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch5-motto', 'callout', '', null, 0, '{"html":"<div class=\\"callout-motto\\"><p class=\\"font-semibold text-amber-400 mb-1\\">คำขวัญประจำบท</p><p class=\\"italic\\">ปลอดภัยด้วยมาตรฐาน เป็นระเบียบด้วยวินัย เป็นมืออาชีพด้วยการปฏิบัติ</p></div>"}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch6', 'การใช้วิทยุและการประสานงาน', 'บทที่ 6', 6);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-0', 'ch6', 'หมวดที่ 6: วัตถุประสงค์และหลักการ', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-0', 'text', '<p>การติดต่อสื่อสารผ่านระบบวิทยุเป็นเครื่องมือหลักในการอำนวยการ การควบคุม การสั่งการ และการประสานงานของกรมขนส่ง (Department of Transportation : DOT) เพื่อให้การปฏิบัติราชการเป็นไปอย่างรวดเร็ว ถูกต้อง มีประสิทธิภาพ และสามารถตอบสนองต่อเหตุการณ์ต่าง ๆ ได้อย่างทันท่วงที</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-1', 'ch6', 'ข้อ 6.1 การบังคับใช้', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-1', 'text', '<p>ระเบียบการใช้วิทยุฉบับนี้ใช้บังคับกับเจ้าหน้าที่ทุกตำแหน่ง ได้แก่</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-1', 'text', '<ul class="manual-list"><li>หัวหน้ากรมขนส่ง</li><li>รองหัวหน้ากรมขนส่ง</li><li>ผู้คุมสอบ</li><li>พนักงาน</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch6-1', 'text', '<p>เจ้าหน้าที่ทุกนายต้องศึกษาวิธีการใช้วิทยุและปฏิบัติตามระเบียบนี้อย่างเคร่งครัด</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-2', 'ch6', 'หมวดที่ 2: หลักเกณฑ์การใช้วิทยุสื่อสาร', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-2', 'text', '<p>เจ้าหน้าที่ทุกนายต้องปฏิบัติดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-2', 'text', '<ul class="manual-list"><li>เปิดเครื่องวิทยุให้พร้อมใช้งานตลอดเวลาที่อยู่ระหว่างปฏิบัติหน้าที่</li><li>ตรวจสอบความพร้อมของวิทยุก่อนเริ่มปฏิบัติงาน</li><li>ใช้ช่องความถี่ที่กรมกำหนด (DOT)</li><li>ใช้ชื่อเรียกขาน (Call Sign) หรือรหัสประจำตัวทุกครั้งก่อนเริ่มส่งข้อความ</li><li>ใช้ถ้อยคำสุภาพ ชัดเจน และเข้าใจง่าย</li><li>ส่งข้อความให้กระชับ ได้ใจความ และตรงประเด็น</li><li>รับฟังจนคู่สนทนาส่งข้อความจบก่อนตอบกลับ</li><li>หลีกเลี่ยงการใช้คำพูดที่อาจทำให้เกิดความเข้าใจผิด</li><li>ตอบรับคำสั่งของผู้บังคับบัญชาโดยทันที</li><li>รายงานสถานะของตนเป็นระยะตามที่กำหนด</li></ul>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-3', 'ch6', 'หมวดที่ 3: ขั้นตอนการรายงานทางวิทยุ', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-3', 'text', '<p>เจ้าหน้าที่ต้องรายงานผ่านวิทยุในกรณีดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-3', 'text', '<p class="font-semibold text-amber-400">ก่อนเริ่มปฏิบัติหน้าที่</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch6-3', 'text', '<ul class="manual-list"><li>รายงานการเข้าเวร</li><li>แจ้งรถราชการที่ใช้</li><li>แจ้งพื้นที่รับผิดชอบ</li><li>แจ้งความพร้อมของอุปกรณ์</li></ul>', null, 2, '{}'::jsonb),
+  ('officer', 'ch6-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ระหว่างปฏิบัติหน้าที่</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch6-3', 'text', '<ul class="manual-list"><li>รับแจ้งเหตุ</li><li>เดินทางถึงจุดเกิดเหตุ</li><li>ขอสนับสนุนกำลัง</li><li>ขอรถลาก</li><li>ขออุปกรณ์เพิ่มเติม</li><li>แจ้งปิดเส้นทาง</li><li>แจ้งเปิดเส้นทาง</li><li>แจ้งเหตุผิดปกติ</li></ul>', null, 4, '{}'::jsonb),
+  ('officer', 'ch6-3', 'text', '<p class="font-semibold text-amber-400 mt-4">หลังเสร็จสิ้นภารกิจ</p>', null, 5, '{}'::jsonb),
+  ('officer', 'ch6-3', 'text', '<ul class="manual-list"><li>รายงานผลการปฏิบัติงาน</li><li>แจ้งการเคลียร์พื้นที่</li><li>แจ้งความพร้อมรับภารกิจใหม่</li><li>แจ้งออกเวร</li></ul>', null, 6, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-4', 'ch6', 'หมวดที่ 4: การประสานงานกับหน่วยงานภายใน', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-4', 'text', '<p>การประสานงานภายในกรมขนส่งต้องเป็นไปตามสายการบังคับบัญชา ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-4', 'callout', '', null, 1, '{"html":"<div class=\\"chain-of-command\\"><div>หัวหน้ากรมขนส่ง</div><div class=\\"chain-arrow\\">↓</div><div>รองหัวหน้ากรมขนส่ง</div><div class=\\"chain-arrow\\">↓</div><div>ผู้คุมสอบ</div><div class=\\"chain-arrow\\">↓</div><div>พนักงาน</div></div>"}'::jsonb),
+  ('officer', 'ch6-4', 'text', '<p>ห้ามข้ามสายการบังคับบัญชา เว้นแต่เป็นเหตุฉุกเฉินหรือได้รับอนุญาต</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch6-4', 'text', '<p>การประสานงานทุกครั้งต้องมีข้อมูลครบถ้วน ได้แก่</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch6-4', 'text', '<ul class="manual-list"><li>สถานที่</li><li>เวลา</li><li>ลักษณะเหตุการณ์</li><li>จำนวนเจ้าหน้าที่</li><li>อุปกรณ์ที่ต้องใช้</li><li>ความต้องการสนับสนุน</li></ul>', null, 4, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-5', 'ch6', 'หมวดที่ 5: การประสานงานกับหน่วยงานภายนอก', 5, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-5', 'text', '<p>กรมขนส่งสามารถประสานงานร่วมกับหน่วยงานอื่นได้ ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-5', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>หน่วยงาน</th><th>ประสานเมื่อ</th></tr></thead><tbody><tr><td><strong>สำนักงานตำรวจ (Police)</strong></td><td>ปิดถนน / อุบัติเหตุ / รถกีดขวางการจราจร / รถอายัด / การรักษาความปลอดภัยพื้นที่</td></tr><tr><td><strong>หน่วยดับเพลิง (Fire Department)</strong></td><td>อุบัติเหตุร้ายแรง / เพลิงไหม้ / น้ำมันรั่วไหล / วัตถุอันตราย / ภัยพิบัติ</td></tr><tr><td><strong>หน่วยแพทย์ฉุกเฉิน (EMS)</strong></td><td>มีผู้ได้รับบาดเจ็บ / ต้องเคลื่อนย้ายผู้ป่วย / เหตุอุบัติเหตุที่มีผู้บาดเจ็บ / ต้องจัดเส้นทางให้รถพยาบาล</td></tr></tbody></table></div>"}'::jsonb),
+  ('officer', 'ch6-5', 'text', '<p>การประสานงานต้องอยู่บนพื้นฐานของความร่วมมือ เคารพอำนาจหน้าที่ของแต่ละหน่วยและไม่ก้าวก่ายภารกิจที่อยู่นอกเหนืออำนาจของกรมขนส่ง</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-6', 'ch6', 'หมวดที่ 6: ข้อห้ามในการใช้วิทยุ', 6, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-6', 'text', '<p>เจ้าหน้าที่ห้ามกระทำการดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-6', 'text', '<ul class="manual-list"><li>ใช้วิทยุเพื่อสนทนาเรื่องส่วนตัว</li><li>ใช้คำหยาบคายหรือถ้อยคำไม่สุภาพ</li><li>ส่งข้อมูลอันเป็นเท็จ</li><li>เปิดเผยข้อมูลลับของทางราชการ</li><li>ขัดจังหวะการสื่อสารของเจ้าหน้าที่อื่น</li><li>ใช้วิทยุเพื่อกลั่นแกล้งหรือสร้างความวุ่นวาย</li><li>ใช้วิทยุโดยไม่ระบุ Call Sign</li><li>ส่งข้อความที่ไม่เกี่ยวข้องกับการปฏิบัติหน้าที่</li><li>เปิดเพลงหรือเสียงรบกวนผ่านวิทยุ</li><li>ใช้วิทยุเพื่อวิพากษ์วิจารณ์ผู้บังคับบัญชาหรือหน่วยงานอื่น</li></ul>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-7', 'ch6', 'หมวดที่ 7: การรักษาความลับทางวิทยุ', 7, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-7', 'text', '<p>ข้อมูลที่สื่อสารผ่านวิทยุถือเป็นข้อมูลราชการ เจ้าหน้าที่ต้องรักษาความลับอย่างเคร่งครัด</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-7', 'text', '<p>เปิดเผยข้อมูลต่อบุคคลภายนอก เช่น</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch6-7', 'text', '<ul class="manual-list"><li>แผนการปฏิบัติงาน</li><li>ข้อมูลเจ้าหน้าที่</li><li>ข้อมูลประชาชน</li><li>รหัสวิทยุภายใน</li><li>แผนการรักษาความปลอดภัย</li><li>ข้อมูลที่ผู้บังคับบัญชากำหนดให้เป็นความลับ</li></ul>', null, 2, '{}'::jsonb),
+  ('officer', 'ch6-7', 'text', '<p>ผู้ฝ่าฝืนอาจถูกดำเนินการทางวินัย และหากก่อให้เกิดความเสียหายแก่หน่วยงาน จะต้องรับผิดตามระเบียบของกรมและกฎของเซิร์ฟ</p>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-8', 'ch6', 'หมวดที่ 8: บทกำหนดโทษ', 8, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-8', 'text', '<p>เจ้าหน้าที่ผู้ฝ่าฝืนระเบียบการใช้วิทยุและการประสานงาน จะได้รับการพิจารณาลงโทษตามระดับความร้ายแรง ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch6-8', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>ระดับ</th><th>โทษ</th></tr></thead><tbody><tr><td>1</td><td>ตักเตือนด้วยวาจา</td></tr><tr><td>2</td><td>ตักเตือนเป็นลายลักษณ์อักษร / บันทึกประวัติ</td></tr><tr><td>3</td><td>ภาคทัณฑ์ / พักสิทธิ์การใช้วิทยุ / พักการปฏิบัติหน้าที่</td></tr><tr><td>4</td><td>ลดตำแหน่ง / พักงาน / เพิกถอนสิทธิ์การปฏิบัติหน้าที่ในบางภารกิจ</td></tr><tr><td>5</td><td>ปลดออกจากกรมขนส่ง / เสนอฝ่ายบริหารเซิร์ฟ BIT CITY ROLEPLAY พิจารณาดำเนินการตามกฎของเซิร์ฟ</td></tr></tbody></table></div>"}'::jsonb),
+  ('officer', 'ch6-8', 'text', '<p>การลงโทษต้องเป็นไปตามกระบวนการสอบสวนทางวินัย โดยยึดหลักความเป็นธรรม โปร่งใส และสามารถตรวจสอบได้</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-final', 'ch6', 'บทบัญญัติท้ายบท', 9, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-final', 'text', '<p>การใช้วิทยุสื่อสารและการประสานงานที่มีประสิทธิภาพ ถือเป็นหัวใจสำคัญของการปฏิบัติราชการของกรมขนส่ง เจ้าหน้าที่ทุกนายต้องปฏิบัติตามระเบียบฉบับนี้อย่างเคร่งครัด เพื่อให้การสั่งการ การประสานงาน และการให้บริการประชาชนเป็นไปด้วยความรวดเร็ว ถูกต้อง ปลอดภัย และเป็นมาตรฐานเดียวกัน อันจะนำมาซึ่งความเชื่อมั่นและภาพลักษณ์ที่ดีของ Department of Transportation (DOT) – BIT CITY</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch6-motto', 'ch6', 'คติประจำบท', 10, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch6-motto', 'callout', '', null, 0, '{"html":"<div class=\\"callout-motto\\"><p class=\\"font-semibold text-amber-400 mb-1\\">คติประจำบท</p><p class=\\"italic\\">สื่อสารชัดเจน ประสานงานเป็นระบบ ปฏิบัติการอย่างมีมาตรฐาน</p></div>"}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch7', 'การฝึกอบรมและการประเมินผล (ใช้สำหรับนักเรียนฝึกหัด)', 'บทที่ 7', 7);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-0', 'ch7', 'หมวดที่ 1: วัตถุประสงค์', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-0', 'text', '<p>กรมขนส่ง (Department of Transportation : DOT) กำหนดให้การฝึกอบรมและการประเมินผลเป็นกระบวนการสำคัญ ในการพัฒนาศักยภาพของเจ้าหน้าที่ทุกระดับ เพื่อให้มีความรู้ ความสามารถ ทักษะ และความพร้อมในการปฏิบัติหน้าที่ตามมาตรฐานของกรม</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-0', 'text', '<p>การฝึกอบรมมีวัตถุประสงค์เพื่อสร้างความเข้าใจในกฎ ระเบียบ มาตรฐานการปฏิบัติงาน (SOP) การใช้รถราชการ การใช้อุปกรณ์ การประสานงาน และการให้บริการประชาชนอย่างถูกต้อง ปลอดภัย และเป็นมืออาชีพ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-0', 'text', '<p>นักเรียนฝึกหัดต้องเข้ารับการฝึกอบรมตามหลักสูตรที่กรมกำหนด และผ่านการประเมินผลก่อนบรรจุจริง</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-1', 'ch7', 'ข้อ 7.1 การบังคับใช้', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-1', 'text', '<p>ระเบียบฉบับนี้ใช้บังคับกับเจ้าหน้าที่ทุกตำแหน่ง ได้แก่</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-1', 'text', '<ul class="manual-list"><li>หัวหน้ากรมขนส่ง</li><li>รองหัวหน้ากรมขนส่ง</li><li>ผู้คุมสอบ</li><li>พนักงาน</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-1', 'text', '<p>รวมถึงผู้สมัครเข้ารับราชการ ผู้ฝึกงาน และเจ้าหน้าที่ที่ได้รับคำสั่งให้เข้ารับการอบรมเพิ่มเติม</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-2', 'ch7', 'หลักสูตรการฝึกอบรม', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-2', 'text', '<p>เนื้อหาประกอบด้วย</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<ul class="manual-list"><li>ประวัติและภารกิจของกรม</li><li>โครงสร้างองค์กร</li><li>สายการบังคับบัญชา</li><li>กฎ ระเบียบ และวินัย</li><li>จรรยาบรรณเจ้าหน้าที่</li><li>เครื่องแบบและการแต่งกาย</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p class="font-semibold text-amber-400 mt-4">หลักสูตรมาตรฐานการปฏิบัติงาน (SOP)</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p>ประกอบด้วย</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<ul class="manual-list"><li>การรับแจ้งเหตุ</li><li>การจัดการจราจร</li><li>การช่วยเหลือรถเสีย</li><li>การลากรถ</li><li>การปิดเส้นทาง</li><li>การใช้รถราชการ</li><li>การประสานงานกับ Police Fire และ EMS</li></ul>', null, 4, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p class="font-semibold text-amber-400 mt-4">หลักสูตรการใช้วิทยุสื่อสาร</p>', null, 5, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p>ประกอบด้วย</p>', null, 6, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<ul class="manual-list"><li>การใช้ Call Sign</li><li>ขั้นตอนการรายงาน</li><li>การใช้รหัสวิทยุ</li><li>การประสานงาน</li><li>มารยาทในการใช้วิทยุ</li></ul>', null, 7, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p class="font-semibold text-amber-400 mt-4">หลักสูตรการใช้รถและอุปกรณ์</p>', null, 8, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p>ประกอบด้วย</p>', null, 9, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<ul class="manual-list"><li>การตรวจสภาพรถ</li><li>การใช้รถราชการแต่ละประเภท</li><li>การใช้รถลาก</li><li>การใช้อุปกรณ์กู้ภัย</li><li>การดูแลรักษารถราชการ</li></ul>', null, 10, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p class="font-semibold text-amber-400 mt-4">หลักสูตรความปลอดภัย</p>', null, 11, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<p>ประกอบด้วย</p>', null, 12, '{}'::jsonb),
+  ('officer', 'ch7-2', 'text', '<ul class="manual-list"><li>ความปลอดภัยในการทำงาน</li><li>PPE</li><li>การจัดพื้นที่เกิดเหตุ</li><li>การควบคุมการจราจร</li><li>การป้องกันอุบัติเหตุซ้ำซ้อน</li></ul>', null, 13, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-3', 'ch7', 'หมวดที่ 3: รูปแบบการฝึกอบรม', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-3', 'text', '<p>การฝึกอบรมแบ่งออกเป็น</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p class="font-semibold text-amber-400 mt-2">1. ภาคทฤษฎี</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>เป็นการทดสอบความรู้พื้นฐานเกี่ยวกับระเบียบ ข้อบังคับ และแนวทางการปฏิบัติหน้าที่ของ DOT</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>ผู้เข้าสอบจะต้องศึกษาคู่มือและเนื้อหาที่กำหนด เพื่อใช้ในการตอบคำถาม</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>เนื้อหาที่ใช้ในการสอบ เช่น</p>', null, 4, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<ul class="manual-list"><li>ระเบียบและข้อบังคับของ DOT</li><li>หน้าที่และขอบเขตอำนาจของเจ้าหน้าที่</li><li>มาตรฐานการปฏิบัติงาน (SOP)</li><li>การใช้วิทยุสื่อสาร</li><li>ขั้นตอนการปฏิบัติงานในสถานการณ์ต่าง ๆ</li></ul>', null, 5, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p class="font-semibold text-amber-400 mt-4">2. ภาคสัมภาษณ์</p>', null, 6, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>เป็นการประเมินผู้สมัครด้านทัศนคติ บุคลิกภาพ ความรับผิดชอบ และความเหมาะสมในการเข้าร่วมหน่วยงาน</p>', null, 7, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>ผู้เข้าสอบจะต้องตอบคำถามจากคณะกรรมการสอบ โดยพิจารณาจาก</p>', null, 8, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<ul class="manual-list"><li>เหตุผลในการสมัครเข้าร่วม DOT</li><li>ความเข้าใจเกี่ยวกับหน้าที่ของเจ้าหน้าที่</li><li>แนวคิดในการทำงานร่วมกับผู้อื่น</li><li>การแก้ไขปัญหาเฉพาะหน้า</li><li>ความรับผิดชอบและระเบียบวินัย</li></ul>', null, 9, '{}'::jsonb),
+  ('officer', 'ch7-3', 'callout', '', null, 10, '{"html":"<div class=\\"callout-warning\\"><p class=\\"font-semibold text-amber-400\\">หมายเหตุ</p><p>คำถามขึ้นอยู่กับผู้คุมสอบ</p></div>"}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p class="font-semibold text-amber-400 mt-4">3. ภาคปฏิบัติ</p>', null, 11, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>เป็นการทดสอบความสามารถในการนำความรู้ไปใช้จริง ผ่านสถานการณ์จำลองในการปฏิบัติหน้าที่</p>', null, 12, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>ผู้เข้าสอบอาจได้รับการทดสอบ เช่น</p>', null, 13, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<ul class="manual-list"><li>การปฏิบัติงานตามคำสั่ง</li><li>การสื่อสารผ่านวิทยุ</li><li>การจัดการเหตุการณ์บนท้องถนน</li><li>การใช้ยานพาหนะของหน่วยงาน</li><li>การปฏิบัติตามขั้นตอน SOP</li></ul>', null, 14, '{}'::jsonb),
+  ('officer', 'ch7-3', 'callout', '', null, 15, '{"html":"<div class=\\"callout-warning\\"><p class=\\"font-semibold text-amber-400\\">หมายเหตุ</p><p>การสอบขึ้นอยู่กับผู้คุมสอบ</p></div>"}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p class="font-semibold text-amber-400 mt-4">4. การฝึกภาคสนาม</p>', null, 16, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>เป็นขั้นตอนการฝึกปฏิบัติงานจริงหลังผ่านการสอบเบื้องต้น โดยมีเจ้าหน้าที่ฝึกสอนคอยดูแลและประเมินผล</p>', null, 17, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<p>ผู้ฝึกจะต้องเรียนรู้เกี่ยวกับ</p>', null, 18, '{}'::jsonb),
+  ('officer', 'ch7-3', 'text', '<ul class="manual-list"><li>การปฏิบัติงานร่วมกับเจ้าหน้าที่ DOT</li><li>การทำงานเป็นทีม</li><li>การประสานงานกับหน่วยงานอื่น</li><li>การแก้ไขสถานการณ์จริง</li><li>การปฏิบัติตามมาตรฐานขององค์กร</li></ul>', null, 19, '{}'::jsonb),
+  ('officer', 'ch7-3', 'callout', '', null, 20, '{"html":"<div class=\\"callout-warning\\"><p class=\\"font-semibold text-amber-400\\">หมายเหตุ</p><p>สำหรับผู้เข้าสอบ ผู้เข้าสอบทุกคนจะต้องปฏิบัติตามกฎ ระเบียบ และคำแนะนำของคณะกรรมการสอบอย่างเคร่งครัด การสอบทุกขั้นตอนมีวัตถุประสงค์เพื่อคัดเลือกบุคคลที่มีความพร้อม มีวินัย และสามารถปฏิบัติหน้าที่เป็นเจ้าหน้าที่ DOT ได้อย่างมีมาตรฐาน</p></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-4', 'ch7', 'หมวดที่ 4: ผู้คุมสอบและผู้ฝึกอบรม', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-4', 'text', '<p>การฝึกอบรมอยู่ภายใต้ความรับผิดชอบของ ผู้คุมสอบ ซึ่งได้รับการแต่งตั้งจากหัวหน้ากรม</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p class="font-semibold text-amber-400">ผู้คุมสอบมีหน้าที่</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p class="font-semibold text-amber-400 mt-2">ภาคสัมภาษณ์</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<ul class="manual-list"><li>จัดทำชุดคำถามสัมภาษณ์ ไม่น้อยกว่า 10 คำถาม</li><li>กำหนดเกณฑ์และมาตรฐานการให้คะแนน</li><li>ประเมินบุคลิกภาพ ทัศนคติ การสื่อสาร และความเหมาะสมในการเข้ารับหน้าที่</li><li>ประเมินความเข้าใจเกี่ยวกับบทบาทและหน้าที่ของ DOT</li><li>ตรวจสอบความพร้อมในการทำงานร่วมกับผู้อื่นและการปฏิบัติตามระเบียบองค์กร</li></ul>', null, 3, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p class="font-semibold text-amber-400 mt-4">ภาคปฏิบัติ</p>', null, 4, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p>ผู้คุมสอบมีหน้าที่ออกแบบและควบคุมการทดสอบภาคปฏิบัติ เพื่อประเมินความสามารถในการนำความรู้ไปใช้งานจริง โดยมีหน้าที่ดังนี้</p>', null, 5, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<ul class="manual-list"><li>ออกแบบสถานการณ์จำลองสำหรับการทดสอบ</li><li>กำหนดเกณฑ์การประเมินในแต่ละสถานการณ์</li><li>ประเมินการปฏิบัติตามขั้นตอนการทำงาน (SOP)</li><li>ประเมินความปลอดภัยในการปฏิบัติหน้าที่</li><li>ประเมินการแก้ไขปัญหาเฉพาะหน้าและการตัดสินใจของผู้เข้าสอบ</li></ul>', null, 6, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p class="font-semibold text-amber-400 mt-4">ภาคทฤษฎี</p>', null, 7, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p>ภาคข้อเขียนอยู่ภายใต้การจัดทำและควบคุมโดย หัวหน้ากรมขนส่ง (DOT)</p>', null, 8, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p>หน้าที่ของผู้คุมสอบในส่วนนี้ ได้แก่</p>', null, 9, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<ul class="manual-list"><li>ควบคุมและดูแลความเรียบร้อยระหว่างการสอบ</li><li>ตรวจสอบให้ผู้เข้าสอบปฏิบัติตามกฎการสอบ</li><li>ตรวจสอบการเข้าสอบของผู้สมัคร</li><li>เฝ้าดูหน้าจอและพฤติกรรมของผู้เข้าสอบระหว่างทำข้อสอบ</li><li>รายงานปัญหาหรือความผิดปกติที่เกิดขึ้นระหว่างการสอบ</li></ul>', null, 10, '{}'::jsonb),
+  ('officer', 'ch7-4', 'callout', '', null, 11, '{"html":"<div class=\\"callout-warning\\"><p class=\\"font-semibold text-amber-400\\">หมายเหตุ</p><p>ผู้คุมสอบไม่มีหน้าที่จัดทำหรือแก้ไขข้อสอบภาคเขียน โดยข้อสอบทั้งหมดจะถูกจัดทำโดยหัวหน้ากรมขนส่งเท่านั้น</p></div>"}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p class="font-semibold text-amber-400 mt-4">การฝึกภาคสนาม</p>', null, 12, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<p>ผู้คุมสอบหรือผู้ฝึกอบรมที่ได้รับมอบหมาย มีหน้าที่ดูแลการฝึกปฏิบัติงานจริงของผู้ผ่านการสอบ โดยมีหน้าที่ดังนี้</p>', null, 13, '{}'::jsonb),
+  ('officer', 'ch7-4', 'text', '<ul class="manual-list"><li>แนะนำขั้นตอนการปฏิบัติงานจริง</li><li>ถ่ายทอดระเบียบและมาตรฐานของ DOT</li><li>ควบคุมการปฏิบัติงานของผู้ฝึก</li><li>ประเมินความพร้อมก่อนเข้าปฏิบัติหน้าที่จริง</li><li>ให้คำแนะนำและข้อเสนอแนะเพื่อพัฒนาผู้ฝึก</li></ul>', null, 14, '{}'::jsonb),
+  ('officer', 'ch7-4', 'callout', '', null, 15, '{"html":"<div class=\\"callout-warning\\"><p class=\\"font-semibold text-amber-400\\">หมายเหตุ</p><p>ผู้คุมสอบต้องปฏิบัติหน้าที่ด้วยความเป็นกลาง โปร่งใส และยึดตามมาตรฐานของกรมขนส่ง เพื่อให้การคัดเลือกบุคลากรเป็นไปอย่างมีประสิทธิภาพ</p></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-5', 'ch7', 'หมวดที่ 5: การประเมินผล', 5, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-5', 'text', '<p>ผู้เข้าอบรมทุกนายต้องผ่านการประเมิน ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-5', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>ด้าน</th><th>หัวข้อประเมิน</th></tr></thead><tbody><tr><td>ความรู้</td><td>ระเบียบกรม / SOP / กฎของเซิร์ฟ / หน้าที่ DOT</td></tr><tr><td>ทักษะ</td><td>ใช้วิทยุ / ขับรถ / ลากรถ / ตั้งกรวย / ปิดถนน / ใช้อุปกรณ์</td></tr><tr><td>บุคลิกภาพ</td><td>วินัย / ความรับผิดชอบ / การแต่งกาย / การใช้วาจา / การทำงานเป็นทีม / การแก้ไขปัญหา</td></tr><tr><td>ความพร้อม</td><td>การตัดสินใจ / ความปลอดภัย / ความถูกต้อง / ความรวดเร็ว / การปฏิบัติตาม SOP</td></tr></tbody></table></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-6', 'ch7', 'หมวดที่ 6: เกณฑ์การผ่านการประเมิน', 6, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-6', 'text', '<p>คะแนนเต็ม 100 คะแนน แบ่งเป็น</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-6', 'text', '<ul class="manual-list"><li>ภาคทฤษฎี 65 คะแนน</li><li>ภาคสัมภาษณ์ 15 คะแนน</li><li>ภาคปฏิบัติ 20 คะแนน</li><li>การฝึกภาคสนาม ไม่มีคะแนน หากทำผิดระเบียบของกรมขนส่งอาจจะถูกปลด</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-6', 'text', '<p>ผู้เข้ารับการฝึกอบรมต้องได้คะแนนรวม ไม่น้อยกว่า 60 คะแนน และต้องไม่กระทำผิดวินัยระหว่างการฝึกอบรม</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch7-6', 'text', '<p>กรณีไม่ผ่านการประเมิน ผู้คุมสอบอาจกำหนดให้เข้ารับการฝึกอบรมเพิ่มเติม หรือสอบใหม่ตามความเหมาะสม</p>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-7', 'ch7', 'หมวดที่ 7: การประเมินผลการปฏิบัติงานประจำปี', 7, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-7', 'text', '<p>เจ้าหน้าที่ทุกนายต้องได้รับการประเมินผลการปฏิบัติงานเป็นระยะ เพื่อใช้ประกอบการพิจารณา</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-7', 'text', '<ul class="manual-list"><li>การเลื่อนตำแหน่ง</li><li>การมอบหมายหน้าที่</li><li>การแต่งตั้งผู้คุมสอบ</li><li>การเข้ารับหลักสูตรเฉพาะทาง</li><li>การมอบรางวัลหรือประกาศเกียรติคุณ</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-7', 'text', '<p>หัวข้อการประเมินประกอบด้วย</p>', null, 2, '{}'::jsonb),
+  ('officer', 'ch7-7', 'text', '<ul class="manual-list"><li>ความรับผิดชอบ</li><li>การตรงต่อเวลา</li><li>การปฏิบัติตาม SOP</li><li>การใช้รถราชการ</li><li>การใช้วิทยุ</li><li>การให้บริการประชาชน</li><li>ความประพฤติ</li><li>การทำงานร่วมกับหน่วยงานอื่น</li></ul>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-8', 'ch7', 'หมวดที่ 8: การฝึกอบรมเพิ่มเติม', 8, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-8', 'text', '<p>กรมขนส่งอาจจัดการฝึกอบรมเพิ่มเติมเพื่อพัฒนาศักยภาพของเจ้าหน้าที่ เช่น</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-8', 'text', '<ul class="manual-list"><li>การจัดการเหตุภัยพิบัติ</li><li>การกู้รถขั้นสูง</li><li>การใช้เครื่องจักรกลหนัก</li><li>การควบคุมการจราจรขนาดใหญ่</li><li>การบริหารเหตุการณ์ (Incident Management)</li><li>การฝึกซ้อมร่วมกับ Police Fire และ EMS</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch7-8', 'text', '<p>เจ้าหน้าที่ที่ได้รับคำสั่งให้เข้าร่วมการฝึกอบรม ต้องเข้าร่วมตามวัน เวลา และสถานที่ที่กำหนด เว้นแต่ได้รับอนุญาตจากผู้บังคับบัญชา</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-9', 'ch7', 'หมวดที่ 9: บทกำหนดโทษ', 9, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-9', 'text', '<p>เจ้าหน้าที่ที่ไม่เข้ารับการฝึกอบรม หรือหลีกเลี่ยงการประเมินผลโดยไม่มีเหตุอันสมควร อาจได้รับการพิจารณาทางวินัย ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch7-9', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>ระดับ</th><th>โทษ</th></tr></thead><tbody><tr><td>1</td><td>ตักเตือนด้วยวาจา</td></tr><tr><td>2</td><td>ตักเตือนเป็นลายลักษณ์อักษร / บันทึกประวัติ</td></tr><tr><td>3</td><td>พักสิทธิ์การปฏิบัติหน้าที่ / พักสิทธิ์การใช้รถราชการ</td></tr><tr><td>4</td><td>ระงับการเลื่อนตำแหน่ง / ลดตำแหน่ง</td></tr><tr><td>5</td><td>ปลดออกจากกรมขนส่ง กรณีจงใจหลีกเลี่ยงการฝึกอบรม กระทำการทุจริตในการสอบ หรือฝ่าฝืนระเบียบอย่างร้ายแรง</td></tr></tbody></table></div>"}'::jsonb),
+  ('officer', 'ch7-9', 'text', '<p>เจ้าหน้าที่ที่ได้รับคำสั่งให้เข้าร่วมการฝึกอบรม ต้องเข้าร่วมตามวัน เวลา และสถานที่ที่กำหนด เว้นแต่ได้รับอนุญาตจากผู้บังคับบัญชา</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-final', 'ch7', 'บทบัญญัติท้ายบท', 10, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-final', 'text', '<p>การฝึกอบรมและการประเมินผลเป็นกลไกสำคัญในการรักษามาตรฐานของกรมขนส่ง เจ้าหน้าที่ทุกนายต้องให้ความสำคัญกับการพัฒนาความรู้ ทักษะ และคุณธรรมอย่างต่อเนื่อง เพื่อให้สามารถปฏิบัติหน้าที่ได้อย่างมีประสิทธิภาพ ปลอดภัย และเป็นไปตามมาตรฐานของ Department of Transportation (DOT) – BIT CITY ROLEPLAY</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch7-motto', 'ch7', 'คติประจำบท', 11, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch7-motto', 'callout', '', null, 0, '{"html":"<div class=\\"callout-motto\\"><p class=\\"font-semibold text-amber-400 mb-1\\">คติประจำบท</p><p class=\\"italic\\">ฝึกฝนอย่างมีมาตรฐาน ประเมินผลอย่างยุติธรรม พัฒนาบุคลากรสู่ความเป็นมืออาชีพ</p></div>"}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch8', 'ระบบคะแนนสะสม (Performance Point System : PPS)', 'บทที่ 8', 8);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-1', 'ch8', 'หมวดที่ 1: หลักการทั่วไป', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-1', 'text', '<p class="font-semibold text-amber-400">วัตถุประสงค์</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch8-1', 'text', '<p>กรมขนส่ง (Department of Transportation : DOT) กำหนดระบบคะแนนสะสม (Performance Point System : PPS) เพื่อใช้เป็นเกณฑ์ในการประเมินผลการปฏิบัติงานของเจ้าหน้าที่ทุกนาย โดยมีวัตถุประสงค์เพื่อส่งเสริมความรับผิดชอบ ความมีวินัย การปฏิบัติงานอย่างต่อเนื่อง และสร้างแรงจูงใจในการพัฒนาศักยภาพของบุคลากร</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch8-1', 'text', '<p>คะแนนสะสมถือเป็นข้อมูลราชการ ใช้ประกอบการพิจารณาเลื่อนตำแหน่ง มอบหมายหน้าที่ เข้ารับการฝึกอบรมเฉพาะทาง และการมอบรางวัลแก่เจ้าหน้าที่ที่มีผลการปฏิบัติงานดีเด่น</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-2', 'ch8', 'หมวดที่ 2: การได้รับคะแนนสะสม', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-2', 'callout', '', null, 0, '{"html":"<div class=\\"overflow-x-auto\\"><p>เจ้าหน้าที่จะได้รับคะแนนจากการปฏิบัติหน้าที่ ดังนี้</p><table class=\\"manual-table\\"><thead><tr><th>รายการ</th><th>คะแนน</th></tr></thead><tbody><tr><td>ลงเวลาปฏิบัติหน้าที่ครบ 1 สัปดาห์</td><td>+5</td></tr><tr><td>ปฏิบัติหน้าที่ครบ 1 ชั่วโมง (เซิฟเปิด-เซิฟปิด)</td><td>+5</td></tr><tr><td>รับแจ้งเหตุและดำเนินการสำเร็จ</td><td>+10</td></tr><tr><td>ช่วยเหลือรถเสีย</td><td>+10</td></tr><tr><td>ลากรถสำเร็จ</td><td>+10</td></tr><tr><td>จัดการจราจรในอุบัติเหตุ</td><td>+10</td></tr><tr><td>ปฏิบัติงานร่วมกับ Police / Fire / EMS</td><td>+15</td></tr><tr><td>ได้รับคำชมจากประชาชนหรือผู้บังคับบัญชา</td><td>+15</td></tr><tr><td>เข้าร่วมการฝึกอบรม / ผ่านการทดสอบประจำเดือน</td><td>+20</td></tr><tr><td>ปฏิบัติหน้าที่ในกิจกรรมพิเศษของเมือง</td><td>+30</td></tr></tbody></table><p class=\\"text-xs text-gray-500 mt-2\\">หมายเหตุ: ต้องมีหลักฐานยืนยันหลังออกเวร</p></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-3', 'ch8', 'หมวดที่ 3: การหักคะแนน', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-3', 'callout', '', null, 0, '{"html":"<div class=\\"overflow-x-auto\\"><p>เจ้าหน้าที่ที่ฝ่าฝืนระเบียบจะถูกหักคะแนน ดังนี้</p><table class=\\"manual-table\\"><thead><tr><th>ความผิด</th><th>คะแนน</th></tr></thead><tbody><tr><td>ไม่เข้าเวรเกิน 1 สัปดาห์</td><td>-5</td></tr><tr><td>ไม่แต่งเครื่องแบบถูกต้อง</td><td>-5</td></tr><tr><td>ไม่รายงานตัวทางวิทยุ</td><td>-10</td></tr><tr><td>ใช้วิทยุไม่ถูกระเบียบ</td><td>-10</td></tr><tr><td>ละทิ้งหน้าที่</td><td>-15</td></tr><tr><td>ใช้รถราชการผิดวัตถุประสงค์</td><td>-20</td></tr><tr><td>ทำรถราชการเสียหายจากความประมาท</td><td>-20</td></tr><tr><td>ฝ่าฝืน SOP</td><td>-20</td></tr><tr><td>ไม่เชื่อฟังคำสั่งผู้บังคับบัญชา</td><td>-25</td></tr><tr><td>ประพฤติตนไม่เหมาะสม</td><td>-30</td></tr><tr><td>ใช้อำนาจโดยมิชอบ</td><td>-50</td></tr><tr><td>ทุจริตหรือแอบอ้างหน้าที่</td><td>-100</td></tr></tbody></table></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-4', 'ch8', 'หมวดที่ 4: ระดับคะแนนสะสม', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-4', 'callout', '', null, 0, '{"html":"<div class=\\"overflow-x-auto\\"><p>กรมกำหนดระดับคะแนนเพื่อใช้ประเมินผล ดังนี้</p><table class=\\"manual-table\\"><thead><tr><th>คะแนนสะสม</th><th>ระดับ</th></tr></thead><tbody><tr><td>0-99</td><td>ต้องปรับปรุง</td></tr><tr><td>100-249</td><td>ผ่านเกณฑ์</td></tr><tr><td>250-499</td><td>ดี</td></tr><tr><td>500-799</td><td>ดีมาก</td></tr><tr><td>800-999</td><td>ดีเด่น</td></tr><tr><td>1,000 ขึ้นไป</td><td>เจ้าหน้าที่ดีเด่น</td></tr></tbody></table></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-5', 'ch8', 'หมวดที่ 5: การใช้คะแนนสะสม', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-5', 'text', '<p>คะแนนสะสมใช้ประกอบการพิจารณา ดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch8-5', 'text', '<ul class="manual-list"><li>การเลื่อนตำแหน่ง</li><li>การแต่งตั้งเป็นผู้คุมสอบ</li><li>การมอบหมายภารกิจพิเศษ</li><li>การเข้ารับหลักสูตรเฉพาะทาง</li><li>การมอบรางวัลประจำเดือน</li><li>การคัดเลือกเจ้าหน้าที่ดีเด่น</li><li>การพิจารณาเครื่องหมายเชิดชูเกียรติ</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch8-5', 'text', '<p>ทั้งนี้ การมีคะแนนสะสมสูง มิได้เป็นสิทธิอัตโนมัติ ในการเลื่อนตำแหน่ง ผู้บังคับบัญชาจะพิจารณาร่วมกับวินัย ความประพฤติ ผลการประเมิน และความเหมาะสมของเจ้าหน้าที่แต่ละราย</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-6', 'ch8', 'หมวดที่ 6: การตรวจสอบคะแนน', 5, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-6', 'text', '<p>เจ้าหน้าที่สามารถขอตรวจสอบคะแนนสะสมของตนเองผ่านผู้คุมสอบหรือรองหัวหน้ากรมได้ หากพบข้อผิดพลาด ต้องยื่นคำร้องภายใน 7 วัน นับจากวันที่มีการบันทึกคะแนน พร้อมหลักฐานประกอบการพิจารณา</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-7', 'ch8', 'หมวดที่ 7: การรีเซ็ตคะแนน', 6, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-7', 'text', '<p>กรมขนส่งจะทำการสรุปและปิดรอบคะแนนสะสมทุก 1 เดือน (หรือระยะเวลาที่หัวหน้ากรมกำหนด)</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch8-7', 'text', '<p>เมื่อสิ้นรอบการประเมิน คะแนนจะถูกบันทึกไว้ในประวัติการปฏิบัติงาน และเริ่มนับคะแนนสะสมรอบใหม่</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch8-7', 'text', '<p>ทั้งนี้ ประวัติการปฏิบัติงานยังคงใช้ประกอบการพิจารณาเลื่อนตำแหน่งและการแต่งตั้งในอนาคต</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch8-8', 'ch8', 'หมวดที่ 8: รางวัลและการยกย่อง', 7, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch8-8', 'text', '<p>เพื่อส่งเสริมขวัญกำลังใจ กรมขนส่งกำหนดรางวัลสำหรับเจ้าหน้าที่ที่มีผลการปฏิบัติงานดีเด่น ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch8-8', 'text', '<ul class="manual-list"><li>เจ้าหน้าที่ดีเด่นประจำเดือน (Officer of the Month)</li><li>ใบประกาศเกียรติคุณ</li><li>เครื่องหมายเชิดชูเกียรติ (Ribbon/Badge)</li><li>สิทธิ์เข้ารับการอบรมหรือภารกิจพิเศษ</li><li>การเสนอชื่อเพื่อเลื่อนตำแหน่ง</li></ul>', null, 1, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'ch9', 'อัตราค่าบริการและขั้นตอนการให้บริการ', 'บทที่ 9', 9);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch9-1', 'ch9', 'หมวดที่ 1: หลักการให้บริการ', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch9-1', 'text', '<p>กรมขนส่ง (Department of Transportation : DOT) ให้บริการช่วยเหลือประชาชนด้านยานพาหนะ ระบบสาธารณูปโภค และการจัดการจราจร โดยการให้บริการทุกประเภทต้องเป็นไปด้วยความสุภาพ โปร่งใส เป็นธรรม และเป็นไปตามอัตราค่าบริการที่กรมกำหนด</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch9-1', 'text', '<p>เจ้าหน้าที่ทุกนายมีหน้าที่ชี้แจงค่าบริการให้ผู้ใช้บริการทราบก่อนเริ่มดำเนินการ เว้นแต่เป็นเหตุฉุกเฉินที่ไม่สามารถแจ้งล่วงหน้าได้</p>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch9-2', 'ch9', 'หมวดที่ 2: อัตราค่าบริการ', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch9-2', 'callout', '', null, 0, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>รายการ</th><th>ค่าบริการ</th></tr></thead><tbody><tr><td>ลากรถ</td><td>150</td></tr><tr><td>ยกรถ</td><td>150</td></tr><tr><td>กู้รถตกน้ำ</td><td>250</td></tr><tr><td>เปลี่ยนยาง</td><td>50</td></tr><tr><td>เปลี่ยนแบตเตอรี่</td><td>100</td></tr><tr><td>เติมน้ำมันฉุกเฉิน</td><td>100</td></tr></tbody></table><p class=\\"text-xs text-gray-500 mt-2\\">อัตราค่าบริการดังกล่าวให้เป็นไปตามที่กรมขนส่งกำหนด</p></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch9-3', 'ch9', 'หมวดที่ 3: ขั้นตอนการให้บริการของเจ้าหน้าที่', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch9-3', 'text', '<p>เมื่อได้รับแจ้งเหตุ เจ้าหน้าที่ต้องดำเนินการตามขั้นตอนดังต่อไปนี้</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 1 รับแจ้งเหตุ</p>', null, 1, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<ul class="manual-list"><li>รับข้อมูลจากศูนย์วิทยุหรือประชาชน</li><li>ระบุสถานที่เกิดเหตุ</li><li>สอบถามประเภทของเหตุ</li><li>แจ้งผู้บังคับบัญชาหากเป็นเหตุร้ายแรง</li></ul>', null, 2, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ขั้นตอนที่ 2 เดินทางไปยังจุดเกิดเหตุ</p>', null, 3, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<ul class="manual-list"><li>ใช้รถราชการที่เหมาะสม</li><li>เปิดไฟฉุกเฉินเมื่อจำเป็น</li><li>ปฏิบัติตามกฎหมายจราจรของเซิร์ฟ</li><li>รายงานทางวิทยุเมื่อถึงที่เกิดเหตุ</li></ul>', null, 4, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ขั้นตอนที่ 3 ประเมินสถานการณ์</p>', null, 5, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p>เจ้าหน้าที่ต้องตรวจสอบ</p>', null, 6, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<ul class="manual-list"><li>ประเภทของรถ</li><li>สภาพรถ</li><li>ความเสียหาย</li><li>ความปลอดภัยของพื้นที่</li><li>ความจำเป็นในการขอสนับสนุน Police Fire หรือ EMS</li></ul>', null, 7, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ขั้นตอนที่ 4 แจ้งค่าบริการ</p>', null, 8, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p>ก่อนเริ่มดำเนินการ เจ้าหน้าที่ต้องแจ้ง</p>', null, 9, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<ul class="manual-list"><li>รายการบริการ</li><li>อัตราค่าบริการ</li><li>ขั้นตอนการดำเนินงาน</li></ul>', null, 10, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p>ให้ผู้ใช้บริการรับทราบและยินยอมก่อนทุกครั้ง</p>', null, 11, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ขั้นตอนที่ 5 ดำเนินการช่วยเหลือ</p>', null, 12, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p>เจ้าหน้าที่ดำเนินการตามประเภทของบริการ เช่น</p>', null, 13, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<ul class="manual-list"><li>ลากรถ</li><li>ยกรถ</li><li>กู้รถตกน้ำ</li><li>เปลี่ยนยาง</li><li>เปลี่ยนแบตเตอรี่</li><li>เติมน้ำมันฉุกเฉิน</li></ul>', null, 14, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p>โดยต้องปฏิบัติตาม SOP และมาตรการความปลอดภัยของกรม</p>', null, 15, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ขั้นตอนที่ 6 รับชำระค่าบริการ</p>', null, 16, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p>เมื่อดำเนินการเสร็จสิ้น</p>', null, 17, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<ul class="manual-list"><li>แจ้งยอดค่าบริการให้ทราบ</li><li>ขอบคุณผู้ใช้บริการ</li><li>ห้ามเรียกเก็บเงินเกินกว่าที่กรมกำหนด</li></ul>', null, 18, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p class="font-semibold text-amber-400 mt-4">ขั้นตอนที่ 7 รายงานผล</p>', null, 19, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<p>เมื่อเสร็จสิ้นภารกิจ เจ้าหน้าที่ต้อง</p>', null, 20, '{}'::jsonb),
+  ('officer', 'ch9-3', 'text', '<ul class="manual-list"><li>รายงานทางวิทยุ</li><li>บันทึกเหตุการณ์ ถ่ายภาพให้เห็นป้ายรถ</li><li>แจ้งค่าบริการ</li><li>ตรวจสอบอุปกรณ์</li><li>กลับเข้าประจำพื้นที่</li></ul>', null, 21, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch9-4', 'ch9', 'หมวดที่ 4: มาตรฐานการให้บริการ', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch9-4', 'text', '<p>เจ้าหน้าที่ทุกนายต้อง</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch9-4', 'text', '<ul class="manual-list"><li>ให้บริการด้วยความสุภาพ</li><li>ใช้คำพูดที่เหมาะสม</li><li>ไม่เลือกปฏิบัติ</li><li>ปฏิบัติงานตามลำดับก่อนหลังของเหตุ</li><li>ดูแลทรัพย์สินของประชาชน</li><li>ปฏิบัติตาม SOP ทุกขั้นตอน</li><li>รักษาภาพลักษณ์ของกรมขนส่ง</li></ul>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'ch9-5', 'ch9', 'หมวดที่ 5: ข้อห้าม', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'ch9-5', 'text', '<p>ห้ามเจ้าหน้าที่</p>', null, 0, '{}'::jsonb),
+  ('officer', 'ch9-5', 'text', '<ul class="manual-list"><li>เรียกเก็บค่าบริการเกินอัตราที่กำหนด</li><li>เรียกรับสินบนหรือผลประโยชน์เพิ่มเติม</li><li>ให้บริการโดยไม่บันทึกข้อมูล</li><li>ปฏิเสธการให้บริการโดยไม่มีเหตุผล</li><li>ใช้คำพูดไม่สุภาพกับประชาชน</li><li>รับเงินแล้วไม่ดำเนินการช่วยเหลือ</li><li>แอบอ้างค่าบริการที่ไม่มีในประกาศของกรม</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'ch9-5', 'text', '<p>ผู้ฝ่าฝืนจะถูกดำเนินการทางวินัยตามระเบียบของกรม และอาจถูกพักงาน ลดตำแหน่ง หรือปลดออกจากราชการตามความร้ายแรงของการกระทำ</p>', null, 2, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('officer', 'guide', 'คู่มือการใช้งานระบบแยกตามเมนู (สำหรับเจ้าหน้าที่)', 'ภาคผนวก', 10);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-dashboard', 'guide', 'เมนูที่ 1: Dashboard — ภาพรวมประจำวัน', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-dashboard', 'text', '<p>หน้าแรกหลังเข้าสู่ระบบ แสดงภาพรวมที่ต้องดูทุกเวร</p>', null, 0, '{}'::jsonb),
+  ('officer', 'guide-dashboard', 'text', '<ul class="manual-list"><li><strong>การ์ดตัวเลข 4 ใบ:</strong> เจ้าหน้าที่ปฏิบัติหน้าที่ / บริการ-แจ้งเหตุวันนี้ / เหตุฉุกเฉินรอดำเนินการ / ยอดค้างชำระทั้งหมด</li><li><strong>รายชื่อผู้ปฏิบัติหน้าที่:</strong> กดดูบัตรประจำตัวดิจิทัล กดติดต่อด่วน หัวหน้ากรมสั่งบังคับออกเวรได้</li><li><strong>ประกาศล่าสุด + บริการล่าสุด:</strong> ติดตามข่าวสารและงานที่เพิ่งบันทึก</li><li><strong>เฉพาะหัวหน้ากรม:</strong> เปิด-ปิดระบบเข้าสู่ระบบของเจ้าหน้าที่ได้จากการ์ดสถานะปัจจุบัน</li></ul>', null, 1, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-operations', 'guide', 'เมนูที่ 2: ปฏิบัติการ — เข้าเวร ออกเวร และรายงาน', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-operations', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 1 — ลงชื่อเข้าเวร</p>', null, 0, '{}'::jsonb),
+  ('officer', 'guide-operations', 'text', '<ul class="manual-list"><li>กดปุ่มลงชื่อเข้าเวร (ปุ่มใช้งานได้เฉพาะตอนระบบเปิด หัวหน้ากรมเป็นผู้เปิด-ปิดระบบ)</li><li>สถานะจะเปลี่ยนเป็นกำลังปฏิบัติหน้าที่ทันที</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'guide-operations', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 2 — ส่งรายงานหลังออกเวร</p>', null, 2, '{}'::jsonb),
+  ('officer', 'guide-operations', 'text', '<ul class="manual-list"><li>กดลงชื่อออกเวร ระบบจะเปิดฟอร์มรายงาน ให้เลือกหมวดหมู่ประเภทงาน</li><li>กดเพิ่มเคส กรอกชื่อเคส สถานะเคส รายละเอียด และอัปโหลดรูปภาพหลักฐานประจำเคส</li><li>กดส่งรายงานและออกเวร ระบบคำนวณชั่วโมงสะสมให้อัตโนมัติ</li></ul>', null, 3, '{}'::jsonb),
+  ('officer', 'guide-operations', 'text', '<p class="font-semibold text-amber-400">ฟังก์ชันอื่นในหน้านี้</p>', null, 4, '{}'::jsonb),
+  ('officer', 'guide-operations', 'text', '<ul class="manual-list"><li>ดูประวัติเข้า-ออกเวรของตนเอง และส่งออกเป็นไฟล์ CSV</li><li>หัวหน้ากรมดูสถิติทั้งกรม (เข้าเวรบ่อยสุด / ชั่วโมงสะสมมากสุด) และกำหนดอัตราค่าขึ้นเวร (BC ต่อชั่วโมง) ให้ทุกคนพร้อมกันได้</li></ul>', null, 5, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-service-fees', 'guide', 'เมนูที่ 3: ค่าบริการ — เปิดบิล รับเงิน ออกใบเสร็จ', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-service-fees', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 1 — เปิดบิล (ปุ่มเพิ่มรายการ)</p>', null, 0, '{}'::jsonb),
+  ('officer', 'guide-service-fees', 'text', '<ul class="manual-list"><li>เลือกประชาชนจากระบบ (หรือกรอกชื่อ Roblox/Discord เอง) เลือกประเภทบริการจากอัตราที่กรมกำหนด</li><li>เลือกเจ้าหน้าที่รับเคสอย่างน้อย 1 คน แนบรูปหลักฐาน แล้วเลือกสถานะค้างชำระหรือชำระแล้ว</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'guide-service-fees', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 2 — บันทึกการชำระเงิน (หัวหน้ากรม)</p>', null, 2, '{}'::jsonb),
+  ('officer', 'guide-service-fees', 'text', '<ul class="manual-list"><li>กดไอคอนบันทึกการชำระเงินที่แถวรายการ กรอกยอดครั้งนี้ (ห้ามเกินยอดคงเหลือ) ระบบรองรับจ่ายทีละงวด</li><li>หลังบันทึกสำเร็จ ใบเสร็จรับเงินจะเด้งขึ้นพร้อมตราประทับ กดดาวน์โหลดเป็นรูป PNG ได้ทันที</li></ul>', null, 3, '{}'::jsonb),
+  ('officer', 'guide-service-fees', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 3 — รับส่วนแบ่ง</p>', null, 4, '{}'::jsonb),
+  ('officer', 'guide-service-fees', 'text', '<ul class="manual-list"><li>เคสที่ชำระแล้ว เจ้าหน้าที่รับเคสกดรับส่วนแบ่ง ระบบรวมเคสเดือนและประเภทเดียวกันส่งให้หัวหน้ากรมอนุมัติพร้อมกัน</li><li>ใช้ช่องค้นหาและปุ่มกรองทั้งหมด / ค้างชำระ / ชำระแล้ว เพื่อหาเคส กดรูปแว่นเพื่อดูรูปหลักฐาน</li></ul>', null, 5, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-emergency', 'guide', 'เมนูที่ 4: แจ้งเหตุฉุกเฉิน — รับเรื่องและปิดเคส', 3, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-emergency', 'text', '<ul class="manual-list"><li>รายการแสดงเรื่องที่ประชาชนแจ้งเข้ามา พร้อมประเภท รูป และพิกัด</li><li>กดเปิดเรื่องแล้วเปลี่ยนสถานะ: กำลังเข้าช่วยเหลือ / จัดการเรียบร้อย / ยกเลิก</li><li>ลบเรื่องที่ซ้ำหรือข้อมูลผิดได้ด้วยการยืนยันก่อนลบทุกครั้ง</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-vehicles', 'guide', 'เมนูที่ 5: ยานพาหนะ — ทะเบียน ยึด และปล่อยคืน', 4, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-vehicles', 'text', '<ul class="manual-list"><li>กดเพิ่มยานพาหนะใหม่ กรอกทะเบียน เจ้าของ ประเภท สี รุ่น และแนบรูป</li><li>กดยึดยานพาหนะ ระบุเหตุผลและสถานที่เก็บ ระบบเปลี่ยนสถานะเป็นถูกยึดทันที</li><li>เมื่อพ้นเงื่อนไข กดปล่อยคืน บันทึกผู้ปล่อย ประชาชนรับรถพร้อมใบเสร็จ</li><li>ค้นหาด้วยทะเบียนหรือชื่อเจ้าของ ลบข้อมูลที่ผิดได้แบบยืนยันก่อนลบ</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-leave', 'guide', 'เมนูที่ 6: จัดการการลา — แจ้งลาและอนุมัติ', 5, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-leave', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 1 — แจ้งลา</p>', null, 0, '{}'::jsonb),
+  ('officer', 'guide-leave', 'text', '<ul class="manual-list"><li>กดปุ่มแจ้งลา เลือกประเภท (ลาป่วย ลากิจ ลาพักร้อน ลาคลอด ลาบวช อื่นๆ) ระบุวันเริ่ม-วันสิ้นสุดและเหตุผล</li><li>ติดตามสถานะได้ที่การ์ดสรุป: ทั้งหมด / รอพิจารณา / อนุมัติแล้ว / ไม่อนุมัติ / ลาวันนี้</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'guide-leave', 'text', '<p class="font-semibold text-amber-400">ขั้นตอนที่ 2 — พิจารณา (หัวหน้ากรม)</p>', null, 2, '{}'::jsonb),
+  ('officer', 'guide-leave', 'text', '<ul class="manual-list"><li>ใช้ช่องค้นหาและตัวกรองสถานะ-ประเภทหาใบลา แล้วกดอนุมัติหรือไม่อนุมัติพร้อมหมายเหตุ</li><li>เจ้าของใบลาแก้ไขหรือยกเลิกใบลาของตนเองได้ก่อนการพิจารณา</li></ul>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-complaints', 'guide', 'เมนูที่ 7: เรื่องร้องเรียน — เฉพาะหัวหน้ากรม', 6, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-complaints', 'text', '<ul class="manual-list"><li>การ์ดด้านบนนับจำนวนแยกสถานะ: ทั้งหมด / รอดำเนินการ / กำลังตรวจสอบ / ดำเนินการแล้ว / ยกเลิก</li><li>ใช้ช่องค้นหาหาเรื่อง กดเปิดดูรายละเอียด หลักฐาน และข้อมูลผู้ร้อง</li><li>เปลี่ยนสถานะเพื่อติดตามจนปิดเรื่อง</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-announcements', 'guide', 'เมนูที่ 8: ประกาศ — เฉพาะหัวหน้ากรม', 7, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-announcements', 'text', '<ul class="manual-list"><li>กดสร้างประกาศ กรอกหัวข้อและเนื้อหา แนบรูปภาพประกอบได้</li><li>เปิดปักหมุดเพื่อให้ประกาศอยู่บนสุดเสมอ (เช่น ระเบียบสำคัญ)</li><li>แก้ไขหรือลบประกาศเก่าได้ รูปที่ลบจะถูกลบออกจากที่เก็บไฟล์ด้วย</li><li>ประกาศที่บันทึกจะแสดงทั้งหน้า Dashboard เจ้าหน้าที่และหน้าแรกของประชาชน</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-service-rates', 'guide', 'เมนูที่ 9: อัตราค่าบริการ — เฉพาะหัวหน้ากรม', 8, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-service-rates', 'text', '<ul class="manual-list"><li>กำหนดรายการประเภทบริการ ชื่อ ราคา (BC) และหมวดหมู่ที่ใช้เปิดบิลในเมนูค่าบริการ</li><li>กดนำเข้ารายการบริการมาตรฐาน 13 รายการได้ในครั้งเดียว</li><li>เปิด-ปิดใช้งานแต่ละรายการ ลบรายการที่เลิกใช้ (ยืนยันก่อนลบ)</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-officer-mgmt', 'guide', 'เมนูที่ 10: จัดการเจ้าหน้าที่ — เฉพาะหัวหน้ากรม', 9, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-officer-mgmt', 'text', '<ul class="manual-list"><li>กดเพิ่มเจ้าหน้าที่ด้วย Wizard 3 ขั้น: ข้อมูลส่วนตัว / บัญชีผู้ใช้ / ตำแหน่ง-แผนก-รูปโปรไฟล์</li><li>แก้ไขข้อมูล เปลี่ยนตำแหน่ง แผนก และรูปโปรไฟล์ได้ตลอด</li><li>ระงับสิทธิ์ เปิดใช้งานกลับ ลบ หรือรีเซ็ตรหัสผ่านบัญชีที่มีปัญหา</li><li>กำหนดอัตราค่าขึ้นเวร (BC ต่อชั่วโมง) ให้เจ้าหน้าที่ทุกคนพร้อมกันได้</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-citizen-mgmt', 'guide', 'เมนูที่ 11: จัดการข้อมูลประชาชน — เฉพาะหัวหน้ากรม', 10, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-citizen-mgmt', 'text', '<p class="font-semibold text-amber-400">แดชบอร์ดสรุปข้อมูลประชาชน</p>', null, 0, '{}'::jsonb),
+  ('officer', 'guide-citizen-mgmt', 'text', '<ul class="manual-list"><li>ตารางจัดอันดับหนี้รวมยอดตรงกับ Dashboard (ไม่นับยอดของสถานะแบนและระงับสิทธิ์)</li><li>แถบกระทบยอดแสดงยอดในตาราง ยอด Dashboard และรายการที่ไม่ผูกประชาชน — การค้นหาด้านบนเปลี่ยนเฉพาะรายชื่อที่โชว์ ไม่กระทบยอดรวม</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'guide-citizen-mgmt', 'text', '<p class="font-semibold text-amber-400">จัดการรายบุคคล (4 แท็บ)</p>', null, 2, '{}'::jsonb),
+  ('officer', 'guide-citizen-mgmt', 'text', '<ul class="manual-list"><li><strong>ข้อมูลรวม:</strong> แก้ไขชื่อ สถานะ (ปกติ เฝ้าระวัง ระงับสิทธิ์ แบน) และหมายเหตุ</li><li><strong>ยานพาหนะ / ใบอนุญาต:</strong> เพิ่ม แก้ไข ลบ ทะเบียนและใบอนุญาตของคนนั้น</li><li><strong>ค่าบริการ:</strong> เปิดบิลใหม่ให้คนนั้น และสลับสถานะชำระ-ค้างชำระของแต่ละบิล</li></ul>', null, 3, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-points-mgmt', 'guide', 'เมนูที่ 12: จัดการคะแนน — เฉพาะหัวหน้ากรม', 11, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-points-mgmt', 'text', '<ul class="manual-list"><li>ค้นหารายชื่อด้วยชื่อ username ตำแหน่ง หรือแผนก ระดับคะแนนแสดงสีตามเกณฑ์</li><li>กดที่รายชื่อเพื่อเพิ่มหรือลดคะแนน โดยเลือกรายการสำเร็จรูป (เช่น รับแจ้งเหตุสำเร็จ ละทิ้งหน้าที่) พร้อมเหตุผล</li><li>กดรีเซ็ตประจำเดือนเมื่อขึ้นรอบคะแนนใหม่ (ยืนยันก่อนทำทุกครั้ง)</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-dept-balance', 'guide', 'เมนูที่ 13: การเงินและจ่ายเงินเดือน — เฉพาะหัวหน้ากรม', 12, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-dept-balance', 'text', '<p>หน้านี้มี 4 แท็บหลัก</p>', null, 0, '{}'::jsonb),
+  ('officer', 'guide-dept-balance', 'text', '<ul class="manual-list"><li><strong>จ่ายเงินเดือนประจำงวด:</strong> รวมยอดที่ต้องจ่ายจากค่าขึ้นเวรและส่วนแบ่งที่อนุมัติแล้ว</li><li><strong>ประวัติการจ่ายเงินเดือน:</strong> ดู snapshot ย้อนหลังทุกงวด</li><li><strong>งบประมาณ 5 แผนก:</strong> ดูรายรับรายจ่ายและเติมงบพิเศษ (Manual Injection)</li><li><strong>อนุมัติส่วนแบ่งเคส:</strong> ตรวจคำขอรับส่วนแบ่งของเจ้าหน้าที่แล้วอนุมัติหรือปฏิเสธ</li></ul>', null, 1, '{}'::jsonb),
+  ('officer', 'guide-dept-balance', 'text', '<p>ตั้งค่าสัดส่วนแบ่งรายได้และอัตราค่าขึ้นเวรได้จากปุ่มตั้งค่าในหน้านี้</p>', null, 2, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-my-points', 'guide', 'เมนูที่ 14: คะแนน PPS ของฉัน — ทุกตำแหน่ง', 13, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-my-points', 'text', '<ul class="manual-list"><li>ดูคะแนนสะสมปัจจุบัน ระดับ (ต้องปรับปรุง / ผ่านเกณฑ์ / ดี / ดีมาก / ดีเด่น) และเกณฑ์ระดับถัดไป</li><li>ดูประวัติการขึ้น-ลงของคะแนนพร้อมเหตุผลและผู้บันทึกทุกครั้ง</li></ul>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('officer', 'guide-manual-self', 'guide', 'เมนูที่ 15: คู่มือการใช้งาน — ทุกตำแหน่ง', 14, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('officer', 'guide-manual-self', 'text', '<p>หน้านี้ที่กำลังอ่านอยู่ ใช้สารบัญด้านซ้าย (หรือปุ่มสารบัญบนมือถือ) กระโดดไปห้วข้อที่ต้องการ เนื้อหาระเบียบภายในเหมือนกันทุกตำแหน่ง ส่วนประชาชนจะเห็นเฉพาะฉบับประชาชนเท่านั้น</p>', null, 0, '{}'::jsonb);
+
+delete from manual_blocks   where variant = 'citizen';
+delete from manual_sections where variant = 'citizen';
+delete from manual_chapters where variant = 'citizen';
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('citizen', 'c-preface', 'คำนำ', '', 0);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-preface-intro', 'c-preface', null, 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-preface-intro', 'text', '<p>คู่มือฉบับนี้จัดทำสำหรับประชาชนชาว Bit City เพื่อแนะนำวิธีใช้บริการของกรมขนส่ง (Department of Transportation : DOT) ทั้งการขอความช่วยเหลือ การชำระค่าบริการ การตรวจสอบประวัติของตนเอง และการติดต่อหน่วยงาน</p>', null, 0, '{}'::jsonb),
+  ('citizen', 'c-preface-intro', 'text', '<p>หากต้องการความช่วยเหลือเร่งด่วน โปรดใช้เมนูแจ้งเหตุฉุกเฉิน หรือติดต่อเจ้าหน้าที่ที่กำลังปฏิบัติหน้าที่โดยตรง</p>', null, 1, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('citizen', 'c-ch1', 'บริการของกรมขนส่ง', 'บทที่ 1', 1);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch1-1', 'c-ch1', 'หมวดที่ 1: ฝ่ายงานที่ให้บริการ', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch1-1', 'text', '<p>กรมขนส่งแบ่งฝ่ายงานเพื่อให้บริการครอบคลุมทุกด้าน ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('citizen', 'c-ch1-1', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>ฝ่าย</th><th>ช่วยเหลือเรื่อง</th></tr></thead><tbody><tr><td>กู้ภัยรถยก</td><td>รถเสีย ลากรถ กู้รถจากจุดเกิดเหตุ</td></tr><tr><td>ช่วยเหลือฉุกเฉิน</td><td>แบตหมด น้ำมันหมด ยางแตก รถสตาร์ทไม่ติด</td></tr><tr><td>จัดการจราจร</td><td>อุบัติเหตุขวางทางจราจร ขอปิดถนนชั่วคราว</td></tr><tr><td>โยธาและซ่อมบำรุง</td><td>ถนนชำรุด ป้ายจราจรเสียหาย</td></tr><tr><td>การไฟฟ้า</td><td>ไฟถนนดับ ไฟจราจรขัดข้อง</td></tr></tbody></table></div>"}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch1-2', 'c-ch1', 'หมวดที่ 2: ขอความช่วยเหลืออย่างไร', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch1-2', 'text', '<ol class="manual-list"><li>เปิดเมนูแจ้งเหตุฉุกเฉิน กรอกรายละเอียดและพิกัดจุดเกิดเหตุให้ชัดเจน</li><li>แนบรูปภาพประกอบถ้าทำได้ เพื่อให้เจ้าหน้าที่เตรียมอุปกรณ์ถูก</li><li>รอการติดต่อกลับ อย่าเคลื่อนย้ายรถหากไม่ปลอดภัย</li><li>เมื่อเจ้าหน้าที่มาถึง แจ้งชื่อ Roblox ของท่านเพื่อเปิดบิลค่าบริการ</li></ol>', null, 0, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('citizen', 'c-ch2', 'ค่าบริการและการชำระเงิน', 'บทที่ 2', 2);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch2-1', 'c-ch2', 'หมวดที่ 1: ดูอัตราค่าบริการ', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch2-1', 'text', '<p>อัตราค่าบริการแต่ละประเภทดูได้ที่เมนูอัตราค่าบริการ ราคาที่เรียกเก็บจะตรงตามประกาศเท่านั้น หากพบการเรียกเก็บเกิน ให้บันทึกหลักฐานและร้องเรียนได้ทันที</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch2-2', 'c-ch2', 'หมวดที่ 2: ตรวจสอบยอดของตนเอง', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch2-2', 'text', '<ol class="manual-list"><li>เปิดเมนูระบบประชาชน ค้นหาชื่อ Roblox ของท่าน</li><li>ดูยอดค้างชำระ จำนวนรายการ และวันที่ค้างในแต่ละบิล</li><li>ชำระกับเจ้าหน้าที่ แล้วขอใบเสร็จทุกครั้ง</li></ol>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch2-3', 'c-ch2', 'หมวดที่ 3: ใบเสร็จรับเงิน', 2, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch2-3', 'text', '<ul class="manual-list"><li>ทุกการชำระเงินต้องมีใบเสร็จระบุเลขที่ ยอดที่จ่าย และยอดคงเหลือ</li><li>เก็บบันทึกหน้าจอใบเสร็จไว้เป็นหลักฐานเสมอ</li><li>หากยอดคงเหลือไม่ตรง แจ้งเจ้าหน้าที่ทันทีพร้อมแสดงใบเสร็จ</li></ul>', null, 0, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('citizen', 'c-ch3', 'ใบขับขี่และใบอนุญาต', 'บทที่ 3', 3);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch3-1', 'c-ch3', 'หมวดที่ 1: การขอใบอนุญาต', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch3-1', 'text', '<p>ติดต่อเจ้าหน้าที่ฝ่ายที่เกี่ยวข้องเพื่อสอบและออกใบอนุญาต เตรียมชื่อ Roblox และ Discord ให้พร้อม และปฏิบัติตามคำแนะนำของผู้คุมสอบ</p>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch3-2', 'c-ch3', 'หมวดที่ 2: ตรวจสอบสถานะใบอนุญาต', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch3-2', 'text', '<p>ตรวจสอบวันหมดอายุได้ในเมนูระบบประชาชน ใบอนุญาตที่หมดอายุควรต่อก่อนนำยานพาหนะออกใช้งาน</p>', null, 0, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('citizen', 'c-ch4', 'ยานพาหนะและการถูกยึดรถ', 'บทที่ 4', 4);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch4-1', 'c-ch4', 'หมวดที่ 1: รถถูกยึดต้องทำอย่างไร', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch4-1', 'text', '<ol class="manual-list"><li>ตรวจสอบเหตุผลการยึดในเมนูระบบประชาชน</li><li>ติดต่อกรมขนส่งเพื่อชำระค่าบริการ/ค่าปรับที่ค้าง</li><li>รับรถคืนพร้อมใบเสร็จและตรวจสภาพรถก่อนออกจากลาน</li></ol>', null, 0, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('citizen', 'c-ch5', 'ร้องเรียนและติดตามเรื่อง', 'บทที่ 5', 5);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch5-1', 'c-ch5', 'หมวดที่ 1: ยื่นเรื่องร้องเรียน', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch5-1', 'text', '<ol class="manual-list"><li>เปิดเมนูเรื่องร้องเรียน กรอกเหตุการณ์ วันเวลา และชื่อเจ้าหน้าที่ (ถ้าทราบ)</li><li>แนบลิงก์รูปหรือหลักฐาน เช่น ใบเสร็จ ภาพเหตุการณ์</li><li>จดเลขเรื่องไว้ใช้ติดตามความคืบหน้า</li></ol>', null, 0, '{}'::jsonb);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch5-2', 'c-ch5', 'หมวดที่ 2: สถานะประชาชน', 1, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch5-2', 'text', '<p>ระบบอาจกำหนดสถานะเพื่อความปลอดภัยของส่วนรวม ดังนี้</p>', null, 0, '{}'::jsonb),
+  ('citizen', 'c-ch5-2', 'callout', '', null, 1, '{"html":"<div class=\\"overflow-x-auto\\"><table class=\\"manual-table\\"><thead><tr><th>สถานะ</th><th>ความหมาย</th></tr></thead><tbody><tr><td>ปกติ</td><td>ใช้บริการได้ตามปกติ</td></tr><tr><td>เฝ้าระวัง</td><td>ยังใช้บริการได้ แต่ถูกติดตามเป็นพิเศษ</td></tr><tr><td>ระงับสิทธิ์</td><td>งดใช้บริการชั่วคราวจนกว่าจะพ้นกำหนด</td></tr><tr><td>แบน</td><td>งดใช้บริการถาวรตามคำสั่ง</td></tr></tbody></table></div>"}'::jsonb),
+  ('citizen', 'c-ch5-2', 'text', '<p>หากเห็นว่าสถานะไม่ถูกต้อง ให้ยื่นเรื่องร้องเรียนพร้อมหลักฐาน</p>', null, 2, '{}'::jsonb);
+
+insert into manual_chapters (variant, id, title, number, sort_order) values ('citizen', 'c-ch6', 'คำถามที่พบบ่อย', 'บทที่ 6', 6);
+insert into manual_sections (variant, id, chapter_id, title, sort_order, uses_blocks) values ('citizen', 'c-ch6-1', 'c-ch6', 'ถาม-ตอบ', 0, true);
+insert into manual_blocks (variant, section_id, type, content, caption, order_index, meta) values
+  ('citizen', 'c-ch6-1', 'text', '<ul class="manual-list"><li><strong>จ่ายเงินแล้วแต่ยอดยังค้าง?</strong> แสดงใบเสร็จให้เจ้าหน้าที่ตรวจสอบทันที</li><li><strong>หาชื่อตัวเองไม่เจอ?</strong> ตรวจตัวสะกดชื่อ Roblox หรือติดต่อเจ้าหน้าที่ให้เพิ่มข้อมูล</li><li><strong>ขอใบเสร็จย้อนหลังได้ไหม?</strong> ได้ โดยแจ้งเลขบิลหรือช่วงวันที่ใช้บริการ</li><li><strong>ติดต่อกรมขนส่งช่องทางไหน?</strong> ผ่านเมนูแจ้งเหตุ ร้องเรียน หรือเจ้าหน้าที่ที่ปฏิบัติหน้าที่</li></ul>', null, 0, '{}'::jsonb);
+
+
+-- =====================================================================
+-- ส่วนที่ 4 — ตรวจผล (ควรได้ 18 / 95 / 337)
+-- =====================================================================
+select 'manual_chapters' as tbl, count(*) as rows from manual_chapters
+union all select 'manual_sections', count(*) from manual_sections
+union all select 'manual_blocks', count(*) from manual_blocks
+union all select 'manual_items', count(*) from manual_items
+order by tbl;
