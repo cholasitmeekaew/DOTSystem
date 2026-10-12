@@ -26,12 +26,17 @@ export function AdminSettingsPage() {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  /** migration 0034 ยังไม่ถูกรัน → คอลัมน์ work_reports_enabled ไม่มีในตาราง */
+  const [missingReportCol, setMissingReportCol] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   async function load() {
     setLoading(true);
     const { data } = await supabase.from('system_settings').select('*').eq('id', 1).maybeSingle();
-    setSettings(data as SystemSettings | null);
+    const row = data as Record<string, unknown> | null;
+    setSettings(row as SystemSettings | null);
+    // ตรวจว่าคอลัมน์ของ 0034 มีจริงหรือยัง — ถ้าไม่มี สวิตช์จะกดไม่ได้
+    setMissingReportCol(!(row && 'work_reports_enabled' in row));
     setLoading(false);
   }
 
@@ -137,6 +142,13 @@ export function AdminSettingsPage() {
   /* ---------- การรายงานปฏิบัติงาน ---------- */
   async function toggleWorkReports() {
     if (!officer || !settings || busy) return;
+    if (missingReportCol) {
+      setNotice({
+        kind: 'err',
+        text: 'ยังเปิด/ปิดไม่ได้ — ยังไม่ได้รัน migration 0034_work_reports_toggle.sql (ตาราง system_settings ยังไม่มีคอลัมน์ work_reports_enabled)',
+      });
+      return;
+    }
     const next = !settings.work_reports_enabled;
     setSettings({ ...settings, work_reports_enabled: next });
     setNotice(null);
@@ -150,7 +162,13 @@ export function AdminSettingsPage() {
 
     if (error) {
       setSettings({ ...settings, work_reports_enabled: !next });
-      setNotice({ kind: 'err', text: `เปลี่ยนสวิตช์ไม่สำเร็จ: ${error.message}` });
+      setMissingReportCol(/work_reports_enabled|column/i.test(error.message));
+      setNotice({
+        kind: 'err',
+        text: /work_reports_enabled|column/i.test(error.message)
+          ? 'บันทึกไม่ได้ — ยังไม่ได้รัน migration 0034_work_reports_toggle.sql'
+          : `เปลี่ยนสวิตช์ไม่สำเร็จ: ${error.message}`,
+      });
       return;
     }
 
@@ -248,6 +266,21 @@ export function AdminSettingsPage() {
           พร้อมชื่อผู้กด
         </span>
       </div>
+
+      {missingReportCol && (
+        <div className="flex items-start gap-2.5 text-[12px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3.5 py-2.5 mb-4">
+          <ShieldAlert size={15} className="mt-0.5 flex-shrink-0" />
+          <div className="space-y-0.5">
+            <div className="font-semibold">ยังเปิด/ปิดการรายงานปฏิบัติงานไม่ได้</div>
+            <div className="text-[11px] text-amber-300/80">
+              ตาราง <code className="text-amber-200">system_settings</code> ยังไม่มีคอลัมน์{' '}
+              <code className="text-amber-200">work_reports_enabled</code>{' '}
+              กรุณารัน <code className="text-amber-200">0034_work_reports_toggle.sql</code>{' '}
+              ใน Supabase SQL Editor (อยู่ในไฟล์ APPLY_0026_and_0032.sql แล้ว)
+            </div>
+          </div>
+        </div>
+      )}
 
       {notice && (
         <div className={`flex items-start gap-2 text-[12px] rounded-lg px-3.5 py-2.5 mb-4 border ${
@@ -361,9 +394,11 @@ export function AdminSettingsPage() {
                 <div className="min-w-0">
                   <h2 className="text-sm font-bold text-white">การรายงานปฏิบัติงาน</h2>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    {reportsEnabled
-                      ? 'เปิดอยู่ — เจ้าหน้าที่ส่งรายงานปฏิบัติงานได้ตามปกติ'
-                      : 'ปิดอยู่ — เจ้าหน้าที่จะส่งรายงานไม่ได้ (หัวหน้ากรมยังอนุมัติรายงานที่ส่งไปแล้วได้)'}
+                    {missingReportCol
+                      ? 'ยังเปิดใช้ไม่ได้ — ต้องรัน migration 0034_work_reports_toggle.sql ก่อน'
+                      : reportsEnabled
+                        ? 'เปิดอยู่ — เจ้าหน้าที่ส่งรายงานปฏิบัติงานได้ตามปกติ'
+                        : 'ปิดอยู่ — เจ้าหน้าที่จะส่งรายงานไม่ได้ (หัวหน้ากรมยังอนุมัติรายงานที่ส่งไปแล้วได้)'}
                   </p>
                 </div>
               </div>
@@ -371,7 +406,8 @@ export function AdminSettingsPage() {
                 onClick={toggleWorkReports}
                 disabled={busy}
                 className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
-                  reportsEnabled ? 'bg-blue-500' : 'bg-red-500'
+                  missingReportCol ? 'bg-navy-600'
+                    : reportsEnabled ? 'bg-blue-500' : 'bg-red-500'
                 }`}
                 aria-label="เปิด/ปิดการรายงานปฏิบัติงาน"
                 aria-pressed={reportsEnabled}
