@@ -1,11 +1,20 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, BookOpen, List, ChevronUp, ExternalLink, Plus, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft, BookOpen, List, ChevronUp, ExternalLink, Plus, Trash2,
+  Pencil, EyeOff, Type as TypeIcon, AlertTriangle,
+} from 'lucide-react';
 import { manualChapters } from '../../data/manualContent';
 import { citizenManualChapters } from '../../data/citizenManualContent';
 import { supabase } from '../../lib/supabase';
 import { uploadImage, deleteImage } from '../../lib/storage';
 import { useAuth } from '../../lib/AuthContext';
 import { Modal, ConfirmDialog } from '../../components/Modal';
+import { ManualBlockView, ManualBlockEditor } from '../../components/ManualContentEditor';
+import {
+  fetchManualSnapshot, saveChapter, saveSection, saveBlocks,
+  hideChapter, showChapter, hideSection, showSection,
+  type ResolvedChapter, type ResolvedSection, type ContentBlock,
+} from '../../lib/manualContentApi';
 
 interface ManualItem {
   id: string;
@@ -26,7 +35,7 @@ interface Props {
 
 export function ManualPage({ onBack, showBackButton = true, variant = 'officer' }: Props) {
   const chapters = variant === 'citizen' ? citizenManualChapters : manualChapters;
-  const { officer } = useAuth();
+  const { officer, isCommissioner } = useAuth();
   const [items, setItems] = useState<ManualItem[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [deleteItem, setDeleteItem] = useState<ManualItem | null>(null);
@@ -36,10 +45,115 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
   const [saving, setSaving] = useState(false);
   const [activeId, setActiveId] = useState<string>(chapters[0]?.sections[0]?.id ?? '');
   const [tocOpen, setTocOpen] = useState(false);
+  // --- ระบบแก้ไขเนื้อหาคู่มือ ---
+  const [chaptersDb, setChaptersDb] = useState<ResolvedChapter[]>([]);
+  const [dbReady, setDbReady] = useState(false);
+  const [dbUnavailable, setDbUnavailable] = useState(false);
+  const [editing, setEditing] = useState<{ sectionId: string } | null>(null);
+  const [draftBlocks, setDraftBlocks] = useState<ContentBlock[]>([]);
+  const [savingBlocks, setSavingBlocks] = useState(false);
+  const [nameEdit, setNameEdit] = useState<{ kind: 'chapter' | 'section'; id: string; chapterId: string; value: string } | null>(null);
+  const [savingName, setSavingName] = useState(false);
+  const [confirmHide, setConfirmHide] = useState<{ kind: 'chapter' | 'section'; id: string; chapterId: string; label: string } | null>(null);
 
   useEffect(() => {
     fetchItems();
   }, [variant]);
+
+
+  /* ---------- ระบบแก้ไขเนื้อหาคู่มือ ---------- */
+  const canEdit = isCommissioner;
+
+  /** โครงสร้างที่ใช้แสดงผล: ถ้าต่อ DB ได้ใช้ของ DB ครอบ ถ้าไม่ได้ใช้ของเดิมจากโค้ด */
+  const view = dbReady && chaptersDb.length > 0
+    ? chaptersDb.filter((c) => !c.isHidden)
+    : chapters.map((c) => ({
+        id: c.id,
+        number: c.number ?? '',
+        title: c.title,
+        isHidden: false,
+        isOverridden: false,
+        sections: c.sections.map((s) => ({
+          id: s.id,
+          chapterId: c.id,
+          title: s.title,
+          legacyBody: s.body,
+          blocks: [],
+          usesBlocks: false,
+          isHidden: false,
+          isOverridden: false,
+        })),
+      }));
+
+  async function loadChapters() {
+    const snap = await fetchManualSnapshot(variant, chapters as never);
+    setChaptersDb(snap.chapters);
+    setDbUnavailable(snap.dbUnavailable);
+    setDbReady(true);
+  }
+
+  useEffect(() => { void loadChapters(); }, [variant]);
+
+  function openSectionEditor(section: ResolvedSection) {
+    setDraftBlocks(section.blocks.length > 0 ? section.blocks.map((b) => ({ ...b })) : []);
+    setEditing({ sectionId: section.id });
+  }
+
+  async function commitBlocks() {
+    if (!editing || !officer) return;
+    const sec = chaptersDb.flatMap((c) => c.sections).find((x) => x.id === editing.sectionId);
+    if (!sec) return;
+    setSavingBlocks(true);
+    try {
+      await saveBlocks(variant, sec.id, draftBlocks, { id: officer.id, name: officer.name });
+      await loadChapters();
+      setEditing(null);
+    } catch (e) {
+      alert(`บันทึกบล็อกไม่สำเร็จ: ${(e as Error).message}`);
+    } finally {
+      setSavingBlocks(false);
+    }
+  }
+
+  async function commitName() {
+    if (!nameEdit || !officer) return;
+    setSavingName(true);
+    try {
+      const by = { id: officer.id, name: officer.name };
+      if (nameEdit.kind === 'chapter') {
+        await saveChapter({ variant, id: nameEdit.id, title: nameEdit.value.trim(), by });
+      } else {
+        await saveSection({ variant, id: nameEdit.id, chapterId: nameEdit.chapterId, title: nameEdit.value.trim(), by });
+      }
+      await loadChapters();
+      setNameEdit(null);
+    } catch (e) {
+      alert(`บันทึกชื่อไม่สำเร็จ: ${(e as Error).message}`);
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  async function toggleHide() {
+    if (!confirmHide || !officer) return;
+    const by = { id: officer.id, name: officer.name };
+    try {
+      if (confirmHide.kind === 'chapter') {
+        const cur = chaptersDb.find((c) => c.id === confirmHide.id);
+        if (cur?.isHidden) await showChapter(variant, confirmHide.id, by);
+        else await hideChapter(variant, confirmHide.id, by);
+      } else {
+        const cur = chaptersDb.flatMap((c) => c.sections).find((x) => x.id === confirmHide.id);
+        if (cur?.isHidden) await showSection(variant, confirmHide.id, confirmHide.chapterId, by);
+        else await hideSection(variant, confirmHide.id, confirmHide.chapterId, by);
+      }
+      await loadChapters();
+    } catch (e) {
+      alert(`ดำเนินการไม่สำเร็จ: ${(e as Error).message}`);
+    } finally {
+      setConfirmHide(null);
+    }
+  }
 
   async function fetchItems() {
     const { data } = await supabase
@@ -141,18 +255,43 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
                 <h2 className="text-sm font-semibold tracking-wider uppercase">สารบัญ</h2>
               </div>
               <nav className="space-y-3">
-                {chapters.map((chapter) => (
+                {view.map((chapter) => (
                   <div key={chapter.id}>
-                    <div className="text-xs font-bold text-white mb-1.5">
-                      {chapter.number && <span className="text-amber-500 mr-1">{chapter.number}</span>}
-                      {chapter.title}
+                    <div className="text-xs font-bold text-white mb-1.5 flex items-start gap-1">
+                      <span className="flex-1">
+                        {chapter.number && <span className="text-amber-500 mr-1">{chapter.number}</span>}
+                        {chapter.title}
+                      </span>
+                      {canEdit && (
+                        <span className="flex items-center gap-0.5 flex-shrink-0">
+                          <button
+                            onClick={() => setNameEdit({
+                              kind: 'chapter', id: chapter.id, chapterId: chapter.id, value: chapter.title,
+                            })}
+                            className="p-0.5 rounded text-gray-600 hover:text-blue-400 hover:bg-blue-500/10"
+                            title="แก้ไขชื่อบท"
+                          >
+                            <Pencil size={11} />
+                          </button>
+                          <button
+                            onClick={() => setConfirmHide({
+                              kind: 'chapter', id: chapter.id, chapterId: chapter.id,
+                              label: `บท "${chapter.title}"`,
+                            })}
+                            className="p-0.5 rounded text-gray-600 hover:text-amber-400 hover:bg-amber-500/10"
+                            title="ซ่อนบทนี้"
+                          >
+                            <EyeOff size={11} />
+                          </button>
+                        </span>
+                      )}
                     </div>
                     <ul className="space-y-1 border-l border-blue-900/40 pl-3">
-                      {chapter.sections.map((section) => (
-                        <li key={section.id}>
+                      {chapter.sections.filter((x) => !x.isHidden).map((section) => (
+                        <li key={section.id} className="group flex items-start gap-1">
                           <button
                             onClick={() => scrollTo(section.id)}
-                            className={`text-left text-xs leading-relaxed py-1 w-full transition-colors ${
+                            className={`text-left text-xs leading-relaxed py-1 flex-1 transition-colors ${
                               activeId === section.id
                                 ? 'text-amber-400 font-medium'
                                 : 'text-gray-400 hover:text-gray-200'
@@ -160,6 +299,27 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
                           >
                             {section.title}
                           </button>
+                          {canEdit && (
+                            <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                              <button
+                                onClick={() => openSectionEditor(section)}
+                                className="p-0.5 rounded text-gray-600 hover:text-blue-400 hover:bg-blue-500/10"
+                                title="แก้ไขเนื้อหา"
+                              >
+                                <Pencil size={11} />
+                              </button>
+                              <button
+                                onClick={() => setConfirmHide({
+                                  kind: 'section', id: section.id, chapterId: chapter.id,
+                                  label: `หมวดย่อย "${section.title}"`,
+                                })}
+                                className="p-0.5 rounded text-gray-600 hover:text-amber-400 hover:bg-amber-500/10"
+                                title="ซ่อนหมวดย่อยนี้"
+                              >
+                                <EyeOff size={11} />
+                              </button>
+                            </span>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -181,7 +341,7 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
               </button>
               {tocOpen && (
                 <div className="absolute z-30 left-0 right-0 top-12 bg-navy-800 border border-blue-900/40 rounded-lg p-4 max-h-96 overflow-y-auto shadow-xl">
-                  {chapters.map((chapter) => (
+                  {view.map((chapter) => (
                     <div key={chapter.id} className="mb-3 last:mb-0">
                       <div className="text-xs font-bold text-white mb-1">
                         {chapter.number && <span className="text-amber-500 mr-1">{chapter.number}</span>}
@@ -228,35 +388,103 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
               </div>
             </header>
 
+            {dbUnavailable && canEdit && (
+              <div className="flex items-start gap-2.5 text-[12px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3.5 py-2.5 mb-4">
+                <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+                <div className="space-y-0.5">
+                  <div className="font-semibold">ยังแก้ไขเนื้อหาไม่ได้</div>
+                  <div className="text-[11px] text-amber-300/80">
+                    ยังไม่ได้รัน migration 0032 — หน้านี้กำลังแสดงเนื้อหาจากโค้ดตามปกติ
+                    กรุณารัน <code className="text-amber-200">0032_manual_content_blocks.sql</code>
+                    แล้ว <code className="text-amber-200">SEED_manual_content.sql</code> ใน Supabase SQL Editor
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Chapters */}
             <div className="mt-6 space-y-10">
-              {chapters.map((chapter) => (
+              {view.map((chapter) => (
                 <section key={chapter.id}>
-                  {chapter.number && (
-                    <div className="flex items-baseline gap-3 mb-4 pb-2 border-b border-blue-900/40">
-                      <span className="text-amber-500 font-bold text-sm tracking-wider">{chapter.number}</span>
-                      <h2 className="text-xl sm:text-2xl font-bold text-white">{chapter.title}</h2>
-                    </div>
-                  )}
-                  {!chapter.number && chapter.title && (
-                    <h2 className="text-xl sm:text-2xl font-bold text-white mb-4 pb-2 border-b border-blue-900/40">
-                      {chapter.title}
-                    </h2>
-                  )}
+                  <ChapterHeader
+                    chapter={chapter}
+                    canEdit={canEdit}
+                    onRename={() => setNameEdit({
+                      kind: 'chapter', id: chapter.id, chapterId: chapter.id, value: chapter.title,
+                    })}
+                    onToggleHide={() => setConfirmHide({
+                      kind: 'chapter', id: chapter.id, chapterId: chapter.id,
+                      label: `บท "${chapter.title}"`,
+                    })}
+                  />
                   <div className="space-y-5">
-                    {chapter.sections.map((section) => (
+                    {chapter.sections.filter((x) => !x.isHidden).map((section) => (
                       <article
                         key={section.id}
                         id={section.id}
                         data-manual-section
                         className="manual-section"
                       >
-                        {section.title && (
-                          <h3 className="text-base sm:text-lg font-semibold text-amber-400 mb-2.5">
-                            {section.title}
-                          </h3>
+                        <div className="flex items-start gap-2">
+                          {section.title && (
+                            <h3 className="text-base sm:text-lg font-semibold text-amber-400 mb-2.5 flex-1">
+                              {section.title}
+                            </h3>
+                          )}
+                          {canEdit && (
+                            <div className="flex items-center gap-0.5 flex-shrink-0">
+                              <button
+                                onClick={() => openSectionEditor(section)}
+                                className="p-1 rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10"
+                                title="แก้ไขเนื้อหาหมวดย่อยนี้"
+                              >
+                                <Pencil size={13} />
+                              </button>
+                              <button
+                                onClick={() => setNameEdit({
+                                  kind: 'section', id: section.id, chapterId: chapter.id,
+                                  value: section.title,
+                                })}
+                                className="p-1 rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10"
+                                title="เปลี่ยนชื่อหมวดย่อย"
+                              >
+                                <TypeIcon size={13} />
+                              </button>
+                              <button
+                                onClick={() => setConfirmHide({
+                                  kind: 'section', id: section.id, chapterId: chapter.id,
+                                  label: `หมวดย่อย "${section.title}"`,
+                                })}
+                                className="p-1 rounded text-gray-500 hover:text-amber-400 hover:bg-amber-500/10"
+                                title="ซ่อนหมวดย่อยนี้"
+                              >
+                                <EyeOff size={13} />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {editing?.sectionId === section.id ? (
+                          <div className="mt-2">
+                            <ManualBlockEditor
+                              blocks={draftBlocks}
+                              onChange={setDraftBlocks}
+                              onSave={commitBlocks}
+                              onCancel={() => setEditing(null)}
+                              saving={savingBlocks}
+                            />
+                          </div>
+                        ) : section.usesBlocks ? (
+                          <div className="manual-prose">
+                            {section.blocks.length === 0 ? (
+                              <p className="text-gray-600 text-xs italic">ยังไม่มีเนื้อหาในหมวดย่อยนี้</p>
+                            ) : section.blocks.map((b) => (
+                              <ManualBlockView key={b.id} block={b} />
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="manual-prose">{section.legacyBody}</div>
                         )}
-                        <div className="manual-prose">{section.body}</div>
                       </article>
                     ))}
                   </div>
@@ -401,6 +629,59 @@ export function ManualPage({ onBack, showBackButton = true, variant = 'officer' 
       >
         <ExternalLink size={0} />
       </a>
+    </div>
+  );
+}
+
+
+/* ---------- หัวบท พร้อมปุ่มแก้ไข/ซ่อน ---------- */
+function ChapterHeader({
+  chapter, canEdit, onRename, onToggleHide,
+}: {
+  chapter: ResolvedChapter;
+  canEdit: boolean;
+  onRename: () => void;
+  onToggleHide: () => void;
+}) {
+  const actions = canEdit ? (
+    <div className="flex items-center gap-0.5 flex-shrink-0">
+      <button
+        onClick={onRename}
+        className="p-1 rounded text-gray-600 hover:text-blue-400 hover:bg-blue-500/10"
+        title="แก้ไขชื่อบท"
+      >
+        <Pencil size={14} />
+      </button>
+      <button
+        onClick={onToggleHide}
+        className="p-1 rounded text-gray-600 hover:text-amber-400 hover:bg-amber-500/10"
+        title="ซ่อนบทนี้"
+      >
+        <EyeOff size={14} />
+      </button>
+    </div>
+  ) : null;
+
+  const titleEl = (
+    <>
+      {chapter.number && <span className="text-amber-500 font-bold text-sm tracking-wider">{chapter.number}</span>}
+      <h2 className="text-xl sm:text-2xl font-bold text-white">{chapter.title}</h2>
+    </>
+  );
+
+  if (chapter.number) {
+    return (
+      <div className="flex items-center gap-2 mb-4 pb-2 border-b border-blue-900/40">
+        <div className="flex items-baseline gap-3 flex-1 min-w-0">{titleEl}</div>
+        {actions}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 mb-4 pb-2 border-b border-blue-900/40">
+      <h2 className="text-xl sm:text-2xl font-bold text-white flex-1 min-w-0">{chapter.title}</h2>
+      {actions}
     </div>
   );
 }
