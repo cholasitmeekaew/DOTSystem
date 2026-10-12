@@ -351,7 +351,7 @@ export function EmergencyManagementPage() {
                       <Loader2 size={13} /> รับเรื่อง
                     </button>
                   )}
-                  {report.status === 'responding' && (
+                  {report.status === 'responding' && isCommissioner && (
                     <button
                       onClick={() => updateStatus(report, 'resolved')}
                       className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/25 transition-colors text-xs font-medium"
@@ -359,7 +359,7 @@ export function EmergencyManagementPage() {
                       <CheckCircle2 size={13} /> เสร็จสิ้น
                     </button>
                   )}
-                  {report.status !== 'dismissed' && report.status !== 'resolved' && (
+                  {isCommissioner && report.status !== 'dismissed' && report.status !== 'resolved' && (
                     <button
                       onClick={() => updateStatus(report, 'dismissed')}
                       className="px-2 py-1.5 rounded-lg bg-gray-500/15 text-gray-400 border border-gray-500/20 hover:bg-gray-500/25 transition-colors text-xs"
@@ -530,12 +530,12 @@ export function EmergencyManagementPage() {
                   <Loader2 size={15} /> รับเรื่องและเข้าช่วยเหลือ
                 </button>
               )}
-              {viewReport.status === 'responding' && (
+              {isCommissioner && viewReport.status === 'responding' && (
                 <button onClick={() => updateStatus(viewReport, 'resolved')} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                   <CheckCircle2 size={15} /> ทำการเสร็จสิ้น
                 </button>
               )}
-              {viewReport.status !== 'dismissed' && viewReport.status !== 'resolved' && (
+              {isCommissioner && viewReport.status !== 'dismissed' && viewReport.status !== 'resolved' && (
                 <button onClick={() => updateStatus(viewReport, 'dismissed')} className="btn-secondary flex items-center gap-2">
                   <XCircle size={15} /> ยกเลิกเรื่อง
                 </button>

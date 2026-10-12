@@ -10,6 +10,7 @@ import {
   UserCircle, CalendarDays, FileText, Palmtree, DollarSign, BookOpen,
   Shield, Clock, Award, TrendingUp, TrendingDown, History, Loader2, AlertTriangle,
   CheckCircle2, XCircle, ChevronDown, ChevronUp, User, MapPin, BadgeCheck,
+  Siren, Layers,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
@@ -23,6 +24,8 @@ import {
   resolveQuotas, buildQuotaUsage, formatQuotaLine, currentMonthKey,
 } from '../../lib/leaveQuota';
 import type { OfficerPage } from '../../components/OfficerLayout';
+import { ProfileExtraTabs, type ProfileTabId } from '../../components/ProfileSections';
+import { fetchProfileExtra, type ProfileExtra } from '../../lib/profileData';
 
 interface Props {
   onNavigate: (page: OfficerPage) => void;
@@ -103,6 +106,10 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
   const [showAllLogs, setShowAllLogs] = useState(false);
   const [showAllReports, setShowAllReports] = useState(false);
   const [showAllLeaves, setShowAllLeaves] = useState(false);
+  // ข้อมูลเสริมแบบแท็บ (ยานพาหนะ / ค่าบริการ / เหตุ / กิจกรรม)
+  const [tab, setTab] = useState<ProfileTabId>('services');
+  const [extra, setExtra] = useState<ProfileExtra | null>(null);
+  const [extraLoading, setExtraLoading] = useState(false);
 
   const isSelf = targetId === officer?.id;
 
@@ -179,6 +186,25 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
 
   useEffect(() => { void load(); }, [targetId]);
 
+  /** ข้อมูลประวัติส่วนเสริม — ใช้ "ชื่อ" ด้วย เพราะบางตารางเก็บเป็น text ไม่ใช่ id */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const me = targetId === officer?.id;
+      const name = me
+        ? (officer?.name ?? '')
+        : (data?.name ?? '');
+      if (!targetId || !name) return;
+      setExtraLoading(true);
+      const res = await fetchProfileExtra(targetId, name);
+      if (!cancelled) {
+        setExtra(res);
+        setExtraLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [targetId, officer?.name, data?.name]);
+
   /* ---------- คะแนน ---------- */
   const points = data?.points ?? 0;
   const pointsLog = useMemo(
@@ -212,6 +238,8 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
       tint: 'bg-amber-500/15 text-amber-300', onClick: () => onNavigate('service-fees') },
     { id: 'manual', label: 'คู่มือกรมขนส่ง', icon: BookOpen,
       tint: 'bg-cyan-500/15 text-cyan-300', onClick: () => onNavigate('manual') },
+    { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: Siren,
+      tint: 'bg-red-500/15 text-red-300', onClick: () => onNavigate('emergency') },
   ];
 
   if (!officer) return null;
@@ -567,6 +595,35 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
           บัญชีนี้ถูกระงับ — ข้อมูลที่แสดงเป็นข้อมูลจากก่อนถูกระงับ
         </div>
       )}
+
+      {/* ---------- ข้อมูลประวัติเพิ่มเติม (แท็บ) ---------- */}
+      <section className="card p-4 sm:p-5 mt-4">
+        <div className="flex items-center gap-1.5 mb-3">
+          <Layers size={14} className="text-amber-400" />
+          <h3 className="text-xs font-semibold text-gray-300">ประวัติและกิจกรรมทั้งหมด</h3>
+          {!isSelf && (
+            <span className="text-[10px] text-gray-500 ml-auto">ของ {data?.name}</span>
+          )}
+        </div>
+
+        {(extra?.errors.length ?? 0) > 0 && (
+          <div className="mb-3 flex items-start gap-2 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+            <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+            <div className="min-w-0">
+              <div className="font-semibold">บางส่วนโหลดไม่สำเร็จ ({extra?.errors.length})</div>
+              {extra?.errors.map((e, i) => <div key={i} className="text-amber-300/80 break-all">{e}</div>)}
+            </div>
+          </div>
+        )}
+
+        {extra ? (
+          <ProfileExtraTabs data={extra} tab={tab} onTab={setTab} loading={extraLoading} />
+        ) : (
+          <div className="text-center text-gray-500 py-6 text-xs">
+            {extraLoading ? 'กำลังโหลดข้อมูล...' : 'ไม่พบข้อมูล'}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

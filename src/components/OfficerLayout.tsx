@@ -80,6 +80,7 @@ const navItems: NavItem[] = [
   { id: 'operations', label: 'ปฏิบัติการ', icon: <Shield size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'service-fees', label: 'แจ้งค่าบริการ', icon: <DollarSign size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'leave', label: 'จัดการการลา', icon: <CalendarDays size={18} />, commissionerOnly: false, section: 'ops' },
+  { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: <Siren size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'manual', label: 'คู่มือการใช้งาน', icon: <BookOpen size={18} />, commissionerOnly: false, section: 'general' },
   { id: 'my-points', label: 'คะแนน PPS ของฉัน', icon: <Award size={18} />, commissionerOnly: false, section: 'general' },
   { id: 'admin-menu', label: 'เมนู Admin', icon: <ShieldAlert size={18} />, commissionerOnly: true, section: 'admin' },

@@ -78,8 +78,7 @@ function OfficerApp() {
     'admin-menu',
     'officer-management', 'citizen-management',
     'points-management', 'department-balance', 'service-rates',
-    'complaints', 'announcements',
-    'emergency', 'vehicles',
+    'complaints', 'announcements', 'vehicles',
     'admin-settings', 'report-approvals', 'leave-approvals', 'roster-admin',
     'manual-edit',
   ];
