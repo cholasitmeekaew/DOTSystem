@@ -23,7 +23,7 @@ import { supabase } from '../supabase';
 import type {
   Officer, DutyLog, WorkReport, ServiceRecord, SystemSettings,
 } from '../types';
-import { addAutomaticPoints, isAutoPointsEnabled } from './points';
+import { addAutomaticPoints, addOfficerPoints, isAutoPointsEnabled } from './points';
 
 /* ---------- เกณฑ์คะแนน ---------- */
 
@@ -31,6 +31,7 @@ export const AUTO_POINTS_RULES = {
   perDutyHour: 5,          // ต่อชั่วโมงที่ออกเวรปกติ
   reportApproved: 10,      // รายงานปฏิบัติงานได้รับอนุมัติ
   serviceClosed: 5,        // ปิดเคสค่าบริการ
+  caseCompleted: 5,        // ปิดเคสย่อยในรายงานปฏิบัติงาน 1 เคส
   absenceWeek: -5,         // ไม่เข้าเวร 1 สัปดาห์
   missingReport: -5,       // ออกเวรไม่ส่งรายงาน
   forceCheckout: -15,      // ถูกบังคับออกเวร
@@ -149,6 +150,69 @@ export async function applyCheckoutPoints(log: DutyLog): Promise<AutoAwardResult
     markKey: `dutyout:${log.id}`,
   });
 }
+
+/** +5 ต่อเคสย่อยที่ปิดสำเร็จ (case_status = 'completed') */
+export async function applyCompletedCasePoints(
+  report: WorkReport,
+  cases: Array<{ id: string; case_status?: string | null }>,
+): Promise<AutoAwardResult[]> {
+  if (!report?.officer_id) return [];
+
+  const done = cases.filter((c) => c.case_status === 'completed');
+  if (done.length === 0) return [];
+
+  const results: AutoAwardResult[] = [];
+  for (const c of done) {
+    results.push(await awardAutoPoints({
+      officerId: report.officer_id,
+      delta: AUTO_POINTS_RULES.caseCompleted,
+      reason: 'ปิดเคสปฏิบัติงานสำเร็จ 1 เคส',
+      // markKey ต่อเคส → กันการให้ซ้ำถ้าอนุมัติรายงานเดิมซ้ำ
+      markKey: `case:${c.id}`,
+    }));
+  }
+  return results;
+}
+
+/**
+ * คืนคะแนน +10 เมื่อยกเลิกการอนุมัติรายงาน (approved -> rejected)
+ *
+ * ใช้ addOfficerPoints ตรง ไม่ผ่าน awardAutoPoints เพราะการคืนของที่
+ * "เคยให้ไปแล้ว" ไม่ควรขึ้นกับสวิตช์ PPS ที่เปิด/ปิดอยู่ตอนนี้
+ * และลบ mark ทิ้ง เพื่อให้อนุมัติซ้ำแล้วได้คะแนนใหม่ถ้ากลับมา approved
+ */
+export async function revertReportApprovalPoints(
+  report: Pick<WorkReport, 'id' | 'officer_id' | 'officer_name'>,
+  actor: { id: string; name: string },
+  cases: Array<{ id: string; case_status?: string | null }> = [],
+): Promise<number> {
+  if (!report?.officer_id) return 0;
+
+  // รวมทั้งคะแนนรายงาน (+10) และคะแนนรายเคส (+5 ต่อเคสที่ปิดสำเร็จ)
+  // ถ้าคืนแค่ +10 คะแนนเคสจะค้างอยู่โดยไม่มีรายงานรองรับ
+  const caseIds = cases.filter((c) => c.case_status === 'completed').map((c) => `case:${c.id}`);
+  const markKeys = [`report:${report.id}`, ...caseIds];
+
+  const { data: marks } = await supabase
+    .from('points_award_marks').select('mark_key, delta').in('mark_key', markKeys);
+  const existing = (marks ?? []) as Array<{ mark_key: string; delta: number }>;
+  if (existing.length === 0) return 0;   // ไม่เคยได้คะแนน -> ไม่ต้องคืน
+
+  const total = existing.reduce((sum, m) => sum + Number(m.delta ?? 0), 0);
+
+  await addOfficerPoints(
+    report.officer_id,
+    -total,
+    existing.length > 1
+      ? `ยกเลิกการอนุมัติรายงานปฏิบัติงาน (คืนรายงาน + เคสที่ปิดสำเร็จ)`
+      : 'ยกเลิกการอนุมัติรายงานปฏิบัติงาน',
+    actor.id, actor.name,
+  );
+  // ปลดล็อก mark ทิ้งทั้งหมด เพื่อให้อนุมัติซ้ำแล้วได้คะแนนครบใหม่
+  await supabase.from('points_award_marks').delete().in('mark_key', markKeys);
+  return Math.abs(total);
+}
+
 
 /** +10 เมื่อรายงานปฏิบัติงานได้รับอนุมัติ */
 export async function applyReportApprovalPoints(report: WorkReport): Promise<AutoAwardResult | null> {

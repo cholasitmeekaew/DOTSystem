@@ -107,3 +107,36 @@ export async function loadReportCases(
     .eq('work_report_id', reportId).order('created_at');
   return (fallback.data ?? []) as WorkReportCase[];
 }
+
+/**
+ * จำนวนเคสของทุกรายงาน ในครั้งเดียว
+ *
+ * ตาราง work_report_cases ถูก RLS บัง (policy ใช้ auth.uid()) และระบบนี้
+ * ไม่มี Supabase Auth → query ตรงได้ 0 แถวเสมอโดยไม่ error
+ * การ์ดในตารางจึงเคยแสดง "0 เคส" ทั้งที่ modal แสดงจำนวนจริง
+ * ต้องใช้ RPC ซึ่ง migration 0035 สร้างไว้ (ยังไม่รัน → คืนค่าว่าง)
+ */
+export interface CaseCount {
+  work_report_id: string;
+  case_count: number;
+  completed_count: number;
+}
+
+export async function loadCaseCounts(): Promise<{
+  counts: Map<string, CaseCount>;
+  unavailable: boolean;
+}> {
+  const { data, error } = await supabase.rpc('get_work_report_case_counts');
+  if (error || !data) {
+    return { counts: new Map(), unavailable: true };
+  }
+  const rows = (data as Array<{ work_report_id: string; case_count: number; completed_count: number }>) ?? [];
+  return {
+    counts: new Map(rows.map((r) => [r.work_report_id, {
+      work_report_id: r.work_report_id,
+      case_count: Number(r.case_count) || 0,
+      completed_count: Number(r.completed_count) || 0,
+    }])),
+    unavailable: false,
+  };
+}

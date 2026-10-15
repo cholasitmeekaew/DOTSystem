@@ -27,6 +27,7 @@ import {
 import { isWeekend } from '../../lib/types';
 import {
   isAutoPointsEnabled, applyCheckoutPoints, applyReportApprovalPoints,
+  applyCompletedCasePoints, revertReportApprovalPoints,
   AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 import {
@@ -380,9 +381,24 @@ export function OperationsPage({
       return;
     }
 
-    // อนุมัติแล้ว → +10 PPS อัตโนมัติ (ถ้าสวิตช์เปิดอยู่)
+    // คะแนนอัตโนมัติตามผลการตรวจ
     if (nextStatus === 'approved') {
+      // +10 ต่อรายงาน (awardAutoPoints กันซ้ำด้วย markKey อยู่แล้ว)
       await applyReportApprovalPoints({ ...target, status: nextStatus });
+
+      // +5 ต่อเคสย่อยที่ปิดสำเร็จ
+      const cases = await loadReportCases(target.id);
+      await applyCompletedCasePoints({ ...target, status: nextStatus }, cases);
+    } else if ((target.status ?? 'pending') === 'approved') {
+      // เคยอนุมัติแล้วแล้วยกเลิก → คืนคะแนน −10 และปลดล็อก mark
+      const cases = await loadReportCases(target.id);
+      const reverted = await revertReportApprovalPoints(
+        target, { id: officer.id, name: officer.name }, cases,
+      );
+      flash(reverted > 0 ? 'ok' : 'err',
+        reverted > 0
+          ? `ยกเลิกอนุมัติ · คืนคะแนน ${reverted}`
+          : 'ยกเลิกอนุมัติแล้ว แต่ไม่พบประวัติคะแนนเดิมให้คืน');
     }
 
     setReviewingWorkReport(null);

@@ -215,30 +215,60 @@ export function AdminSettingsPage() {
       details: {},
     });
 
-    // ปิดระบบเวร → บังคับคนที่กำลังเข้าเวรอยู่ให้ออกเวรทันที
+    // ปิดระบบเวร → บังคับออกเวรทุกคนที่ยังเข้าเวรค้างอยู่ทันที
+    //
+    // ต้องอ่านจาก duty_logs ที่ clock_out IS NULL ไม่ใช่ officers.is_on_duty
+    // เพราะสองอย่างนี้ desync กันได้ (เช่น clock-out สำเร็จแต่ flag ไม่เปลี่ยน
+    // หรือ flag เป็น true แต่ไม่มี log) ถ้าเชื่อ flag จะพลาดเวรที่ค้างจริง
     if (!next) {
-      const { data: activeOfficers } = await supabase
-        .from('officers').select('id, name, is_on_duty').eq('status', 'active');
-      const onDuty = ((activeOfficers ?? []) as Array<{ id: string; name: string; is_on_duty: unknown }>)
-        .filter((o) => o.is_on_duty === true || o.is_on_duty === 'true');
-      const now = new Date();
-      for (const o of onDuty) {
-        const { data: activeLog } = await supabase
-          .from('duty_logs').select('*')
-          .eq('officer_id', o.id).is('clock_out', null).is('deleted_at', null).maybeSingle();
-        if (activeLog) {
-          const dur = Math.round((now.getTime() - new Date(activeLog.clock_in).getTime()) / 60000);
-          await supabase.from('duty_logs').update({
-            clock_out: now.toISOString(),
-            auto_points: false,
-          }).eq('id', activeLog.id);
-          setNotice({
-            kind: 'ok',
-            text: `ปิดระบบเวรแล้ว · บังคับ ${o.name} (${dur} นาที) ออกเวร`,
-          });
-        }
+      const { data: openLogs, error: readErr } = await supabase
+        .from('duty_logs').select('id, officer_id, officer_name, clock_in, checkout_method')
+        .is('clock_out', null).is('deleted_at', null);
+
+      if (readErr) {
+        setNotice({ kind: 'err', text: `ปิดระบบเวรได้ แต่บังคับออกเวรไม่สำเร็จ: ${readErr.message}` });
+        return;
       }
+
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const open = openLogs ?? [];
+      let closed = 0;
+      let failed = 0;
+
+      for (const log of open) {
+        const minutes = Math.max(0, Math.round(
+          (now.getTime() - new Date(log.clock_in).getTime()) / 60000,
+        ));
+        const { error } = await supabase.from('duty_logs').update({
+          clock_out: nowIso,
+          duration_minutes: minutes,
+          forced_by: officer.id,
+          forced_by_name: `${officer.name} (ปิดระบบเวร)`,
+          // บังคับออกเวร = ไม่ให้คะแนน +5/ชม. (applyCheckoutPoints จัดการ −15 ให้เอง)
+          checkout_method: 'forced',
+        }).eq('id', log.id);
+
+        if (error) { failed += 1; continue; }
+
+        // เคลียร์ธงให้ตรงกับฐานข้อมูล ไม่ให้หน้าจอค้างว่า "กำลังเข้าเวร"
+        if (log.officer_id) {
+          await supabase.from('officers').update({ is_on_duty: false }).eq('id', log.officer_id);
+        }
+        closed += 1;
+      }
+
+      const total = Math.round(closed / 60);
+      setNotice({
+        kind: failed > 0 ? 'err' : 'ok',
+        text: failed > 0
+          ? `บังคับออกเวร ${closed} คน แต่ล้มเหลว ${failed} รายการ`
+          : `ปิดระบบเข้าเวรแล้ว · บังคับออกเวร ${closed} รายการ`
+            + (closed > 0 ? ` (รวม ${Math.floor(total)} ชม. ${closed % 60} นาที)` : ''),
+      });
+      return;
     }
+
     setNotice((n) => n ?? { kind: 'ok', text: next ? 'เปิดระบบเข้าเวรแล้ว' : 'ปิดระบบเข้าเวรแล้ว' });
   }
 

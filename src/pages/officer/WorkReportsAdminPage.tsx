@@ -18,7 +18,9 @@ import {
   RANK_LABELS, WORK_REPORT_STATUS_LABELS,
   type Officer, type OfficerRankRecord, type WorkReport, type WorkReportCase,
 } from '../../lib/types';
-import { deleteWorkReport, dutyCategoryLabel, loadReportCases } from '../../lib/api/workReportsAdmin';
+import {
+  deleteWorkReport, dutyCategoryLabel, loadReportCases, loadCaseCounts,
+} from '../../lib/api/workReportsAdmin';
 
 type StatusKey = 'pending' | 'approved' | 'rejected';
 
@@ -45,6 +47,8 @@ export function WorkReportsAdminPage() {
   const [officers, setOfficers] = useState<Officer[]>([]);
   const [ranks, setRanks] = useState<OfficerRankRecord[]>([]);
   const [caseCounts, setCaseCounts] = useState<Record<string, number>>({});
+  const [completedCounts, setCompletedCounts] = useState<Record<string, number>>({});
+  const [countsUnavailable, setCountsUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,28 +67,33 @@ export function WorkReportsAdminPage() {
 
   async function load() {
     setLoading(true);
-    const [repRes, offRes, rankRes, caseRes] = await Promise.all([
+    const [repRes, offRes, rankRes, countRes] = await Promise.all([
       supabase.from('work_reports')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(1000),
       supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
       supabase.from('officer_ranks').select('*').order('sort_order'),
-      supabase.from('work_report_cases').select('work_report_id'),
+      loadCaseCounts(),
     ]);
 
-    const err = [repRes, offRes, rankRes, caseRes].find((r) => r.error);
+    const err = [repRes, offRes, rankRes, countRes].find((r) => r.error);
     setError(err?.error ? err.error.message : null);
 
     setRows((repRes.data ?? []) as WorkReport[]);
     setOfficers((offRes.data ?? []) as Officer[]);
     setRanks((rankRes.data ?? []) as OfficerRankRecord[]);
 
-    const counts: Record<string, number> = {};
-    for (const c of (caseRes.data ?? []) as Array<{ work_report_id: string }>) {
-      counts[c.work_report_id] = (counts[c.work_report_id] ?? 0) + 1;
+    const { counts, unavailable } = countRes;
+    const total: Record<string, number> = {};
+    const done: Record<string, number> = {};
+    for (const c of counts.values()) {
+      total[c.work_report_id] = c.case_count;
+      done[c.work_report_id] = c.completed_count;
     }
-    setCaseCounts(counts);
+    setCaseCounts(total);
+    setCompletedCounts(done);
+    setCountsUnavailable(unavailable);
     setLoading(false);
   }
 
@@ -284,13 +293,10 @@ export function WorkReportsAdminPage() {
             <p className="text-gray-400">ไม่พบรายการที่ตรงกับเงื่อนไข</p>
           </div>
         ) : (
-          <table className="w-full text-xs min-w-[980px]">
+          <table className="w-full text-xs min-w-[720px]">
             <thead>
               <tr className="border-b border-blue-900/40">
-                {['วันที่และเวลาส่ง', 'เจ้าหน้าที่', 'รายละเอียดรายงาน', 'สถานะ', 'ผู้ตรวจ', 'จัดการ']
-                  .map((h) => (
-                    <th key={h} className="text-left px-3 py-2.5 text-gray-400 font-semibold whitespace-nowrap">{h}</th>
-                  ))}
+                <th className="text-left px-4 py-2.5 text-gray-400 font-semibold">รายงาน</th>
               </tr>
             </thead>
             <tbody>
@@ -299,79 +305,78 @@ export function WorkReportsAdminPage() {
                 const st = STATUS_STYLE[statusKeyOf(r)];
                 const StIcon = st.Icon;
                 return (
-                  <tr key={r.id} className="border-b border-blue-900/25 hover:bg-navy-800/40">
-                    <td className="px-3 py-2 text-gray-300 whitespace-nowrap">
-                      <div>{fmtDate(r.created_at)}</div>
-                      <div className="text-gray-500 font-mono text-[11px]">
-                        {new Date(r.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        {o?.photo_url ? (
-                          <img src={o.photo_url} alt="" loading="lazy"
-                            className="w-7 h-7 rounded-full object-cover border border-blue-900/50 flex-shrink-0" />
-                        ) : (
-                          <span className="w-7 h-7 rounded-full bg-navy-800 border border-blue-900/50 flex items-center justify-center flex-shrink-0">
-                            <FileText size={12} className="text-gray-600" />
-                          </span>
-                        )}
-                        <div className="min-w-0">
-                          <div className="text-gray-200 truncate">{o?.name ?? r.officer_name}</div>
-                          <div className="text-[10px] text-gray-500">
-                            {o?.username
-                              ? <span className="font-mono">{o.username}</span>
-                              : <span className="font-mono">ไม่ทราบรหัส</span>}
-                            {' · '}{rankLabel.get(o?.rank ?? '')
-                              ?? RANK_LABELS[(o?.rank ?? 'officer') as keyof typeof RANK_LABELS] ?? '—'}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 max-w-[280px]">
-                      <span className="inline-block px-1.5 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-300 text-[10px]">
-                        {dutyCategoryLabel(r.duty_category)}
-                      </span>
-                      <span className="ml-1.5 text-[10px] text-gray-600">{caseCounts[r.id] ?? 0} เคส</span>
-                      <div className="text-[11px] text-gray-400 mt-1 line-clamp-2">
-                        {r.summary || r.report_text || '—'}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap ${st.cls}`}>
-                        <StIcon size={10} /> {st.label}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-[11px] text-gray-400 whitespace-nowrap max-w-[160px]">
-                      {r.reviewed_by_name ? (
-                        <>
-                          <div className="truncate">{r.reviewed_by_name}</div>
-                          <div className="text-[10px] text-gray-600">{fmtDate(r.reviewed_at)}</div>
-                          {typeof r.reviewed_points === 'number' && r.reviewed_points > 0 && (
-                            <div className="text-[10px] text-emerald-400">+{r.reviewed_points} คะแนน</div>
+                <tr key={r.id} className="border-b border-blue-900/25 hover:bg-navy-800/40 align-top">
+                  <td className="px-4 py-4">
+                    {/* บรรทัดบน: ชื่อ · สถานะ · หมวดงาน · จำนวนเคส · ปุ่มจัดการ */}
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span className="text-white font-semibold text-sm leading-relaxed">
+                          {o?.name ?? r.officer_name}
+                        </span>
+
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap ${st.cls}`}>
+                          <StIcon size={10} /> {st.label}
+                        </span>
+
+                        <span className="px-2 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-300 text-[10px] whitespace-nowrap">
+                          {dutyCategoryLabel(r.duty_category)}
+                        </span>
+
+                        <span className="px-2 py-0.5 rounded border border-blue-500/30 bg-blue-500/10 text-blue-300 text-[10px] font-semibold whitespace-nowrap">
+                          {caseCounts[r.id] ?? 0} เคส
+                          {(completedCounts[r.id] ?? 0) > 0 && (
+                            <span className="text-emerald-400 font-normal ml-1">
+                              ({completedCounts[r.id]} เสร็จ)
+                            </span>
                           )}
-                        </>
-                      ) : '—'}
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-1">
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1 flex-shrink-0">
                         <button
                           onClick={() => openDetail(r)}
-                          className="p-1.5 rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10"
+                          className="p-1.5 rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
                           title="ดูรายงานฉบับเต็ม"
                         >
                           <Eye size={13} />
                         </button>
                         <button
                           onClick={() => setTarget(r)}
-                          className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10"
+                          className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                           title="ลบรายงาน"
                         >
                           <Trash2 size={13} />
                         </button>
                       </div>
-                    </td>
-                  </tr>
+                    </div>
+
+                    {/* บรรทัดล่าง: สรุปรายงาน · วันที่ส่ง */}
+                    <div className="flex items-start gap-2 mt-2.5 flex-wrap">
+                      <p className="text-[11px] text-gray-400 leading-relaxed flex-1 min-w-[160px]">
+                        {r.summary || r.report_text || '—'}
+                      </p>
+                      <span className="text-[11px] text-gray-500 leading-relaxed whitespace-nowrap flex-shrink-0">
+                        {fmtDate(r.created_at)}{' '}
+                        {new Date(r.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+
+                    {/* ผู้ตรวจ */}
+                    {r.reviewed_by_name && (
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                        <span className="text-[10px] text-gray-500 leading-relaxed">
+                          ตรวจโดย: <span className="text-gray-400">{r.reviewed_by_name}</span>
+                          {r.reviewed_at && <> · {fmtDate(r.reviewed_at)}</>}
+                        </span>
+                        {(r.reviewed_points ?? 0) > 0 && (
+                          <span className="text-[10px] text-emerald-400 leading-relaxed">
+                            +{r.reviewed_points} คะแนน
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
                 );
               })}
             </tbody>
