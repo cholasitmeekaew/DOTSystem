@@ -38,6 +38,22 @@ export const AUTO_POINTS_RULES = {
   complaintVerified: -30,  // ร้องเรียนผลตรวจสอบเป็นจริง
 } as const;
 
+/**
+ * คำอธิบายกฎสำหรับแสดงในหน้าตั้งค่า
+ * สร้างจาก AUTO_POINTS_RULES โดยตรง เพื่อไม่ให้ตัวเลขใน UI
+ * ผิดไปจากค่าที่ระบบใช้จริง (เคยลืม −15 ของการถูกบังคับออกเวรไปแล้ว)
+ */
+export const AUTO_POINTS_SUMMARY = [
+  `+${AUTO_POINTS_RULES.perDutyHour}/ชม. ออกเวร`,
+  `+${AUTO_POINTS_RULES.reportApproved} รายงานได้รับอนุมัติ`,
+  `+${AUTO_POINTS_RULES.caseCompleted} ปิดเคส`,
+  `+${AUTO_POINTS_RULES.serviceClosed} รับชำระครบ`,
+  `${AUTO_POINTS_RULES.absenceWeek} ขาดเวรต่อสัปดาห์`,
+  `${AUTO_POINTS_RULES.missingReport} ไม่ส่งรายงาน`,
+  `${AUTO_POINTS_RULES.forceCheckout} ถูกบังคับออกเวร`,
+  `${AUTO_POINTS_RULES.complaintVerified} ร้องเรียนผลเป็นจริง`,
+].join(' · ');
+
 /** เรียกโดยเครื่องยนต์อัตโนมัติ (ผู้เรียกถือว่า "ระบบ") */
 export const AUTO_POINTS_ACTOR = { id: 'system:auto-points', name: 'ระบบ PPS อัตโนมัติ' };
 

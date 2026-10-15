@@ -68,14 +68,16 @@ export function WorkReportsAdminPage() {
 
   async function load() {
     setLoading(true);
-    const [repRes, offRes, rankRes, countRes] = await Promise.all([
-      supabase.from('work_reports')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(1000),
+    // ต้องรู้ id รายงานก่อน จึงจะนับเคสทีละรายงานเป็นทางสำรองได้
+    const repRes = await supabase.from('work_reports')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    const [offRes, rankRes, countRes] = await Promise.all([
       supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
       supabase.from('officer_ranks').select('*').order('sort_order'),
-      loadCaseCounts(),
+      loadCaseCounts(((repRes.data ?? []) as WorkReport[]).map((r) => r.id)),
     ]);
 
     const err = [repRes, offRes, rankRes, countRes].find((r) => r.error);

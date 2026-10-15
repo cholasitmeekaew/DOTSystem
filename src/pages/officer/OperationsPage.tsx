@@ -32,7 +32,7 @@ import {
   AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 import {
-  deleteWorkReport as deleteWorkReportShared, loadReportCases,
+  deleteWorkReport as deleteWorkReportShared, loadReportCases, loadCaseCounts,
 } from '../../lib/api/workReportsAdmin';
 
 type ReportCaseDraft = {
@@ -759,7 +759,7 @@ export function OperationsPage({
     const reportsQuery = canAdmin
       ? supabase.from('work_reports').select('*').order('created_at', { ascending: false })
       : supabase.from('work_reports').select('*').eq('officer_id', officer?.id).order('created_at', { ascending: false });
-    const [duty, logs, settingsRes, reportsRes, citizensRes, casesRes] = await Promise.all([
+    const [duty, logs, settingsRes, reportsRes, citizensRes] = await Promise.all([
       supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('is_on_duty', true).eq('status', 'active').order('name'),
       canAdmin
         ? supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }).limit(200)
@@ -767,20 +767,17 @@ export function OperationsPage({
       supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
       reportsQuery,
       supabase.from('citizens').select('*').order('roblox_username').limit(1000),
-      supabase.from('work_report_cases').select('id, work_report_id').limit(3000),
     ]);
     setOnDutyOfficers(duty.data ?? []);
     setDutyLogs(logs.data ?? []);
     setSettings(settingsRes.data as SystemSettings | null);
     const reports = (reportsRes.data ?? []) as WorkReport[];
     setWorkReports(reports);
-    // นับเคสต่อรายงาน (กรองเฉพาะรายงานที่โหลดมา)
-    const knownIds = new Set(reports.map((r) => r.id));
+    // นับเคสต่อรายงาน — ต้องใช้ RPC เท่านั้น
+    // query ตรงถูก RLS บัง (auth.uid() = NULL) จึงได้ 0 เสมอโดยไม่ error
+    const { counts: caseCountMap } = await loadCaseCounts(reports.map((r) => r.id));
     const counts: Record<string, number> = {};
-    for (const c of ((casesRes.data ?? []) as { id: string; work_report_id: string }[])) {
-      if (!c.work_report_id || !knownIds.has(c.work_report_id)) continue;
-      counts[c.work_report_id] = (counts[c.work_report_id] ?? 0) + 1;
-    }
+    for (const c of caseCountMap.values()) counts[c.work_report_id] = c.case_count;
     setReportCaseCounts(counts);
     setCitizenOptions((citizensRes.data ?? []) as Citizen[]);
     setLoading(false);
@@ -1839,12 +1836,21 @@ function WorkReportApprovalPanel({
                         <span className="text-[10px] text-gray-500 bg-navy-700 px-1.5 py-0.5 rounded">
                           {getDutyCategoryLabel(r.duty_category)}
                         </span>
-                        <span className="text-[10px] text-gray-500 font-mono">
+                        <span
+                          className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                            (caseCounts[r.id] ?? 0) > 0
+                              ? 'bg-blue-500/10 text-blue-300'
+                              : 'text-gray-500'
+                          }`}
+                          title="จำนวนเคสย่อยในรายงานนี้"
+                        >
                           {caseCounts[r.id] ?? 0} เคส
                         </span>
                       </div>
-                      <p className="text-xs text-gray-400 mt-1.5 line-clamp-2">
-                        {r.summary || r.report_text}
+                      {/* ไม่ใช้ line-clamp เพราะเจ้าหน้าที่ต้องอ่านรายละเอียดให้ครบ
+                          ก่อนตัดสินใจอนุมัติหรือไม่อนุมัติ (รายงานยาวได้หลายบรรทัด) */}
+                      <p className="text-xs text-gray-400 mt-1.5 leading-relaxed whitespace-pre-line break-words">
+                        {r.summary || r.report_text || '—'}
                       </p>
                       <div className="flex items-center gap-3 mt-1.5 text-[10px] text-gray-500 flex-wrap">
                         <span>{formatTimestamp(r.created_at)}</span>

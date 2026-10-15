@@ -17,7 +17,7 @@ import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/PageHeader';
 import type { SystemSettings } from '../../lib/types';
 import {
-  applyMissingReportPoints, applyWeeklyAbsencePoints,
+  applyMissingReportPoints, applyWeeklyAbsencePoints, AUTO_POINTS_SUMMARY,
 } from '../../lib/api/autoPoints';
 import { resolveScheduledOfficerIds } from '../../lib/dutySchedule';
 import { toIso } from '../../lib/dutySchedule';
@@ -343,7 +343,7 @@ export function AdminSettingsPage() {
                   <h2 className="text-sm font-bold text-white">PPS Engine — คะแนนอัตโนมัติ</h2>
                   <p className="text-xs text-gray-400 mt-0.5">
                     {autoPoints
-                      ? 'ทำงานอัตโนมัติ — +5/ชม. ออกเวร · +10 รายงานได้รับอนุมัติ · +5 ปิดเคส · หักเมื่อขาดเวร/ไม่ส่งรายงาน/ถูกบังคับออกเวร/ร้องเรียนผลเป็นจริง'
+                      ? `ทำงานอัตโนมัติ — ${AUTO_POINTS_SUMMARY}`
                       : 'ปิดอยู่ — ระบบจะไม่ให้หักคะแนนอัตโนมัติ (หัวหน้ากรมยังให้/หักคะแนนเองได้)'}
                   </p>
                 </div>

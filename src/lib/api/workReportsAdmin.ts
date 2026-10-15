@@ -122,21 +122,43 @@ export interface CaseCount {
   completed_count: number;
 }
 
-export async function loadCaseCounts(): Promise<{
+export async function loadCaseCounts(
+  reportIds: string[] = [],
+): Promise<{
   counts: Map<string, CaseCount>;
   unavailable: boolean;
 }> {
+  // ทางหลัก: RPC สรุปทั้งตารางในครั้งเดียว (migration 0035)
   const { data, error } = await supabase.rpc('get_work_report_case_counts');
-  if (error || !data) {
+
+  if (!error && data) {
+    const rows = data as Array<{ work_report_id: string; case_count: number; completed_count: number }>;
+    return {
+      counts: new Map(rows.map((r) => [r.work_report_id, {
+        work_report_id: r.work_report_id,
+        case_count: Number(r.case_count) || 0,
+        completed_count: Number(r.completed_count) || 0,
+      }])),
+      unavailable: false,
+    };
+  }
+
+  // ยังไม่ได้รัน migration 0035 → ถอยไปเรียกทีละรายงาน
+  // ยังดีกว่าการคืนค่าว่าง เพราะจะแสดง "0 เคส" ทั้งที่มีเคสจริง
+  if (reportIds.length === 0) {
     return { counts: new Map(), unavailable: true };
   }
-  const rows = (data as Array<{ work_report_id: string; case_count: number; completed_count: number }>) ?? [];
-  return {
-    counts: new Map(rows.map((r) => [r.work_report_id, {
-      work_report_id: r.work_report_id,
-      case_count: Number(r.case_count) || 0,
-      completed_count: Number(r.completed_count) || 0,
-    }])),
-    unavailable: false,
-  };
+
+  const counts = new Map<string, CaseCount>();
+  await Promise.all(reportIds.map(async (id) => {
+    const list = await loadReportCases(id);
+    if (list.length === 0) return;
+    counts.set(id, {
+      work_report_id: id,
+      case_count: list.length,
+      completed_count: list.filter((c: WorkReportCase) => c.case_status === 'completed').length,
+    });
+  }));
+
+  return { counts, unavailable: false };
 }
