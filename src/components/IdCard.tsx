@@ -1,3 +1,4 @@
+import { BackdropScrim } from './BackdropScrim';
 import { useRef } from 'react';
 import html2canvas from 'html2canvas';
 import { Truck, Download, Phone, Power } from 'lucide-react';
@@ -46,6 +47,8 @@ export function IdCard({ officer, clockInTime, showActions, onForceCheckout, onC
       >
         {/* Background */}
         <div className="absolute inset-0 bg-gradient-to-br from-navy-800 via-navy-900 to-navy-950" />
+        {/* แถบดำไล่ระดับด้านล่าง ให้ตัวอักษรทับบนพื้นหลังอ่านออก */}
+        <BackdropScrim intensity={0.55} />
         <div className="absolute inset-0 opacity-5" style={{
           backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 20px, rgba(245,158,11,0.5) 20px, rgba(245,158,11,0.5) 21px)',
         }} />

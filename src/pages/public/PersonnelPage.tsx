@@ -1,3 +1,4 @@
+import { BackdropScrim } from '../../components/BackdropScrim';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Users, Search, Shield, Briefcase, Wrench, Zap, TrafficCone, AlertCircle, X,
@@ -669,7 +670,8 @@ function PersonnelCard({ officer, genLabel, onClick }: { officer: Officer; genLa
 
       <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/40 to-transparent pointer-events-none" />
 
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-navy-900 via-navy-900/95 to-transparent pt-12 pb-3 px-3">
+      {/* แถบดำไล่ระดับด้านล่าง ให้ชื่อ/ยศ/แผนก อ่านออกชัดทับรูป */}
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/92 via-navy-900/85 to-transparent pt-12 pb-3 px-3">
         <div className="flex items-center gap-1.5 mb-1">
           <div className={`w-1.5 h-1.5 rounded-full ${officer.is_on_duty ? 'bg-emerald-400 anim-pulse' : 'bg-gray-500'}`} />
           <span className={`text-[10px] font-semibold ${officer.is_on_duty ? 'text-emerald-400' : 'text-gray-500'}`}>
@@ -797,6 +799,7 @@ function OfficerDetailModal({
             </div>
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-navy-900 via-navy-900/60 to-transparent" />
+          <BackdropScrim intensity={0.6} />
           <button
             onClick={onClose}
             className="absolute top-3 right-3 w-8 h-8 bg-navy-900/70 hover:bg-navy-800 border border-blue-900/50 rounded-lg flex items-center justify-center text-white transition-colors"

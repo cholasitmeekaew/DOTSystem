@@ -144,9 +144,16 @@ export function AdminMenuPage({ onNavigate }: Props) {
                     <span className={`p-2.5 rounded-xl flex-shrink-0 ${it.tint}`}>
                       <Icon size={19} />
                     </span>
-                    <span className="min-w-0">
-                      <span className="block text-[13px] font-semibold text-white">{it.label}</span>
-                      <span className="block text-[11px] text-gray-400 leading-relaxed mt-0.5">
+                    {/* min-w-0 + break-words กันชื่อเมนูยาวล้นการ์ด
+                        (ชื่อยาวเกินไปตัดท้ายด้วย … แต่คำอธิบายต้องอ่านออกทั้งหมด) */}
+                    <span className="min-w-0 flex-1">
+                      <span
+                        className="block text-[13px] font-semibold text-white truncate"
+                        title={it.label}
+                      >
+                        {it.label}
+                      </span>
+                      <span className="block text-[11px] text-gray-400 leading-relaxed mt-0.5 break-words">
                         {it.desc}
                       </span>
                     </span>

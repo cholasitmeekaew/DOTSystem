@@ -1,3 +1,4 @@
+import { BackdropScrim } from '../../components/BackdropScrim';
 import { useEffect, useState } from 'react';
 import { Award, TrendingUp, TrendingDown, Trophy, Target, History } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
@@ -58,6 +59,8 @@ export function MyPointsPage() {
       <FadeIn className="mb-6">
         <div className="card p-6 sm:p-8 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-40 h-40 bg-amber-500/5 rounded-full blur-3xl" />
+          {/* แถบดำไล่ระดับด้านล่าง ให้ตัวเลขคะแนนติดลบ (สีแดง) อ่านออกชัดเจน */}
+          <BackdropScrim intensity={0.6} />
           <div className="relative">
             <div className="flex items-start justify-between flex-wrap gap-4 mb-6">
               <div>
@@ -131,6 +134,7 @@ export function MyPointsPage() {
             <ul className="space-y-2">
               {log.map((entry, i) => {
                 const positive = entry.delta > 0;
+                const debt = (entry.balance_after ?? 0) < 0;
                 return (
                   <li
                     key={i}
@@ -144,8 +148,10 @@ export function MyPointsPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
                         <div className="text-sm text-white font-medium">{entry.reason}</div>
-                        <div className={`font-bold text-base ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {positive ? '+' : ''}{entry.delta}
+                        <div className={`font-bold text-base whitespace-nowrap ${
+                          positive ? 'text-emerald-400' : 'text-red-400'
+                        }`}>
+                          {positive ? '+' : ''}{entry.delta.toLocaleString('th-TH')}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
@@ -153,7 +159,17 @@ export function MyPointsPage() {
                         <span>·</span>
                         <span>โดย {entry.by_name}</span>
                         <span>·</span>
-                        <span>คงเหลือ {entry.balance_after}</span>
+                        <span className={debt ? 'text-red-400 font-semibold' : ''}>
+                          คงเหลือ {entry.balance_after.toLocaleString('th-TH')}
+                        </span>
+                        {debt && (
+                          <>
+                            <span>·</span>
+                            <span className="text-red-400">
+                              ติดหนี้คะแนน {Math.abs(entry.balance_after).toLocaleString('th-TH')}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                   </li>

@@ -168,11 +168,16 @@ export function OfficerLayout({ children, currentPage, onNavigate, onLogout }: P
                           : 'text-gray-400 hover:text-white hover:bg-navy-700'
                       }`}
                     >
-                      <span className={currentPage === item.id ? 'text-amber-300' : 'text-gray-500 group-hover:text-gray-300'}>
+                      <span className={`flex-shrink-0 ${currentPage === item.id ? 'text-amber-300' : 'text-gray-500 group-hover:text-gray-300'}`}>
                         {item.icon}
                       </span>
-                      <span className="flex-1 text-left">{item.label}</span>
-                      {currentPage === item.id && <ChevronRight size={14} className="text-amber-300" />}
+                      {/* min-w-0 + truncate กันข้อความยาวดันไอคอนลูกศรออกนอกกรอบ */}
+                      <span className="flex-1 min-w-0 text-left truncate" title={item.label}>
+                        {item.label}
+                      </span>
+                      {currentPage === item.id && (
+                        <ChevronRight size={14} className="text-amber-300 flex-shrink-0" />
+                      )}
                     </button>
                   ))}
                 </div>
