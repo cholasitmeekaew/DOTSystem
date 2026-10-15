@@ -8,6 +8,7 @@
  * ============================================================= */
 
 import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { forceCheckoutAllOpenLogs } from '../../lib/api/forceCheckout';
 import { useEffect, useState } from 'react';
 import {
   Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw, FileText,
@@ -17,7 +18,8 @@ import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/PageHeader';
 import type { SystemSettings } from '../../lib/types';
 import {
-  applyMissingReportPoints, applyWeeklyAbsencePoints, AUTO_POINTS_SUMMARY,
+  applyMissingReportPoints, applyWeeklyAbsencePoints,
+  AUTO_POINTS_SUMMARY, AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 import { resolveScheduledOfficerIds } from '../../lib/dutySchedule';
 import { toIso } from '../../lib/dutySchedule';
@@ -218,59 +220,33 @@ export function AdminSettingsPage() {
 
     // ปิดระบบเวร → บังคับออกเวรทุกคนที่ยังเข้าเวรค้างอยู่ทันที
     //
-    // ต้องอ่านจาก duty_logs ที่ clock_out IS NULL ไม่ใช่ officers.is_on_duty
-    // เพราะสองอย่างนี้ desync กันได้ (เช่น clock-out สำเร็จแต่ flag ไม่เปลี่ยน
-    // หรือ flag เป็น true แต่ไม่มี log) ถ้าเชื่อ flag จะพลาดเวรที่ค้างจริง
+    // ใช้ฟังก์ชันกลาง forceCheckoutAllOpenLogs ที่อ่านจาก duty_logs ที่
+    // clock_out IS NULL (ไม่ใช่ธง officers.is_on_duty เพราะสองอย่าง desync
+    // กันได้ ถ้าเชื่อธงจะพลาดเวรที่ค้างจริง) และหักคะแนน −15 ให้ด้วย
     if (!next) {
-      const { data: openLogs, error: readErr } = await supabase
-        .from('duty_logs').select('id, officer_id, officer_name, clock_in, checkout_method')
-        .is('clock_out', null).is('deleted_at', null);
+      const res = await forceCheckoutAllOpenLogs({ id: officer.id, name: officer.name });
 
-      if (readErr) {
-        setNotice({ kind: 'err', text: `ปิดระบบเวรได้ แต่บังคับออกเวรไม่สำเร็จ: ${readErr.message}` });
+      if (!res.ok) {
+        setNotice({
+          kind: 'err',
+          text: `ปิดระบบเวรได้ แต่บังคับออกเวรไม่สำเร็จ ${res.failed} รายการ: ${res.errors[0] ?? 'ไม่ทราบสาเหตุ'}`,
+        });
         return;
       }
 
-      const now = new Date();
-      const nowIso = now.toISOString();
-      const open = openLogs ?? [];
-      let closed = 0;
-      let failed = 0;
-
-      for (const log of open) {
-        const minutes = Math.max(0, Math.round(
-          (now.getTime() - new Date(log.clock_in).getTime()) / 60000,
-        ));
-        const { error } = await supabase.from('duty_logs').update({
-          clock_out: nowIso,
-          duration_minutes: minutes,
-          forced_by: officer.id,
-          forced_by_name: `${officer.name} (ปิดระบบเวร)`,
-          // บังคับออกเวร = ไม่ให้คะแนน +5/ชม. (applyCheckoutPoints จัดการ −15 ให้เอง)
-          checkout_method: 'forced',
-        }).eq('id', log.id);
-
-        if (error) { failed += 1; continue; }
-
-        // เคลียร์ธงให้ตรงกับฐานข้อมูล ไม่ให้หน้าจอค้างว่า "กำลังเข้าเวร"
-        if (log.officer_id) {
-          await supabase.from('officers').update({ is_on_duty: false }).eq('id', log.officer_id);
-        }
-        closed += 1;
-      }
-
-      const total = Math.round(closed / 60);
+      const hours = Math.floor(res.minutes / 60);
+      const mins = res.minutes % 60;
       setNotice({
-        kind: failed > 0 ? 'err' : 'ok',
-        text: failed > 0
-          ? `บังคับออกเวร ${closed} คน แต่ล้มเหลว ${failed} รายการ`
-          : `ปิดระบบเข้าเวรแล้ว · บังคับออกเวร ${closed} รายการ`
-            + (closed > 0 ? ` (รวม ${Math.floor(total)} ชม. ${closed % 60} นาที)` : ''),
+        kind: 'ok',
+        text: res.closed > 0
+          ? `ปิดระบบเข้าเวรแล้ว · บังคับออกเวร ${res.closed} รายการ `
+            + `(รวม ${hours} ชม. ${mins} นาที · หักคะแนน ${AUTO_POINTS_RULES.forceCheckout} ต่อรายการ)`
+          : 'ปิดระบบเข้าเวรแล้ว · ไม่มีใครกำลังเข้าเวรค้างอยู่',
       });
       return;
     }
 
-    setNotice((n) => n ?? { kind: 'ok', text: next ? 'เปิดระบบเข้าเวรแล้ว' : 'ปิดระบบเข้าเวรแล้ว' });
+    setNotice({ kind: 'ok', text: 'เปิดระบบเข้าเวรแล้ว' });
   }
 
   const autoPoints = settings?.auto_points_enabled ?? false;

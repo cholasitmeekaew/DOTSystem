@@ -1,4 +1,5 @@
 import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { forceCheckoutOfficer } from '../../lib/api/forceCheckout';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Clock, LogIn, LogOut, Users, Trash2, Power, AlertCircle, Image as ImageIcon, Shield,
@@ -855,43 +856,10 @@ export function OperationsPage({
   async function handleForceCheckout() {
     if (!forceTarget || !officer) return;
 
-    const { data: activeLog } = await supabase
-      .from('duty_logs')
-      .select('*')
-      .eq('officer_id', forceTarget.id)
-      .is('clock_out', null)
-      .is('deleted_at', null)
-      .maybeSingle();
-
-    if (activeLog) {
-      const now = new Date();
-      const dur = Math.round((now.getTime() - new Date(activeLog.clock_in).getTime()) / 60000);
-      await supabase.from('duty_logs').update({
-        clock_out: now.toISOString(),
-        duration_minutes: dur,
-        forced_by: officer.id,
-        forced_by_name: officer.name,
-        checkout_method: 'forced',
-      }).eq('id', activeLog.id);
-      // -15 คะแนน เมื่อถูกบังคับให้ออกเวร
-      await applyCheckoutPoints({
-        ...(activeLog as DutyLog),
-        clock_out: now.toISOString(),
-        duration_minutes: dur,
-        forced_by: officer.id,
-        forced_by_name: officer.name,
-        checkout_method: 'forced',
-      } as DutyLog);
-    }
-
-    await supabase.from('officers').update({ is_on_duty: false, updated_at: new Date().toISOString() }).eq('id', forceTarget.id);
-    await supabase.from('audit_logs').insert({
-      action: 'FORCE_CHECKOUT',
-      target_type: 'officer',
-      target_id: forceTarget.id,
-      performed_by: officer.id,
-      performed_by_name: officer.name,
-      details: { target_name: forceTarget.name, method: 'force_checkout' },
+    // ใช้ฟังก์ชันกลาง — ปิด log, หัก −15, เคลียร์ธง, เขียน audit ครบในที่เดียว
+    await forceCheckoutOfficer(forceTarget.id, forceTarget.name, {
+      id: officer.id,
+      name: officer.name,
     });
 
     setForceTarget(null);

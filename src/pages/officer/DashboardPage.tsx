@@ -1,3 +1,6 @@
+import { forceCheckoutOfficer } from '../../lib/api/forceCheckout';
+import { AUTO_POINTS_RULES } from '../../lib/api/autoPoints';
+import { useToast } from '../../hooks/use-toast';
 import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import {
@@ -18,6 +21,7 @@ import { GoldBarChart, DonutChart } from '../../components/Charts';
 
 export function DashboardPage() {
   const { officer, isCommissioner } = useAuth();
+  const { toast } = useToast();
   const [onDutyCount, setOnDutyCount] = useState(0);
   const [unpaidCount, setUnpaidCount] = useState(0);
   const [unpaidTotal, setUnpaidTotal] = useState(0);
@@ -128,36 +132,22 @@ export function DashboardPage() {
 
   async function handleForceCheckout() {
     if (!forceTarget || !officer) return;
-    const { data: activeLog } = await supabase
-      .from('duty_logs')
-      .select('*')
-      .eq('officer_id', forceTarget.id)
-      .is('clock_out', null)
-      .is('deleted_at', null)
-      .maybeSingle();
-
-    if (activeLog) {
-      const now = new Date();
-      const dur = Math.round((now.getTime() - new Date(activeLog.clock_in).getTime()) / 60000);
-      await supabase.from('duty_logs').update({
-        clock_out: now.toISOString(),
-        duration_minutes: dur,
-        forced_by: officer.id,
-        forced_by_name: officer.name,
-        checkout_method: 'forced',
-      }).eq('id', activeLog.id);
-    }
-    await supabase.from('officers').update({ is_on_duty: false, updated_at: new Date().toISOString() }).eq('id', forceTarget.id);
-    await supabase.from('audit_logs').insert({
-      action: 'FORCE_CHECKOUT',
-      target_type: 'officer',
-      target_id: forceTarget.id,
-      performed_by: officer.id,
-      performed_by_name: officer.name,
-      details: { target_name: forceTarget.name },
+    // ใช้ฟังก์ชันกลาง เพื่อให้หักคะแนน −15 และเขียน audit เหมือนกันทุกทาง
+    const res = await forceCheckoutOfficer(forceTarget.id, forceTarget.name, {
+      id: officer.id,
+      name: officer.name,
     });
     setForceTarget(null);
     await fetchAllData();
+    toast({
+      title: res.closed > 0 ? 'บังคับออกเวรสำเร็จ' : 'บังคับออกเวรไม่สำเร็จ',
+      description: res.failed > 0
+        ? `ล้มเหลว ${res.failed} รายการ: ${res.errors[0]}`
+        : (res.closed > 0
+            ? `${forceTarget.name} · ${res.minutes} นาที · หักคะแนน ${AUTO_POINTS_RULES.forceCheckout}`
+            : 'ไม่พบเวรที่กำลังเข้าอยู่'),
+      variant: res.failed > 0 ? 'destructive' : 'default',
+    });
   }
 
   const greeting = () => {
