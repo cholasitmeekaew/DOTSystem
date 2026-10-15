@@ -123,6 +123,8 @@ const asArray = <T>(x: unknown): T[] => (Array.isArray(x) ? (x as T[]) : []);
 export async function fetchProfileExtra(
   officerId: string,
   officerName: string,
+  /** ดูโปรไฟล์ของคนอื่นได้เฉพาะหัวหน้ากรม — ถ้าไม่ใช่ต้องซ่อนข้อมูลผู้ร้อง */
+  canSeePersonalData = false,
 ): Promise<ProfileExtra> {
   const out = EMPTY();
   if (!officerId) return out;
@@ -159,7 +161,9 @@ export async function fetchProfileExtra(
       .eq('released_by_name', officerName).order('released_at', { ascending: false }).limit(40)),
     // 3) เหตุฉุกเฉินที่ตนไปรับช่วยเหลือ (responded_by เป็น uuid จริง)
     named('emgRes', supabase.from('emergency_reports')
-      .select('id, discord_username, report_type, details, location, status, created_at')
+      .select(canSeePersonalData
+        ? 'id, discord_username, report_type, details, location, status, created_at'
+        : 'id, report_type, status, created_at')
       .eq('responded_by', officerId).order('created_at', { ascending: false }).limit(40)),
     // 3b) เรื่องร้องเรียน (officer_name เป็น text → เทียบด้วยชื่อ)
     named('cmpRes', supabase.from('complaints')
@@ -248,7 +252,8 @@ export async function fetchProfileExtra(
     id: r.id,
     type: 'emergency' as const,
     title: r.report_type ?? 'เหตุฉุกเฉิน',
-    detail: [r.location, r.details].filter(Boolean).join(' · ').slice(0, 140),
+    detail: [r.location, r.details].filter(Boolean).join(' · ').slice(0, 140)
+      || 'รายละเอียดถูกจำกัดสิทธิ์',
     status: r.status,
     when: r.created_at,
     role: 'ผู้เข้ารับช่วยเหลือ',

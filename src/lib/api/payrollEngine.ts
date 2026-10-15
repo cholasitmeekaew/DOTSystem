@@ -59,21 +59,51 @@ const STORAGE_KEY_SNAPSHOTS = 'dot_payroll_snapshots';
 /* =========================================================================
  * 1. Manual Budget Injections Storage & API
  * ========================================================================= */
-export function getLocalManualInjections(): ManualBudgetInjection[] {
+/**
+ * เคยเก็บงบใน localStorage ของเบราว์เซอร์
+ * ทำให้ยอดที่จ่ายไปแล้วหายเมื่อล้างเบราว์เซอร์/เปลี่ยนเครื่อง
+ * → งบคงเหลือเด้งกลับ และอนุมัติจ่ายงวดเดิมซ้ำได้
+ *
+ * ตอนนี้เก็บในฐานข้อมูลจริง (migration 0036) และคง localStorage ไว้เป็น
+ * fallback เฉพาะตอนที่ยังไม่ได้รัน migration หรือรันโหมด json
+ */
+function readFallback<T>(key: string): T[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_INJECTIONS);
-    return raw ? (JSON.parse(raw) as ManualBudgetInjection[]) : [];
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T[]) : [];
   } catch {
     return [];
   }
 }
 
-export function saveLocalManualInjections(list: ManualBudgetInjection[]) {
+function writeFallback(key: string, list: unknown[]) {
   try {
-    localStorage.setItem(STORAGE_KEY_INJECTIONS, JSON.stringify(list));
+    localStorage.setItem(key, JSON.stringify(list));
   } catch (e) {
-    console.warn('[saveLocalManualInjections] error:', e);
+    console.warn('[payroll storage] localStorage error:', e);
   }
+}
+
+/** อ่านงบที่เติมเอง — จากฐานข้อมูลก่อน ถ้าไม่มีตารางจึงถอยไปใช้ localStorage */
+export async function fetchManualInjections(): Promise<ManualBudgetInjection[]> {
+  const { data, error } = await supabase
+    .from('manual_budget_injections')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error || !data) return readFallback<ManualBudgetInjection>(STORAGE_KEY_INJECTIONS);
+  return (data as unknown as ManualBudgetInjection[]) ?? [];
+}
+
+/** อ่าน snapshot การจ่ายเงินเดือน — จากฐานข้อมูลก่อน */
+export async function fetchPayrollSnapshots(): Promise<PayrollSnapshot[]> {
+  const { data, error } = await supabase
+    .from('payroll_snapshots')
+    .select('*')
+    .order('payout_date', { ascending: false });
+
+  if (error || !data) return readFallback<PayrollSnapshot>(STORAGE_KEY_SNAPSHOTS);
+  return (data as unknown as PayrollSnapshot[]) ?? [];
 }
 
 export async function addManualBudgetInjection(
@@ -92,22 +122,38 @@ export async function addManualBudgetInjection(
     created_at: new Date().toISOString(),
   };
 
-  const list = getLocalManualInjections();
-  list.unshift(item);
-  saveLocalManualInjections(list);
+  const { error: insertErr } = await supabase
+    .from('manual_budget_injections')
+    .upsert({
+      id: item.id,
+      amount: item.amount,
+      department: item.department,
+      reason: item.reason,
+      injected_by: item.injected_by,
+      injected_by_name: item.injected_by_name,
+      created_at: item.created_at,
+    });
+
+  if (insertErr) {
+    // ยังไม่ได้รัน migration 0036 → ถอยไปเก็บในเครื่องก่อน ข้อมูลยังไม่หาย
+    console.warn('[addManualBudgetInjection] fallback to localStorage:', insertErr.message);
+    const list = readFallback<ManualBudgetInjection>(STORAGE_KEY_INJECTIONS);
+    list.unshift(item);
+    writeFallback(STORAGE_KEY_INJECTIONS, list);
+  }
 
   // Log to audit logs in Supabase
   try {
     await supabase.from('audit_logs').insert({
-      actor_id: actor.id,
-      actor_name: actor.name,
-      actor_rank: actor.rank,
+      performed_by: actor.id,
+      performed_by_name: actor.name,
       action: 'BUDGET_INJECTION',
       target_type: 'department_balance',
       details: {
         amount,
         department,
         reason,
+        actor_rank: actor.rank,
         injection_id: item.id,
       },
     });
@@ -121,36 +167,37 @@ export async function addManualBudgetInjection(
 /* =========================================================================
  * 2. Payroll Snapshots History Storage & API (ล็อกถาวรรายงวด)
  * ========================================================================= */
-export function getLocalPayrollSnapshots(): PayrollSnapshot[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_SNAPSHOTS);
-    return raw ? (JSON.parse(raw) as PayrollSnapshot[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveLocalPayrollSnapshots(list: PayrollSnapshot[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY_SNAPSHOTS, JSON.stringify(list));
-  } catch (e) {
-    console.warn('[saveLocalPayrollSnapshots] error:', e);
-  }
-}
-
 export async function recordPayrollSnapshot(snapshot: PayrollSnapshot): Promise<void> {
-  const list = getLocalPayrollSnapshots();
-  // If snapshot for this exact month exists, replace it or prepend
-  const filtered = list.filter((s) => s.id !== snapshot.id);
-  filtered.unshift(snapshot);
-  saveLocalPayrollSnapshots(filtered);
+  // upsert ด้วย id → บันทึกงวดเดิมซ้ำจะทับของเดิม ไม่ใช่เพิ่มยอดจ่ายซ้ำ
+  const { error: snapErr } = await supabase
+    .from('payroll_snapshots')
+    .upsert({
+      id: snapshot.id,
+      period_month: snapshot.period_month,
+      payout_date: snapshot.payout_date,
+      total_amount: snapshot.total_amount,
+      officer_count: snapshot.officer_count,
+      approved_by_id: snapshot.approved_by_id,
+      approved_by_name: snapshot.approved_by_name,
+      approved_by_rank: snapshot.approved_by_rank,
+      notes: snapshot.notes ?? null,
+      breakdown: snapshot.breakdown ?? [],
+    });
+
+  if (snapErr) {
+    console.warn('[recordPayrollSnapshot] fallback to localStorage:', snapErr.message);
+    const list = readFallback<PayrollSnapshot>(STORAGE_KEY_SNAPSHOTS);
+    writeFallback(
+      STORAGE_KEY_SNAPSHOTS,
+      [snapshot, ...list.filter((s) => s.id !== snapshot.id)],
+    );
+  }
 
   // Also log to audit logs
   try {
     await supabase.from('audit_logs').insert({
-      actor_id: snapshot.approved_by_id,
-      actor_name: snapshot.approved_by_name,
-      actor_rank: snapshot.approved_by_rank,
+      performed_by: snapshot.approved_by_id,
+      performed_by_name: snapshot.approved_by_name,
       action: 'PAYROLL_PAYOUT_SNAPSHOT',
       target_type: 'payroll',
       details: {
@@ -223,9 +270,8 @@ export async function upsertPayrollOverride(override: OfficerPayrollOverride): P
 
   try {
     await supabase.from('audit_logs').insert({
-      actor_id: override.updated_by_id,
-      actor_name: override.updated_by_name,
-      actor_rank: '',
+      performed_by: override.updated_by_id,
+      performed_by_name: override.updated_by_name,
       action: 'PAYROLL_MANUAL_OVERRIDE',
       target_type: 'payroll',
       details: {

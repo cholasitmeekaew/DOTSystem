@@ -139,7 +139,7 @@ function OfficerApp() {
             {currentPage === 'officer-management' && isCommissioner && <OfficerManagementPage />}
             {currentPage === 'citizen-management' && isCommissioner && <CitizenManagementPage />}
             {currentPage === 'emergency' && <EmergencyManagementPage />}
-            {currentPage === 'vehicles' && <VehicleManagementPage />}
+            {currentPage === 'vehicles' && isCommissioner && <VehicleManagementPage />}
             {currentPage === 'leave' && <LeaveManagementPage />}
             {currentPage === 'manual' && <ManualPage onBack={() => setCurrentPage('dashboard')} />}
             {currentPage === 'my-points' && <MyPointsPage />}

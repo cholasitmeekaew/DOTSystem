@@ -4,6 +4,7 @@
  * ดีไซน์/ตัวกรองเหมือนหน้าประวัติการเข้าเวรทั้งหมด (DutyLogsAdminPage)
  * ============================================================= */
 
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useMemo, useState } from 'react';
 import {
   FileText, Search, Trash2, ShieldAlert, Loader2, Filter, Download, Eye,
@@ -72,7 +73,7 @@ export function WorkReportsAdminPage() {
         .select('*')
         .order('created_at', { ascending: false })
         .limit(1000),
-      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+      supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
       supabase.from('officer_ranks').select('*').order('sort_order'),
       loadCaseCounts(),
     ]);

@@ -1,3 +1,4 @@
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import {
   Users, DollarSign, FileText, TrendingUp, Clock, AlertCircle, Pin,
@@ -44,11 +45,12 @@ export function DashboardPage() {
     const today = new Date().toISOString().slice(0, 10);
 
     const [officersRes, servicesRes, annRes, settingsRes, emergencyRes, citizensRes, dutyRes] = await Promise.all([
-      supabase.from('officers').select('*').eq('status', 'active').order('name'),
+      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active').order('name'),
       supabase.from('service_records').select('*').order('created_at', { ascending: false }),
       supabase.from('announcements').select('*').order('created_at', { ascending: false }).limit(4),
       supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
-      supabase.from('emergency_reports').select('*'),
+      // ใช้แค่นับจำนวน → ดึงเฉพาะ status/created_at ไม่ดึงข้อมูลผู้ร้อง
+      supabase.from('emergency_reports').select('id, status, created_at'),
       supabase.from('citizens').select('id, status, roblox_username'),
       supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }).limit(2000),
     ]);

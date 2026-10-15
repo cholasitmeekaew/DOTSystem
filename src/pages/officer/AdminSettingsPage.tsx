@@ -7,6 +7,7 @@
  * เจ้าหน้าที่ทั่วไปไม่มีทางเข้าถึงหน้านี้ (ถูกบล็อกที่ App.tsx)
  * ============================================================= */
 
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useState } from 'react';
 import {
   Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw, FileText,
@@ -90,7 +91,7 @@ export function AdminSettingsPage() {
       const weekStart7 = toIso(weekStartDate);
 
       const [allOfficers, allLogs, allReports, leavesRes, schedRes, ovRes] = await Promise.all([
-        supabase.from('officers').select('*').eq('status', 'active'),
+        supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active'),
         supabase.from('duty_logs').select('*').is('deleted_at', null),
         supabase.from('work_reports').select('*'),
         supabase.from('officer_leaves').select('officer_id').eq('status', 'approved'),

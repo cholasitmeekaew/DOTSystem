@@ -1,3 +1,4 @@
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   Search, UserCog, Plus, Edit2, Trash2, Car, CreditCard, X,
@@ -165,7 +166,7 @@ export function CitizenManagementPage() {
     setLoading(true);
     const [c, o, rc] = await Promise.all([
       supabase.from('citizens').select('*').order('updated_at', { ascending: false }),
-      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+      supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
       fetchRevenueConfigs(),
     ]);
     setCitizens(c.data ?? []);

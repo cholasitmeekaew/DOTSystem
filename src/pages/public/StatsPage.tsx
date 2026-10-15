@@ -1,3 +1,4 @@
+import { OFFICER_PUBLIC_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3, Users, Car, DollarSign, CreditCard, MessageSquare, Siren,
@@ -47,7 +48,7 @@ export function StatsPage() {
 
   useEffect(() => {
     Promise.all([
-      supabase.from('officers').select('*'),
+      supabase.from('officers').select(OFFICER_PUBLIC_FIELDS),
       supabase.from('vehicles').select('*'),
       supabase.from('service_records').select('*'),
       supabase.from('licenses').select('*'),

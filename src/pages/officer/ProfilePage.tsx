@@ -5,6 +5,7 @@
  * หัวหน้ากรมเลือกดูของรายบุคคลได้
  * ============================================================= */
 
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useMemo, useState } from 'react';
 import {
   UserCircle, FileText, Palmtree, DollarSign,
@@ -85,7 +86,7 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
     if (!isCommissioner || !officer) { setTargetId(officer?.id ?? ''); return; }
     (async () => {
       const { data: rows } = await supabase
-        .from('officers').select('*').neq('status', 'deleted').order('name');
+        .from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name');
       setOfficersList((rows ?? []) as Officer[]);
     })();
   }, [isCommissioner, officer]);
@@ -102,7 +103,7 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
     try {
       const [oRes, rRes, lRes, qRes, dRes] = await Promise.all([
         // maybeSingle: ไม่ error เมื่อไม่พบแถว (single จะ error ถ้า 0 แถว)
-        supabase.from('officers').select('*').eq('id', targetId).maybeSingle(),
+        supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('id', targetId).maybeSingle(),
         supabase.from('work_reports').select('*').eq('officer_id', targetId)
           .order('created_at', { ascending: false }).limit(60),
         supabase.from('officer_leaves').select('*').eq('officer_id', targetId)
@@ -179,7 +180,7 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
         : (data?.name ?? '');
       if (!targetId || !name) return;
       setExtraLoading(true);
-      const res = await fetchProfileExtra(targetId, name);
+      const res = await fetchProfileExtra(targetId, name, isCommissioner);
       if (!cancelled) {
         setExtra(res);
         setExtraLoading(false);

@@ -10,6 +10,9 @@ import {
   EMERGENCY_TYPE_LABELS, EMERGENCY_STATUS_LABELS,
 } from '../../lib/types';
 import { useAuth } from '../../lib/AuthContext';
+import {
+  emergencyFieldsFor, redactEmergencyPII,
+} from '../../lib/emergencyPrivacy';
 import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
@@ -20,7 +23,9 @@ interface ParsedLocation {
   label: string | null;
 }
 
-function parseLocation(loc: string): ParsedLocation | string {
+function parseLocation(loc: string | null | undefined): ParsedLocation | string {
+  // เจ้าหน้าที่ที่ไม่มีสิทธิ์จะไม่ได้รับคอลัมน์ location เลย → ค่าเป็น undefined
+  if (!loc) return '';
   try {
     const p = JSON.parse(loc);
     if (p && typeof p === 'object' && p.map && typeof p.map.lat === 'number' && typeof p.map.lng === 'number') {
@@ -30,6 +35,13 @@ function parseLocation(loc: string): ParsedLocation | string {
     // fall through
   }
   return loc;
+}
+
+/** ข้อความสถานที่แบบสั้น รองรับกรณีไม่มีสิทธิ์ดูพิกัด */
+function locationLabel(loc: string | null | undefined): string {
+  const p = parseLocation(loc);
+  if (typeof p === 'string') return p || 'ไม่ระบุสถานที่';
+  return p.label || `พิกัด ${p.map.lat.toFixed(5)}, ${p.map.lng.toFixed(5)}`;
 }
 
 function LocationThumb({ parsed }: { parsed: ParsedLocation | string }) {
@@ -101,11 +113,23 @@ export function EmergencyManagementPage() {
 
   useEffect(() => { fetchAll(); }, []);
 
+  /** เปิด Modal โดยตัดข้อมูลส่วนบุคคลออกก่อนถ้าผู้ดูไม่มีสิทธิ์ */
+  function scopedReport(report: EmergencyReport): EmergencyReport {
+    return isCommissioner ? report : redactEmergencyPII(report) as EmergencyReport;
+  }
+
   async function fetchAll() {
     setLoading(true);
+    // เจ้าหน้าที่ทั่วไปได้เฉพาะคอลัมน์ที่ไม่ระบุตัวประชาชน
+    // (ไม่มีผู้ติดต่อ พิกัด รายละเอียด หรือหลักฐาน) — ตัดออกตั้งแต่ชั้น query
     const [reportsRes, officersRes] = await Promise.all([
-      supabase.from('emergency_reports').select('*').order('created_at', { ascending: false }),
-      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+      supabase.from('emergency_reports')
+        .select(emergencyFieldsFor(isCommissioner))
+        .order('created_at', { ascending: false }),
+      // เลือกเฉพาะคอลัมน์ที่ต้องใช้ — ห้าม select('*') เพราะจะได้ password_hash มาด้วย
+      supabase.from('officers')
+        .select('id, name, rank, is_on_duty')
+        .neq('status', 'deleted').order('name'),
     ]);
     setReports(reportsRes.data ?? []);
     setOfficers((officersRes.data ?? []) as Officer[]);
@@ -301,7 +325,7 @@ export function EmergencyManagementPage() {
               }`}
             >
               {report.image_url && (
-                <div className="w-full h-32 overflow-hidden bg-navy-900 cursor-pointer" onClick={() => setViewReport(report)}>
+                <div className="w-full h-32 overflow-hidden bg-navy-900 cursor-pointer" onClick={() => setViewReport(scopedReport(report))}>
                   <img src={report.image_url} alt="evidence" className="w-full h-full object-cover hover:scale-105 transition-transform" />
                 </div>
               )}
@@ -338,7 +362,7 @@ export function EmergencyManagementPage() {
 
                 <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => setViewReport(report)}
+                    onClick={() => setViewReport(scopedReport(report))}
                     className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-blue-500/15 text-blue-400 border border-blue-500/20 hover:bg-blue-500/25 transition-colors text-xs font-medium"
                   >
                     <Eye size={13} /> ดู
@@ -370,7 +394,7 @@ export function EmergencyManagementPage() {
                   )}
                   {isCommissioner && (
                     <button
-                      onClick={() => setDeleteReport(report)}
+                      onClick={() => setDeleteReport(scopedReport(report))}
                       className="px-2 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors text-xs"
                       title="ลบ"
                     >
@@ -542,7 +566,7 @@ export function EmergencyManagementPage() {
               )}
               {isCommissioner && (
                 <button
-                  onClick={() => { setDeleteReport(viewReport); setViewReport(null); }}
+                  onClick={() => { setDeleteReport(scopedReport(viewReport)); setViewReport(null); }}
                   className="btn-danger flex items-center gap-2 ml-auto"
                 >
                   <Trash2 size={15} /> ลบ
@@ -556,7 +580,7 @@ export function EmergencyManagementPage() {
       {deleteReport && (
         <ConfirmDialog
           title="ลบเรื่องแจ้งเหตุ"
-          message={`ต้องการลบเรื่องแจ้งเหตุ "${EMERGENCY_TYPE_LABELS[deleteReport.report_type]}" ที่ ${(() => { const p = parseLocation(deleteReport.location); return typeof p === 'string' ? p : (p.label || `พิกัด ${p.map.lat.toFixed(5)}, ${p.map.lng.toFixed(5)}`); })()} ใช่หรือไม่?`}
+          message={`ต้องการลบเรื่องแจ้งเหตุ "${EMERGENCY_TYPE_LABELS[deleteReport.report_type]}" ที่ ${locationLabel(deleteReport.location)} ใช่หรือไม่?`}
           confirmLabel="ลบ"
           danger
           onConfirm={handleDelete}

@@ -1,3 +1,4 @@
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Clock, LogIn, LogOut, Users, Trash2, Power, AlertCircle, Image as ImageIcon, Shield,
@@ -141,7 +142,7 @@ export function OperationsPage({
         .select('*')
         .gte('override_date', weekStart)
         .lt('override_date', weekEnd),
-      supabase.from('officers').select('*').eq('status', 'active').order('name'),
+      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active').order('name'),
       supabase.from('officer_ranks').select('*').eq('is_active', true).order('sort_order'),
       supabase
         .from('officer_leaves')
@@ -759,7 +760,7 @@ export function OperationsPage({
       ? supabase.from('work_reports').select('*').order('created_at', { ascending: false })
       : supabase.from('work_reports').select('*').eq('officer_id', officer?.id).order('created_at', { ascending: false });
     const [duty, logs, settingsRes, reportsRes, citizensRes, casesRes] = await Promise.all([
-      supabase.from('officers').select('*').eq('is_on_duty', true).eq('status', 'active').order('name'),
+      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('is_on_duty', true).eq('status', 'active').order('name'),
       canAdmin
         ? supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }).limit(200)
         : supabase.from('duty_logs').select('*').eq('officer_id', officer?.id).is('deleted_at', null).order('clock_in', { ascending: false }).limit(100),

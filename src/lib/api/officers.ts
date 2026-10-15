@@ -4,6 +4,7 @@
  * ทุก page ที่ต้องดึง officers ให้ใช้ hooks ในไฟล์นี้
  * แทนการเรียก supabase.from('officers') ตรง
  */
+import { OFFICER_STAFF_FIELDS } from '../officerColumns';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabase';
 import type { Officer, OfficerStatus, Department } from '../types';
@@ -20,7 +21,7 @@ export function useOfficers(filter?: { status?: OfficerStatus; department?: Depa
   return useQuery({
     queryKey: officerKeys.list(filter),
     queryFn: async () => {
-      let q = supabase.from('officers').select('*').order('name');
+      let q = supabase.from('officers').select(OFFICER_STAFF_FIELDS).order('name');
       if (filter?.status) q = q.eq('status', filter.status);
       if (filter?.department) q = q.eq('department', filter.department);
       const { data, error } = await q;

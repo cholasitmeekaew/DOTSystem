@@ -10,6 +10,7 @@
  *     ถ้ามีการลบจะแสดงผู้ลบแทน
  * ============================================================= */
 
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Clock, Search, Trash2, ShieldAlert, Loader2, Users, Filter, Eye, EyeOff,
@@ -96,7 +97,7 @@ export function DutyLogsAdminPage() {
       supabase.from('duty_logs')
         .select('id, officer_id, officer_name, clock_in, clock_out, duration_minutes, forced_by_name, checkout_method, deleted_at, deleted_by_name, delete_reason')
         .order('clock_in', { ascending: false }).limit(1000),
-      supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+      supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
       supabase.from('officer_ranks').select('*').order('sort_order'),
     ]);
 

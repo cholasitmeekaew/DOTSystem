@@ -1,3 +1,4 @@
+import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { useEffect, useState, useMemo } from 'react';
 import {
   Wallet, DollarSign, History, RefreshCw, ChevronRight,
@@ -12,8 +13,8 @@ import {
 } from '../../lib/types';
 import {
   ManualBudgetInjection, PayrollSnapshot, OfficerPayrollItem, FinancialOverview,
-  getLocalManualInjections, addManualBudgetInjection,
-  getLocalPayrollSnapshots, recordPayrollSnapshot,
+  fetchManualInjections, addManualBudgetInjection,
+  fetchPayrollSnapshots, recordPayrollSnapshot,
   getLocalPayrollOverrides, upsertPayrollOverride, clearPayrollOverrides,
   computeFinancialOverview, calculateActivePeriodPayroll,
 } from '../../lib/api/payrollEngine';
@@ -65,7 +66,7 @@ export function DepartmentBalancePage() {
     setLoading(true);
     try {
       const [{ data: o }, { data: r }, { data: dl }, configs, overrides, claims] = await Promise.all([
-        supabase.from('officers').select('*').neq('status', 'deleted').order('name'),
+        supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
         supabase.from('service_records').select('*').eq('status', 'paid').order('service_date', { ascending: false }),
         supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }),
         fetchRevenueConfigs(),
@@ -83,8 +84,14 @@ export function DepartmentBalancePage() {
         setStaffSharePercent(cfgDefault.officer_share_percent);
       }
 
-      setManualInjections(getLocalManualInjections());
-      setSnapshots(getLocalPayrollSnapshots());
+      // อ่านจากฐานข้อมูล (ไม่ใช่ localStorage แล้ว) จึงเห็นยอดที่จ่ายไปแล้ว
+      // แม้จะเปลี่ยนเครื่องหรือล้างเบราว์เซอร์
+      const [injections, payoutHistory] = await Promise.all([
+        fetchManualInjections(),
+        fetchPayrollSnapshots(),
+      ]);
+      setManualInjections(injections);
+      setSnapshots(payoutHistory);
 
       const overrideMap = new Map<string, OfficerPayrollOverride>();
       for (const o of overrides) {
@@ -187,7 +194,7 @@ export function DepartmentBalancePage() {
           .filter((claim) => claim.status === 'approved')
           .map((claim) => markClaimPaid(claim.id, currentOfficer.id)),
       );
-      setSnapshots(getLocalPayrollSnapshots());
+      setSnapshots(await fetchPayrollSnapshots());
       setPayoutSuccess(`อนุมัติจ่ายเงินเดือนงวด ${selectedMonth} สำเร็จเรียบร้อย! รวม ${totalPayrollRequired.toLocaleString('th-TH')} BC`);
       await fetchAll();
     } catch (e) {

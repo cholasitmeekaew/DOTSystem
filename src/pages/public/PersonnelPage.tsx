@@ -59,7 +59,11 @@ export function PersonnelPage() {
     let cancelled = false;
     async function load() {
       const [officerRes, rankRes, genRes] = await Promise.all([
-        supabase.from('officers').select('*').eq('status', 'active'),
+        // เลือกเฉพาะคอลัมน์ที่หน้านี้ใช้จริง
+        // ห้ามใส่ password_hash (แอบดูรหัสผ่านได้) และ username (รหัสเข้าใช้ระบบ
+        supabase.from('officers')
+          .select('id, name, rank, department, generation, photo_url, is_on_duty, sort_order')
+          .eq('status', 'active'),
         supabase.from('officer_ranks').select('*').order('sort_order'),
         supabase.from('officer_generations').select('*').order('sort_order'),
       ]);
@@ -149,7 +153,7 @@ export function PersonnelPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="ค้นหาชื่อ, @username, ตำแหน่ง, แผนก, รุ่น..."
+              placeholder="ค้นหาชื่อ, ตำแหน่ง, แผนก, รุ่น..."
               className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-500 text-sm"
             />
             {search && (
@@ -527,7 +531,7 @@ function OfficerListRow({
               {isCommissioner && <Shield size={12} className="text-amber-400 flex-shrink-0" />}
               <span className="truncate">{officer.name}</span>
             </div>
-            <div className="text-gray-500 text-[11px] font-mono truncate">@{officer.username}</div>
+            <div className="text-gray-500 text-[11px] truncate">{officer.department}</div>
           </div>
         </div>
       </td>
@@ -827,7 +831,7 @@ function OfficerDetailModal({
               {DEPARTMENT_ICONS[officer.department]}
               {DEPARTMENT_LABELS[officer.department] ?? officer.department}
             </span>
-            <span className="text-gray-600 font-mono text-xs">@{officer.username}</span>
+            <span className="text-gray-600 text-xs">{officer.department}</span>
           </div>
         </div>
 
