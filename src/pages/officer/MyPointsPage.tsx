@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Award, TrendingUp, TrendingDown, Trophy, Target, History } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
-import { Officer, PointsLogEntry, getPointsLevel, getNextPointsLevel } from '../../lib/types';
+import {
+  Officer, PointsLogEntry, getPointsLevel, getNextPointsLevel, getPointsProgress,
+} from '../../lib/types';
 import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/PageHeader';
 import { FadeIn } from '../../components/animations';
@@ -42,9 +44,7 @@ export function MyPointsPage() {
   const level = getPointsLevel(points);
   const next = getNextPointsLevel(points);
 
-  const progress = next
-    ? Math.min(100, Math.round(((points - level.min) / (next.min - level.min)) * 100))
-    : 100;
+  const { percent: progress, debt } = getPointsProgress(points);
 
   return (
     <div>
@@ -62,10 +62,17 @@ export function MyPointsPage() {
             <div className="flex items-start justify-between flex-wrap gap-4 mb-6">
               <div>
                 <p className="text-xs text-amber-500 font-semibold tracking-widest mb-1">PERIOD {period}</p>
-                <h2 className="text-4xl sm:text-5xl font-black text-white">
+                <h2 className={`text-4xl sm:text-5xl font-black ${
+                  debt > 0 ? 'text-red-400' : 'text-white'
+                }`}>
                   {points.toLocaleString()}
                   <span className="text-base text-gray-500 font-normal ml-2">คะแนน</span>
                 </h2>
+                {debt > 0 && (
+                  <p className="text-xs text-red-400 mt-1">
+                    คะแนนค้างหัก — ต้องได้คะแนนกลับมาอีก {debt.toLocaleString('th-TH')} คะแนนเพื่อหลุดหนี้
+                  </p>
+                )}
                 <div className={`inline-flex items-center gap-1.5 mt-3 px-3 py-1 rounded-full text-xs font-semibold ${level.bgClass} ${level.textClass} ring-1 ${level.ringClass}`}>
                   <Trophy size={12} />
                   ระดับ: {level.label}
@@ -84,12 +91,16 @@ export function MyPointsPage() {
                     ไปยังระดับ "{next.label}"
                   </span>
                   <span className="text-amber-400 font-semibold">
-                    อีก {next.min - points} คะแนน
+                    อีก {(next.min - points).toLocaleString('th-TH')} คะแนน
                   </span>
                 </div>
                 <div className="h-2 bg-navy-900 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-amber-500 to-amber-300 transition-all duration-700"
+                    className={`h-full transition-all duration-700 ${
+                      debt > 0
+                        ? 'bg-gradient-to-r from-red-500 to-red-400'
+                        : 'bg-gradient-to-r from-amber-500 to-amber-300'
+                    }`}
                     style={{ width: `${progress}%` }}
                   />
                 </div>

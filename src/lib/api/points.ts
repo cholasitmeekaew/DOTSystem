@@ -65,15 +65,22 @@ export async function addAutomaticPoints(
 }
 
 /**
- * เพดานคะแนนสูงสุด — ต้องตรงกับ CHECK constraint ใน migration 0006
- * (points >= 0 and points <= 100000) ถ้าไม่ clamp การให้คะแนนเกินจะโดน DB ปฏิเสธ
+ * เพดานคะแนนสูงสุด — ต้องตรงกับ CHECK constraint ใน migration 0037
+ *
+ * ไม่มีเพดานล่างแล้ว: หักเกินคงเหลือได้เต็มจำนวนและเกินเป็นคะแนนติดลบ
+ * (คะแนนค้างหัก) ทุกครั้งที่ได้คะแนนใหม่ หนี้จะถูกกู้คืนหักก่อนโดยอัตโนมัติ
+ * ตอนก่อนหน้านี้ระบบหยุดที่ 0 ทำให้ "โดนหักแต่ไม่มีผล" หนี้หายเงียบ ๆ
  */
-export const POINTS_MIN = 0;
 export const POINTS_MAX = 100000;
 
+/** คะแนนติดลบ = ยังต้องกู้คืนให้ถึง 0 */
+export function pointsDebt(points: number): number {
+  return points < 0 ? -points : 0;
+}
+
 export function clampPoints(value: number): number {
-  if (!Number.isFinite(value)) return POINTS_MIN;
-  return Math.min(POINTS_MAX, Math.max(POINTS_MIN, Math.round(value)));
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(POINTS_MAX, Math.round(value));
 }
 
 export async function addOfficerPoints(
@@ -95,8 +102,10 @@ export async function addOfficerPoints(
   const newPoints = clampPoints(oldPoints + delta);
   // บันทึก "ค่าที่ให้จริง" ไม่ใช่ค่าที่ขอ เพื่อให้ balance_after สอดคล้องเสมอ
   const appliedDelta = newPoints - oldPoints;
-  const clampedNote = appliedDelta !== delta
-    ? ` (ขอ ${delta > 0 ? '+' : ''}${delta} แต่ถูกจำกัดที่ ${newPoints.toLocaleString()})`
+  // หักเกินคงเหลือได้เต็มจำนวน (ติดลบเป็นหนี้) → ไม่ต้องจำกัดที่ 0 แล้ว
+  // จึงเหลือกรณีเดียวที่ต้องเตือน คือการให้คะแนนเกินเพดานบน
+  const clampedNote = appliedDelta !== delta && delta > 0
+    ? ` (ขอ +${delta} แต่ถูกจำกัดที่ ${POINTS_MAX.toLocaleString()})`
     : '';
   const period = (current?.points_period as string | null) ?? new Date().toISOString().slice(0, 7);
 

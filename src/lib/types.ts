@@ -729,6 +729,8 @@ export const POINTS_PENALTIES: { label: string; delta: number }[] = [
 ];
 
 export const POINTS_LEVELS = [
+  // คะแนนติดลบ = ยังติดหนี้คะแนนจากการถูกหัก ต้องได้คะแนนกลับมาเพื่อทำให้ครบ 0 ก่อน
+  { min: -Infinity, max: -1,  label: 'ติดหนี้คะแนน',      color: 'red',     ringClass: 'ring-red-500/40',     bgClass: 'bg-red-500/20',     textClass: 'text-red-300' },
   { min: 0,    max: 99,        label: 'ต้องปรับปรุง',       color: 'red',     ringClass: 'ring-red-500/30',     bgClass: 'bg-red-500/10',     textClass: 'text-red-400' },
   { min: 100,  max: 249,       label: 'ผ่านเกณฑ์',          color: 'amber',   ringClass: 'ring-amber-500/30',   bgClass: 'bg-amber-500/10',   textClass: 'text-amber-400' },
   { min: 250,  max: 499,       label: 'ดี',                 color: 'emerald', ringClass: 'ring-emerald-500/30', bgClass: 'bg-emerald-500/10', textClass: 'text-emerald-400' },
@@ -743,4 +745,39 @@ export function getPointsLevel(points: number) {
 
 export function getNextPointsLevel(points: number) {
   return POINTS_LEVELS.find((l) => l.min > points) ?? null;
+}
+
+/**
+ * ความคืบหน้าเป็นเปอร์เซ็นต์ไปยังระดับถัดไป
+ *
+ * ต้องแยกกรณีคะแนนติดลบออกมาต่างหาก เพราะระดับ "ติดหนี้คะแนน"
+ * ใช้ -Infinity เป็นขอบล่าง ถ้านำไปคิดสูตรเดียวกับของเดิมจะได้ NaN
+ *
+ * ขณะติดหนี้ เป้าหมายคือ "ทำให้คะแนนเป็น 0" ไม่ใช่ระดับถัดไป
+ */
+export function getPointsProgress(points: number): {
+  percent: number;
+  /** ระดับเป้าหมายถัดไป (null = ถึงระดับสูงสุดแล้ว) */
+  next: typeof POINTS_LEVELS[number] | null;
+  /** ต้องกู้คืนอีกกี่คะแนนจึงหลุดหนี้ (0 = ไม่ติดหนี้) */
+  debt: number;
+} {
+  const debt = points < 0 ? -points : 0;
+  if (debt > 0) {
+    // เดิมหนี้มาแล้วเท่าไร → คืนหายกี่คะแนนจนเป็น 0
+    // ยิ่งหนี้เยอะ progress ยิ่งต่ำ (เพิ่งติดหนี้ = 0%, กู้เกือบหมด = ~100%)
+    const cleared = Math.max(0, Math.min(1, 1 - debt / Math.max(1, debt + 100)));
+    return {
+      percent: Math.round(cleared * 100),
+      next: POINTS_LEVELS[1],
+      debt,
+    };
+  }
+
+  const level = getPointsLevel(points);
+  const next = getNextPointsLevel(points);
+  const percent = next
+    ? Math.min(100, Math.round(((points - level.min) / (next.min - level.min)) * 100))
+    : 100;
+  return { percent, next, debt: 0 };
 }

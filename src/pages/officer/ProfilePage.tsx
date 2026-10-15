@@ -18,7 +18,7 @@ import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/PageHeader';
 import {
   RANK_LABELS, DEPARTMENT_LABELS, WORK_REPORT_STATUS_LABELS,
-  getPointsLevel, getNextPointsLevel, POINTS_LEVELS,
+  getPointsLevel, getNextPointsLevel, getPointsProgress, POINTS_LEVELS,
   type Officer, type WorkReport, type OfficerLeave, type LeaveType, type LeaveQuota,
 } from '../../lib/types';
 import {
@@ -196,14 +196,13 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
     [data?.points_log],
   );
   const level = getPointsLevel(points);
+  const { percent: progress, debt } = getPointsProgress(points);
   const next = getNextPointsLevel(points);
-  const progress = next
-    ? Math.min(100, Math.round(((points - level.min) / (next.min - level.min)) * 100))
-    : 100;
 
   /** เกณฑ์เต็ม = ขีดต่ำสุดของระดับสูงสุด (1,000 คะแนน) */
   const POINTS_FULL = 1000;
-  const fullProgress = Math.min(100, Math.round((points / POINTS_FULL) * 100));
+  // ติดหนี้ = ยังไม่มีคะแนนให้เทียบเกณฑ์เต็ม → คืน 0 ไม่ใช่ค่าติดลบ
+  const fullProgress = debt > 0 ? 0 : Math.min(100, Math.round((points / POINTS_FULL) * 100));
 
   /* ---------- โควตาลา ---------- */
   /** โควตาที่แสดงในหน้าส่วนตัว — ชนิดที่จำกัดจำนวนวันจริง */
@@ -374,10 +373,17 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
               </div>
 
               <div className="flex items-end gap-3 mb-3">
-                <span className="text-4xl font-black text-white leading-none">
+                <span className={`text-4xl font-black leading-none ${
+                  debt > 0 ? 'text-red-400' : 'text-white'
+                }`}>
                   {points.toLocaleString('th-TH')}
                 </span>
                 <span className="text-xs text-gray-500 pb-1">คะแนน</span>
+                {debt > 0 && (
+                  <span className="text-[11px] font-semibold text-red-400 pb-1.5">
+                    (ต้องกู้คืน {debt.toLocaleString('th-TH')} เพื่อหลุดหนี้)
+                  </span>
+                )}
                 <span className={`ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${level.bgClass} ${level.textClass}`}>
                   {level.label}
                 </span>
@@ -423,12 +429,18 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
                 <>
                   <div className="h-1.5 rounded-full bg-navy-800 overflow-hidden mb-1.5">
                     <div
-                      className="h-full bg-gradient-to-r from-amber-500 to-amber-400 transition-all"
+                      className={`h-full transition-all ${
+                        debt > 0
+                          ? 'bg-gradient-to-r from-red-500 to-red-400'
+                          : 'bg-gradient-to-r from-amber-500 to-amber-400'
+                      }`}
                       style={{ width: `${progress}%` }}
                     />
                   </div>
                   <div className="text-[10px] text-gray-500">
-                    อีก {(next.min - points).toLocaleString('th-TH')} คะแนน ถึงระดับ {next.label}
+                    {debt > 0
+                      ? `ต้องกู้คืนอีก ${debt.toLocaleString('th-TH')} คะแนน เพื่อหลุดหนี้`
+                      : `อีก ${(next.min - points).toLocaleString('th-TH')} คะแนน ถึงระดับ ${next.label}`}
                   </div>
                 </>
               ) : (
