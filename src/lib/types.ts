@@ -22,8 +22,14 @@ export type Department =
 
 export interface Officer {
   id: string;
-  username: string;
-  password_hash: string;
+  /**
+   * ย้ายข้อมูลเข้าระบบ (username / password_hash) ไปไว้ใน schema `private`
+   * แล้ว (migration 0043) — anon อ่านจากตาราง officers ไม่ได้อีกต่อไป
+   *
+   * โหลดได้เฉพาะตอนล็อกอินผ่าน `login_officer()` เท่านั้น
+   */
+  username?: string;
+  password_hash?: string;
   name: string;
   rank: OfficerRank;
   department: Department;
@@ -561,7 +567,14 @@ export interface Citizen {
   roblox_username: string;
   discord_username: string | null;
   status: CitizenStatus;
-  notes: string | null;
+  /**
+   * บันทึกภายในของเจ้าหน้าที่
+   *
+   * ย้ายออกจากตาราง citizens แล้ว (migration 0044) เพราะ anon อ่านได้
+   * ต้องโหลดผ่าน `fetchCitizenNote()` / `withCitizenNotes()` เท่านั้น
+   * จึงเป็น optional — query ปกติจะไม่ได้ค่านี้มา
+   */
+  notes?: string | null;
   created_at: string;
   updated_at: string;
 }

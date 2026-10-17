@@ -55,6 +55,7 @@ export function OfficerManagementPage() {
   const [editItem, setEditItem] = useState<Officer | null>(null);
   const [confirmAction, setConfirmAction] = useState<{ type: ActionType; target: Officer } | null>(null);
   const [resetPw, setResetPw] = useState('');
+  const [adminVerifyPw, setAdminVerifyPw] = useState('');
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -85,6 +86,7 @@ export function OfficerManagementPage() {
 
   // Wizard state (เพิ่มเจ้าหน้าที่แบบ step-by-step)
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardAdminPw, setWizardAdminPw] = useState('');
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const [wizardTemplate, setWizardTemplate] = useState<Officer | null>(null);
   const [wizardForm, setWizardForm] = useState({
@@ -152,10 +154,10 @@ export function OfficerManagementPage() {
         if (!up) throw new Error('อัปโหลดรูปไม่สำเร็จ');
         photo_url = up;
       }
-      const password_hash = await hashPassword(wizardForm.password);
+      // ข้อมูลเข้าระบบ (username + hash) ไม่ได้อยู่ในตาราง officers อีกแล้ว
+      // เพราะ anon อ่านตารางนี้ได้ — เก็บแยกใน schema private (migration 0043)
+      const passwordHash = await hashPassword(wizardForm.password);
       const insertData: Record<string, unknown> = {
-        username: wizardForm.username,
-        password_hash,
         name: wizardForm.name,
         rank: wizardForm.rank,
         department: wizardForm.department,
@@ -167,11 +169,10 @@ export function OfficerManagementPage() {
         is_on_duty: false,
         photo_url,
       };
-      const { error } = await supabase.from('officers').insert(insertData);
+      const { data: created, error } = await supabase
+        .from('officers').insert(insertData).select('id').single();
       if (error) {
-        if (error.code === '23505') {
-          setWizardError('Username นี้ถูกใช้แล้ว');
-        } else if (error.code === '23514') {
+        if (error.code === '23514') {
           setWizardError('ข้อมูลไม่ตรงเงื่อนไข (เช่น ตำแหน่ง/แผนกไม่ถูกต้อง)');
         } else if (error.code === '42501') {
           setWizardError('สิทธิ์ไม่เพียงพอ (ต้องเป็นหัวหน้ากรม)');
@@ -180,6 +181,34 @@ export function OfficerManagementPage() {
         }
         return;
       }
+
+      // stage 2: สร้างข้อมูลเข้าระบบ (ต้องยืนยันรหัสผ่านหัวหน้ากรม)
+      if (!wizardAdminPw) {
+        // ถอยออก — ลบเจ้าหน้าที่ที่เพิ่งสร้างทิ้ง ไม่ให้เหลือบัญชีที่ล็อกอินไม่ได้
+        if (created) await supabase.from('officers').delete().eq('id', created.id);
+        setWizardError('กรุณายืนยันรหัสผ่านของหัวหน้ากรมก่อนสร้างบัญชีใหม่');
+        return;
+      }
+      if (!currentOfficer) {
+        if (created) await supabase.from('officers').delete().eq('id', created.id);
+        setWizardError('ไม่พบข้อมูลผู้ดำเนินการ');
+        return;
+      }
+
+      const { data: credOk, error: credErr } = await supabase.rpc('admin_create_credentials', {
+        p_actor_id: currentOfficer.id,
+        p_actor_hash: await hashPassword(wizardAdminPw),
+        p_new_id: created.id,
+        p_username: wizardForm.username,
+        p_password_hash: passwordHash,
+      });
+      setWizardAdminPw('');
+      if (credErr || !credOk) {
+        if (created) await supabase.from('officers').delete().eq('id', created.id);
+        setWizardError('สร้างบัญชีไม่สำเร็จ: ' + (credErr?.message ?? 'ยืนยันรหัสผ่านหัวหน้ากรมไม่ถูกต้อง'));
+        return;
+      }
+
       setWizardOpen(false);
       await fetchAll();
     } catch (e) {
@@ -518,7 +547,7 @@ export function OfficerManagementPage() {
   function openEdit(item: Officer) {
     setEditItem(item);
     setForm({
-      username: item.username,
+      username: item.username ?? '',
       password: '',
       name: item.name,
       rank: item.rank,
@@ -569,9 +598,8 @@ export function OfficerManagementPage() {
         photo_url: photoUrl,
         updated_at: new Date().toISOString(),
       };
-      if (form.password) {
-        update.password_hash = await hashPassword(form.password);
-      }
+      // รหัสผ่านไม่ได้อยู่ในตาราง officers แล้ว (migration 0043)
+      // ถ้าต้องการเปลี่ยน ให้ใช้ปุ่ม "ตั้งรหัสผ่าน" แยก ซึ่งยืนยันตัวตนก่อน
       const { error } = await supabase.from('officers').update(update).eq('id', editItem.id);
       if (error) {
         if (error.code === '42501' || error.message?.includes('permission')) {
@@ -585,10 +613,7 @@ export function OfficerManagementPage() {
       }
     } else {
       if (!form.password) return;
-      const hash = await hashPassword(form.password);
       const { error } = await supabase.from('officers').insert({
-        username: form.username,
-        password_hash: hash,
         name: form.name,
         rank: form.rank,
         department: form.department,
@@ -638,9 +663,25 @@ export function OfficerManagementPage() {
         details: { deleted_name: target.name, deleted_username: target.username },
       });
     } else if (type === 'reset') {
-      if (!resetPw) return;
-      const hash = await hashPassword(resetPw);
-      await supabase.from('officers').update({ password_hash: hash, updated_at: new Date().toISOString() }).eq('id', target.id);
+      if (!resetPw) { alert('กรุณากรอกรหัสผ่านใหม่'); return; }
+      if (!adminVerifyPw) { alert('กรุณายืนยันรหัสผ่านของคุณก่อนตั้งรหัสผ่านผู้อื่น'); return; }
+      if (!currentOfficer) { alert('ไม่พบข้อมูลผู้ดำเนินการ'); return; }
+
+      // ต้องยืนยันรหัสผ่านตัวเอง เพราะยังไม่มีระบบยืนยันตัวตนจริง
+      // (ดู migration 0043) — ไม่งั้นใครก็เรียก RPC นี้เพื่อเข้าควบคุมบัญชีอื่นได้
+      const actorHash = await hashPassword(adminVerifyPw);
+      const { data, error } = await supabase.rpc('admin_set_password', {
+        p_actor_id: currentOfficer.id,
+        p_actor_hash: actorHash,
+        p_target_id: target.id,
+        p_new_hash: await hashPassword(resetPw),
+        p_new_username: null,
+      });
+      setAdminVerifyPw('');
+      if (error || !data) {
+        alert('ตั้งรหัสผ่านไม่สำเร็จ: ' + (error?.message ?? 'ยืนยันรหัสผ่านไม่ถูกต้อง'));
+        return;
+      }
       setResetPw('');
     }
 
@@ -1377,6 +1418,20 @@ export function OfficerManagementPage() {
                 <label className="block text-xs text-gray-400 mb-1">รหัสผ่าน *</label>
                 <input required type="password" className="input-field" value={wizardForm.password} onChange={(e) => setWizardForm({ ...wizardForm, password: e.target.value })} />
               </div>
+              <div>
+                <label className="block text-xs text-amber-400 mb-1">ยืนยันรหัสผ่านของคุณ (หัวหน้ากรม) *</label>
+                <input
+                  required
+                  type="password"
+                  className="input-field"
+                  value={wizardAdminPw}
+                  onChange={(e) => setWizardAdminPw(e.target.value)}
+                  autoComplete="current-password"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  ต้องยืนยันตัวตนก่อนจึงจะสร้างบัญชีให้เจ้าหน้าที่คนอื่นได้
+                </p>
+              </div>
             </div>
           )}
 
@@ -1480,10 +1535,21 @@ export function OfficerManagementPage() {
           confirmLabel={confirmMessages[confirmAction.type].label}
           danger={confirmAction.type === 'delete' || confirmAction.type === 'suspend'}
           onConfirm={executeAction}
-          onCancel={() => { setConfirmAction(null); setResetPw(''); }}
+          onCancel={() => { setConfirmAction(null); setResetPw(''); setAdminVerifyPw(''); }}
           extraField={
             confirmAction.type === 'reset'
               ? { label: 'รหัสผ่านใหม่', value: resetPw, onChange: setResetPw, placeholder: 'กรอกรหัสผ่านใหม่...' }
+              : undefined
+          }
+          verifyField={
+            confirmAction.type === 'reset'
+              ? {
+                  label: 'ยืนยันรหัสผ่านของคุณ (หัวหน้ากรม)',
+                  value: adminVerifyPw,
+                  onChange: setAdminVerifyPw,
+                  placeholder: 'ใส่รหัสผ่านของคุณเอง',
+                  hint: 'ต้องยืนยันตัวตนก่อนจึงจะตั้งรหัสผ่านของเจ้าหน้าที่คนอื่นได้',
+                }
               : undefined
           }
         />

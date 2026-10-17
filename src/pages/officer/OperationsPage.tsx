@@ -8,6 +8,7 @@ import {
   CheckCircle2, XCircle, Award, Trophy, Crown, Briefcase, User, Repeat, Shuffle,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { fetchCitizenNote } from '../../lib/api/citizenNotes';
 import {
   Citizen, DutyLog, Officer, SystemSettings, WorkReport, WorkReportCase, DEPARTMENT_LABELS,
   DutySchedule, ScheduleOverride, ShiftCode, ScheduleCellCode, WorkReportStatus,
@@ -728,7 +729,9 @@ export function OperationsPage({
     const { data } = await query;
     if (!data) return;
 
-    setViewCitizen(data as Citizen);
+    // บันทึกภายในของประชาชนเก็บแยกใน schema private (migration 0044)
+    const note = await fetchCitizenNote(data.id).catch(() => '');
+    setViewCitizen({ ...(data as Citizen), notes: note });
     const [vehicles, licenses, fees] = await Promise.all([
       supabase.from('vehicles').select('id', { count: 'exact', head: true }).eq('citizen_id', data.id),
       supabase.from('licenses').select('id', { count: 'exact', head: true }).eq('citizen_id', data.id),

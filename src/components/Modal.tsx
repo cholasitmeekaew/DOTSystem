@@ -43,15 +43,31 @@ interface ConfirmDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
   extraField?: { label: string; value: string; onChange: (v: string) => void; placeholder?: string };
+  /** ช่องยืนยันตัวตนของผู้ดำเนินการ (ต้องใส่รหัสผ่านตัวเองก่อนทำงานอันตราย) */
+  verifyField?: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; hint?: string };
 }
 
 export function ConfirmDialog({
   title, message, confirmLabel = 'ยืนยัน', danger = false,
-  onConfirm, onCancel, extraField,
+  onConfirm, onCancel, extraField, verifyField,
 }: ConfirmDialogProps) {
   return (
     <Modal title={title} onClose={onCancel} size="sm">
       <p className="text-gray-300 text-sm mb-4">{message}</p>
+      {verifyField && (
+        <div className="mb-4">
+          <label className="block text-xs text-amber-400 mb-1">{verifyField.label}</label>
+          <input
+            type="password"
+            className="w-full bg-navy-900 border border-amber-500/50 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+            value={verifyField.value}
+            onChange={(e) => verifyField.onChange(e.target.value)}
+            placeholder={verifyField.placeholder}
+            autoComplete="current-password"
+          />
+          {verifyField.hint && <p className="text-[11px] text-gray-500 mt-1">{verifyField.hint}</p>}
+        </div>
+      )}
       {extraField && (
         <div className="mb-4">
           <label className="block text-xs text-gray-400 mb-1">{extraField.label}</label>

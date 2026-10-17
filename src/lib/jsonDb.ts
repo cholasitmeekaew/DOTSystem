@@ -157,6 +157,109 @@ function mockRpc(fn: string, params: Row): RpcResult {
   const nowIso = new Date().toISOString();
 
   switch (fn) {
+    /* ---------- ข้อมูลเข้าระบบ (จำลอง schema private) ----------
+       ดู migration 0043 — ใน Supabase จริงตารางนี้อยู่ใน schema private
+       ที่ PostgREST มองไม่เห็น ที่นี่เก็บเป็น "ตารางธรรมดา" แต่ไม่มี client
+       ไหนเรียกใช้โดยตรง ผ่านได้แค่ผ่าน RPC เท่านั้น */
+    case 'login_officer': {
+      const creds = ensureTable('officer_credentials');
+      const hit = creds.find(
+        (c) => c.username === String(params.p_username ?? '').trim().toLowerCase()
+          && c.password_hash === params.p_password_hash,
+      );
+      if (!hit) return { data: null, error: null };
+      const officer = ensureTable('officers').find(
+        (o) => o.id === hit.officer_id && o.status !== 'deleted' && o.status !== 'suspended',
+      );
+      return { data: officer ?? null, error: null };
+    }
+
+    case 'change_own_password': {
+      const creds = ensureTable('officer_credentials');
+      const row = creds.find((c) => c.officer_id === params.p_officer_id);
+      if (!row || row.password_hash !== params.p_old_hash) {
+        return { data: false, error: null };
+      }
+      row.password_hash = params.p_new_hash;
+      row.updated_at = nowIso;
+      return { data: true, error: null };
+    }
+
+    case 'admin_set_password': {
+      const officer = ensureTable('officers').find((o) => o.id === params.p_actor_id);
+      if (!officer || officer.rank !== 'commissioner') {
+        return rpcError('permission denied: commissioner rank required', '42501');
+      }
+      const creds = ensureTable('officer_credentials');
+      const actorCred = creds.find((c) => c.officer_id === params.p_actor_id);
+      if (!actorCred || actorCred.password_hash !== params.p_actor_hash) {
+        return rpcError('permission denied: actor password mismatch', '42501');
+      }
+      const target = creds.find((c) => c.officer_id === params.p_target_id);
+      const username = String(
+        params.p_new_username
+        || ensureTable('officers').find((o) => o.id === params.p_target_id)?.name || '',
+      ).trim().toLowerCase();
+      if (target) {
+        target.password_hash = params.p_new_hash;
+        target.username = username;
+        target.updated_at = nowIso;
+      } else {
+        creds.push({
+          officer_id: params.p_target_id,
+          username,
+          password_hash: params.p_new_hash,
+          updated_at: nowIso,
+        });
+      }
+      return { data: true, error: null };
+    }
+
+    case 'admin_create_credentials': {
+      const officer = ensureTable('officers').find((o) => o.id === params.p_actor_id);
+      if (!officer || officer.rank !== 'commissioner') {
+        return rpcError('permission denied: commissioner rank required', '42501');
+      }
+      const creds = ensureTable('officer_credentials');
+      if (!creds.some((c) => c.officer_id === params.p_actor_id && c.password_hash === params.p_actor_hash)) {
+        return rpcError('permission denied: actor password mismatch', '42501');
+      }
+      const username = String(params.p_username ?? '').trim().toLowerCase();
+      if (creds.some((c) => c.username === username)) {
+        return rpcError('duplicate username', '23505');
+      }
+      creds.push({
+        officer_id: params.p_new_id,
+        username,
+        password_hash: params.p_password_hash,
+        updated_at: nowIso,
+      });
+      return { data: true, error: null };
+    }
+
+    case 'get_citizen_note': {
+      const row = ensureTable('citizen_notes').find((c) => c.citizen_id === params.p_citizen_id);
+      return { data: (row?.notes as string) ?? '', error: null };
+    }
+
+    case 'set_citizen_note': {
+      const notes = ensureTable('citizen_notes');
+      const row = notes.find((c) => c.citizen_id === params.p_citizen_id);
+      if (row) {
+        row.notes = params.p_notes ?? '';
+        row.updated_at = nowIso;
+      } else {
+        notes.push({
+          citizen_id: params.p_citizen_id,
+          notes: params.p_notes ?? '',
+          updated_at: nowIso,
+          updated_by: params.p_actor_id,
+          updated_by_name: params.p_actor_name,
+        });
+      }
+      return { data: true, error: null };
+    }
+
     /* ---------- revenue sharing ---------- */
     case 'assign_record_officers': {
       const officers = ensureTable('officers');

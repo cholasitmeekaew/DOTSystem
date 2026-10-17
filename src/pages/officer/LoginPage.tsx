@@ -38,31 +38,28 @@ export function LoginPage({ onLogin, onBack }: Props) {
 
     const hash = await hashPassword(password);
 
-    const { data, error: err } = await supabase
-      .from('officers')
-      .select('*')
-      .eq('username', username.trim())
-      .maybeSingle();
+    // ตรวจรหัสผ่านฝั่งฐานข้อมูล — client ไม่เห็น hash ใด ๆ
+    // (ดู migration 0043: เดิมดึง hash ทั้งตารางมาเทียบในเบราว์เซอร์)
+    const { data, error: err } = await supabase.rpc('login_officer', {
+      p_username: username.trim(),
+      p_password_hash: hash,
+    });
 
-    if (err || !data) {
-      setError('ไม่พบบัญชีผู้ใช้นี้ในระบบ');
+    if (err) {
+      setError('เข้าสู่ระบบไม่สำเร็จ: ' + err.message);
       setLoading(false);
       return;
     }
 
-    if (data.status === 'deleted' || data.status === 'suspended') {
-      setError('บัญชีนี้ถูกระงับหรือลบออกจากระบบ กรุณาติดต่อหัวหน้ากรม');
+    // RPC คืน null ทั้งกรณีไม่มีบัญชีและรหัสผิด โดยตั้งใจ
+    // เพื่อไม่ให้ผู้โจมตีรู้ว่ามีบัญชีนี้อยู่จริงหรือไม่
+    if (!data) {
+      setError('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
       setLoading(false);
       return;
     }
 
-    if (data.password_hash !== hash) {
-      setError('รหัสผ่านไม่ถูกต้อง');
-      setLoading(false);
-      return;
-    }
-
-    onLogin(data as Officer);
+    onLogin(data as unknown as Officer);
     setLoading(false);
   }
   if (loginEnabled === false) {

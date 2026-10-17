@@ -118,7 +118,7 @@ export function PointsManagementPage() {
     if (!q) return officers;
     return officers.filter((o) =>
       o.name.toLowerCase().includes(q) ||
-      o.username.toLowerCase().includes(q) ||
+      (o.username ?? '').toLowerCase().includes(q) ||
       (RANK_LABELS[o.rank] ?? o.rank).toLowerCase().includes(q) ||
       (DEPARTMENT_LABELS[o.department] ?? o.department).toLowerCase().includes(q)
     );

@@ -235,8 +235,6 @@ export const seedData: JsonDb = {
   officers: [
     {
       id: '00000000-0000-0000-0000-000000000001',
-      username: ADMIN_USERNAME,
-      password_hash: ADMIN_PASSWORD_HASH,
       name: 'หัวหน้ากรมขนส่ง',
       rank: 'commissioner',
       department: 'traffic_management',
@@ -249,7 +247,21 @@ export const seedData: JsonDb = {
       updated_at: NOW,
     },
   ],
+  /**
+   * ข้อมูลเข้าระบบ — ในฐานข้อมูลจริงอยู่ใน schema `private`
+   * ที่ PostgREST มองไม่เห็น (migration 0043) ที่นี่เก็บเป็นตารางธรรมดา
+   * แต่ client เรียกได้ผ่าน RPC เท่านั้น
+   */
+  officer_credentials: [
+    {
+      officer_id: '00000000-0000-0000-0000-000000000001',
+      username: ADMIN_USERNAME,
+      password_hash: ADMIN_PASSWORD_HASH,
+      updated_at: NOW,
+    },
+  ],
   citizens: [],
+  citizen_notes: [],
   vehicles: [],
   licenses: [],
   service_rates: defaultServiceRates,

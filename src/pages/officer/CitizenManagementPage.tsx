@@ -21,6 +21,7 @@ import { Badge } from '../../components/Badge';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
 import { SERVICE_CATEGORIES } from './ServiceRatesPage';
+import { fetchCitizenNote, saveCitizenNote } from '../../lib/api/citizenNotes';
 import { toLocalDateTimeInputValue } from '../../lib/utils';
 import {
   buildCitizenDebtRows,
@@ -197,7 +198,10 @@ export function CitizenManagementPage() {
   }
 
   async function selectCitizen(c: Citizen) {
-    setSelectedCitizen(c);
+    // ดึงบันทึกภายในจาก schema private ผ่าน RPC (ไม่ได้มากับ query ของ citizens)
+    const notes = await fetchCitizenNote(c.id).catch(() => '');
+    const withNotes = { ...c, notes };
+    setSelectedCitizen(withNotes);
     setTab('overview');
     await Promise.all([fetchVehicles(c.id), fetchLicenses(c.id), fetchFees(c.id)]);
   }
@@ -284,9 +288,17 @@ export function CitizenManagementPage() {
         roblox_username: citizenForm.roblox_username.trim(),
         discord_username: citizenForm.discord_username.trim() || null,
         status: citizenForm.status,
-        notes: citizenForm.notes.trim() || null,
         updated_at: new Date().toISOString(),
       }).eq('id', editingCitizen.id);
+
+      // บันทึกภายในเก็บแยกใน schema private (migration 0044)
+      // ไม่เก็บในตาราง citizens เพราะ anon อ่านตารางนี้ได้
+      await saveCitizenNote(
+        editingCitizen.id,
+        citizenForm.notes.trim(),
+        officer ? { id: officer.id, name: officer.name } : null,
+      );
+
       if (selectedCitizen?.id === editingCitizen.id) {
         setSelectedCitizen({ ...editingCitizen, ...citizenForm, discord_username: citizenForm.discord_username.trim() || null, notes: citizenForm.notes.trim() || null });
       }
@@ -295,9 +307,15 @@ export function CitizenManagementPage() {
         roblox_username: citizenForm.roblox_username.trim(),
         discord_username: citizenForm.discord_username.trim() || null,
         status: citizenForm.status,
-        notes: citizenForm.notes.trim() || null,
       }).select().single();
-      if (data) await selectCitizen(data);
+      if (data) {
+        await saveCitizenNote(
+          data.id,
+          citizenForm.notes.trim(),
+          officer ? { id: officer.id, name: officer.name } : null,
+        );
+        await selectCitizen({ ...(data as Citizen), notes: citizenForm.notes.trim() || null });
+      }
     }
     setShowCitizenForm(false);
     await fetchCitizens();

@@ -472,7 +472,7 @@ export function calculateActivePeriodPayroll(
     return {
       officer_id: off.id,
       officer_name: off.name,
-      officer_username: off.username,
+      officer_username: off.username ?? '',
       department: off.department,
       rank: off.rank,
       duty_hours,

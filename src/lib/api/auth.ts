@@ -24,20 +24,20 @@ export function useLogin() {
       password: string;
     }): Promise<Officer> => {
       const hash = await hashPassword(password);
-      const { data, error } = await supabase
-        .from('officers')
-        .select('*')
-        .eq('username', username.trim())
-        .maybeSingle();
+
+      // ตรวจรหัสผ่านฝั่งฐานข้อมูลผ่าน login_officer()
+      //
+      // เดิมดึง password_hash ทั้งตารางมาเทียบในเบราว์เซอร์
+      // แปลว่า anon ก็ดาวน์โหลด hash ของทุกคนได้ (แก้ใน migration 0043)
+      // ตอนนี้ client ไม่เห็น hash ใด ๆ และ RPC คืน null
+      // ทั้งกรณี username ไม่มีและรหัสผิด เพื่อไม่ให้ผู้โจมตีรู้ว่ามีบัญชีนี้อยู่
+      const { data, error } = await supabase.rpc('login_officer', {
+        p_username: username.trim(),
+        p_password_hash: hash,
+      });
       if (error) throw new Error(error.message);
-      if (!data) throw new Error('ไม่พบบัญชีผู้ใช้นี้ในระบบ');
-      const officer = data as Officer;
-      if (officer.status === 'deleted' || officer.status === 'suspended') {
-        throw new Error('บัญชีนี้ถูกระงับหรือลบออกจากระบบ กรุณาติดต่อหัวหน้ากรม');
-      }
-      if (officer.password_hash !== hash) {
-        throw new Error('รหัสผ่านไม่ถูกต้อง');
-      }
+      if (!data) throw new Error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
+      const officer = data as unknown as Officer;
 
       // บันทึกประวัติการเข้าสู่ระบบ (เวลา/IP/อุปกรณ์) — ไม่ block การล็อกอินถ้าล้มเหลว
       void supabase.rpc('log_officer_login', {
