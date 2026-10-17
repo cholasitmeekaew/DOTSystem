@@ -83,6 +83,38 @@ export function clampPoints(value: number): number {
   return Math.min(POINTS_MAX, Math.round(value));
 }
 
+/**
+ * ฟังก์ชัน atomic ในฐานข้อมูลมีอยู่จริงไหม
+ *
+ * ตรวจครั้งเดียวแล้วจำไว้ เพราะถ้ายังไม่ได้รัน migration 0042
+ * จะได้ error ทุกครั้งที่ให้คะแนน ซึ่งช้าและทำให้ UI เหมือนค้าง
+ */
+let atomicRpcAvailable: boolean | null = null;
+
+async function hasAtomicPointsRpc(): Promise<boolean> {
+  if (atomicRpcAvailable !== null) return atomicRpcAvailable;
+  try {
+    const { error } = await supabase.rpc(
+      'add_officer_points',
+      { p_officer_id: '00000000-0000-0000-0000-000000000000', p_delta: 0, p_reason: '', p_actor_id: '', p_actor_name: '' },
+    );
+    // ไม่มีฟังก์ชัน -> PGRST202 / 404 / 42883
+    const missing = !error
+      || error.code === 'PGRST202'
+      || error.code === '42883'
+      || /not found|does not exist|找不到|ไม่พบฟังก์ชัน/i.test(error.message);
+    atomicRpcAvailable = !missing;
+  } catch {
+    atomicRpcAvailable = false;
+  }
+  return atomicRpcAvailable;
+}
+
+/** ล้าง cache ใช้ตอนทดสอบหรือหลังรัน migration เสร็จ */
+export function resetAtomicPointsRpcCache(): void {
+  atomicRpcAvailable = null;
+}
+
 export async function addOfficerPoints(
   officerId: string,
   delta: number,
@@ -90,6 +122,26 @@ export async function addOfficerPoints(
   actorId: string,
   actorName: string,
 ): Promise<PointsTxResult> {
+  // ถ้าฐานข้อมูลรองรับฟังก์ชัน atomic (migration 0042) ให้ใช้
+  // ทำงานข้างใน DB เพื่อล็อกแถว กันสองคนหักพร้อมกันแล้วคะแนนทับกัน
+  if (await hasAtomicPointsRpc()) {
+    const { data, error } = await supabase.rpc('add_officer_points', {
+      p_officer_id: officerId,
+      p_delta: delta,
+      p_reason: reason,
+      p_actor_id: actorId,
+      p_actor_name: actorName,
+      p_points_max: POINTS_MAX,
+    });
+    if (error) throw error;
+    const out = data as { officer: unknown; entry: PointsLogEntry } | null;
+    if (out?.officer) {
+      return { officer: out.officer as Officer, entry: out.entry };
+    }
+  }
+
+  // ทางสำรอง (ยังไม่ได้รัน migration 0042 หรือโหมด json)
+  // หมายเหตุ: ทางนี้ยังมีความเสี่ยง lost update — ให้รัน 0042 เพื่อปิดช่องโหว่
   const { data: current, error: fetchErr } = await supabase
     .from('officers')
     .select('points, points_period, points_log')

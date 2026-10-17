@@ -8,7 +8,7 @@ import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
 import { Modal } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
-import { applyVerifiedComplaintPoints } from '../../lib/api/autoPoints';
+import { applyVerifiedComplaintPoints, revertVerifiedComplaintPoints } from '../../lib/api/autoPoints';
 
 interface Complaint {
   id: string;
@@ -59,6 +59,7 @@ export function ComplaintsManagementPage() {
   }
 
   async function updateStatus(id: string, newStatus: Complaint['status']) {
+    if (!officer) { alert('ไม่พบข้อมูลผู้ดำเนินการ'); return; }
     setUpdating(true);
     const target = complaints.find((c) => c.id === id);
     const { error } = await supabase.from('complaints').update({ status: newStatus }).eq('id', id);
@@ -75,6 +76,24 @@ export function ComplaintsManagementPage() {
       performed_by_name: officer?.name,
       details: { new_status: newStatus },
     });
+
+    // เพิ่งยอมรับว่าไม่จริง (ยกเลิก / รอพิจารณาใหม่) → คืนคะแนนที่หักไป
+    // เดิมหัก -30 แล้วไม่มีทางคืน คะแนนจะค้างหักตลอด
+    if (target?.status === 'verified' && newStatus !== 'verified' && target.officer_name) {
+      const { data: accused } = await supabase
+        .from('officers')
+        .select('id')
+        .ilike('name', target.officer_name)
+        .limit(1)
+        .maybeSingle();
+      const refunded = await revertVerifiedComplaintPoints({
+        complaintId: id,
+        accusedOfficerId: (accused as { id: string } | null)?.id ?? null,
+        accusedOfficerName: target.officer_name,
+        actor: { id: officer.id, name: officer.name },
+      });
+      if (refunded > 0) alert(`ยกเลิกการยืนยัน · คืนคะแนน ${refunded} คะแนนให้ ${target.officer_name}`);
+    }
 
     // ยืนยันข้อเท็จจริง → หักคะแนนอัตโนมัติ -30 ให้เจ้าหน้าที่ที่ถูกร้องเรียน
     if (newStatus === 'verified' && target?.officer_name) {

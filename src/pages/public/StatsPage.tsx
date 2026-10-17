@@ -118,7 +118,7 @@ export function StatsPage() {
   );
 
   const openComplaints = useMemo(
-    () => complaints.filter((c) => c.status === 'pending' || c.status === 'investigating'),
+    () => complaints.filter((c) => c.status === 'pending' || c.status === 'reviewing'),
     [complaints],
   );
   const resolvedComplaints = useMemo(() => complaints.filter((c) => c.status === 'resolved'), [complaints]);

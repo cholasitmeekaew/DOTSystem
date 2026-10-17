@@ -502,6 +502,47 @@ export async function applyVerifiedComplaintPoints(params: {
 }
 
 /**
+ * ยกเลิกสถานะ 'verified' → คืนคะแนนที่หักไป
+ *
+ * เดิมหัก -30 เมื่อเปลี่ยนเป็น 'verified' แล้วไม่มีทางคืน
+ * ถ้าผู้ตรวจเปลี่ยนใจ (ยกเลิก / รอพิจารณาใหม่) คะแนนจะค้างหักตลอดไป
+ *
+ * คืนเฉพาะ "mark" ที่หักจริง และปลดล็อก mark เพื่อให้ยืนยันซ้ำได้คะแนนใหม่
+ * ถ้าสวิตช์ปิดอยู่ → คง mark ไว้ เพื่อให้เปิดสวิตช์แล้วเรียกซ้ำแล้วคืนได้
+ */
+export async function revertVerifiedComplaintPoints(params: {
+  complaintId: string;
+  accusedOfficerId?: string | null;
+  accusedOfficerName?: string | null;
+  actor: { id: string; name: string };
+}): Promise<number> {
+  const { complaintId, accusedOfficerId, accusedOfficerName, actor } = params;
+
+  const markKey = `complaint:${complaintId}`;
+  const { data: marks } = await supabase
+    .from('points_award_marks').select('mark_key, delta').eq('mark_key', markKey);
+  const existing = (marks ?? []) as Array<{ mark_key: string; delta: number }>;
+  if (existing.length === 0) return 0;          // ไม่เคยถูกหัก -> ไม่ต้องคืน
+
+  const total = existing.reduce((sum, m) => sum + Number(m.delta ?? 0), 0);
+  if (!(await isAutoPointsEnabled())) return 0; // ระงับทุกกรณี
+
+  // หักแต่ละครั้งคืนลบเจ้าหน้าที่คนเดียว จึงหาจาก mark ได้เลย
+  const officerId = accusedOfficerId
+    || await findOfficerIdByName(accusedOfficerName);
+  if (!officerId) return 0;                     // หาเจ้าหน้าที่ไม่เจอ -> อย่าคืนผิดคน
+
+  await addAutomaticPoints(
+    officerId,
+    -total,
+    `ยกเลิกการยืนยันร้องเรียน${accusedOfficerName ? ` (${accusedOfficerName})` : ''}`,
+    actor.id, actor.name,
+  );
+  await supabase.from('points_award_marks').delete().eq('mark_key', markKey);
+  return Math.abs(total);
+}
+
+/**
  * ร้องเรียนผลตรวจสอบเป็นจริง: −30 (สแกนย้อนหลังทั้งระบบ)
  *
  * ระบบเดิมหักตอนผู้ตรวจเปลี่ยนสถานะเป็น 'verified' เท่านั้น
@@ -543,6 +584,32 @@ export async function applyVerifiedComplaintSweep(): Promise<AutoAwardResult[]> 
   }
 
   return results;
+}
+
+/**
+ * หา id เจ้าหน้าที่จากชื่อ (ระบบผู้ถูกร้องเรียนเก็บเป็นชื่อ ไม่ใช่ id)
+ *
+ * ใช้แบบตรงตัวก่อน แล้วค่อยลดรูปแบบ (ตัดช่องว่าง + ไม่สนตัวพิมพ์)
+ * เพื่อให้ตรงกับชื่อที่พิมพ์สะกดต่างกันเล็กน้อย
+ *
+ * ไม่เจอ → null (ผู้เรียกต้องตัดสินใจว่าจะข้ามหรือไม่ ห้ามหักคะแนนคนผิด)
+ */
+export async function findOfficerIdByName(name?: string | null): Promise<string | null> {
+  const raw = (name ?? '').trim();
+  if (!raw) return null;
+
+  const { data } = await supabase
+    .from('officers').select('id, name').neq('status', 'deleted');
+
+  const officers = (data ?? []) as Array<{ id: string; name: string }>;
+
+  // ตรงทุกตัวอักษรก่อน (มักเจอในกรณีส่วนใหญ่)
+  const exact = officers.find((o) => (o.name ?? '').trim() === raw);
+  if (exact) return exact.id;
+
+  const key = raw.toLowerCase().replace(/\s+/g, '');
+  const loose = officers.find((o) => (o.name ?? '').trim().toLowerCase().replace(/\s+/g, '') === key);
+  return loose?.id ?? null;
 }
 
 /* ---------- ตัวช่วยอ่านข้อมูลประกอบ ---------- */

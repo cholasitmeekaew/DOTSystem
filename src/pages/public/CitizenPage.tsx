@@ -48,6 +48,15 @@ interface SearchTypeOption {
   badge?: string;
 }
 
+/** ป้ายสถานะร้องเรียน — ต้องตรงกับ CHECK constraint ใน DB */
+const COMPLAINT_STATUS_LABELS: Record<string, string> = {
+  pending: 'รอดำเนินการ',
+  reviewing: 'กำลังตรวจสอบ',
+  verified: 'ตรวจสอบแล้วพบว่าเป็นจริง',
+  resolved: 'ดำเนินการแล้ว',
+  dismissed: 'ยกเลิก',
+};
+
 const SEARCH_TYPE_OPTIONS: SearchTypeOption[] = [
   {
     id: 'roblox',
@@ -218,7 +227,7 @@ export function CitizenPage() {
   const impoundedCount = vehicles.filter((v) => v.is_impounded).length;
   const activeLicenses = licenses.filter((l) => l.status === 'active').length;
   const pendingEmergency = emergencyReports.filter((e) => e.status === 'pending' || e.status === 'responding').length;
-  const pendingComplaints = complaints.filter((c) => c.status === 'pending' || c.status === 'investigating').length;
+  const pendingComplaints = complaints.filter((c) => c.status === 'pending' || c.status === 'reviewing').length;
 
   const formatDate = (iso: string | null) => {
     if (!iso) return '-';
@@ -1005,8 +1014,8 @@ function ComplaintsHistoryTab({ complaints, formatDate }: {
                 <MessageSquare size={16} className="text-amber-400" />
                 <span className="text-white text-sm font-medium">{c.category || 'ร้องเรียนทั่วไป'}</span>
               </div>
-              <Badge variant={c.status === 'resolved' ? 'success' : c.status === 'investigating' ? 'warning' : c.status === 'dismissed' ? 'neutral' : 'danger'}>
-                {c.status === 'pending' ? 'รอดำเนินการ' : c.status === 'investigating' ? 'กำลังสอบสวน' : c.status === 'resolved' ? 'ดำเนินการแล้ว' : c.status === 'dismissed' ? 'ยกเลิก' : c.status}
+              <Badge variant={c.status === 'resolved' ? 'success' : c.status === 'reviewing' ? 'warning' : c.status === 'dismissed' ? 'neutral' : c.status === 'verified' ? 'danger' : 'danger'}>
+                {COMPLAINT_STATUS_LABELS[c.status] ?? c.status}
               </Badge>
             </div>
             {c.officer_name && <div className="text-xs text-gray-400 mb-1">เจ้าหน้าที่ที่ร้องเรียน: {c.officer_name}</div>}

@@ -375,7 +375,6 @@ export function OperationsPage({
       reviewed_by_name: officer.name,
       reviewed_at: new Date().toISOString(),
       review_note: reportReviewNote || null,
-      reviewed_points: nextStatus === 'approved' ? AUTO_POINTS_RULES.reportApproved : 0,
       updated_at: new Date().toISOString(),
     }).eq('id', target.id);
 
@@ -385,13 +384,21 @@ export function OperationsPage({
     }
 
     // คะแนนอัตโนมัติตามผลการตรวจ
+    let awarded = 0;
     if (nextStatus === 'approved') {
       // +10 ต่อรายงาน (awardAutoPoints กันซ้ำด้วย markKey อยู่แล้ว)
-      await applyReportApprovalPoints({ ...target, status: nextStatus });
-
+      const reportRes = await applyReportApprovalPoints({ ...target, status: nextStatus });
       // +5 ต่อเคสย่อยที่ปิดสำเร็จ
       const cases = await loadReportCases(target.id);
-      await applyCompletedCasePoints({ ...target, status: nextStatus }, cases);
+      const caseResults = await applyCompletedCasePoints({ ...target, status: nextStatus }, cases);
+
+      // ใช้ "คะแนนที่ให้จริง" ไม่ใช่ค่าตามกฎ
+      // เพราะอาจให้ไม่ได้ (สวิตช์ปิด / เคยให้แล้ว / คะแนนชนเพดานบน)
+      // เดิมเซ็ตค่าตามกฎตายตัว ทำให้หน้า admin แสดงยอดไม่ตรงกับคะแนนจริง
+      awarded = (reportRes?.awarded ? reportRes.delta : 0)
+        + caseResults.reduce((sum, r) => sum + (r.awarded ? r.delta : 0), 0);
+
+      flash('ok', `อนุมัติรายงาน · ให้คะแนนจริง ${awarded} คะแนน`);
     } else if ((target.status ?? 'pending') === 'approved') {
       // เคยอนุมัติแล้วแล้วยกเลิก → คืนคะแนน −10 และปลดล็อก mark
       const cases = await loadReportCases(target.id);
@@ -403,6 +410,12 @@ export function OperationsPage({
           ? `ยกเลิกอนุมัติ · คืนคะแนน ${reverted}`
           : 'ยกเลิกอนุมัติแล้ว แต่ไม่พบประวัติคะแนนเดิมให้คืน');
     }
+
+    // บันทึกคะแนนที่ให้จริงลงรายงาน เพื่อให้ตัวเลขบนหน้า admin
+    // ตรงกับ points_log เสมอ (ใช้ตอนลบรายงานเพื่อคืนคะแนนให้ถูกจำนวน)
+    await supabase.from('work_reports')
+      .update({ reviewed_points: awarded })
+      .eq('id', target.id);
 
     setReviewingWorkReport(null);
     setReportReviewNote('');

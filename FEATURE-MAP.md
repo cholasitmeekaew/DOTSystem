@@ -123,7 +123,7 @@
 | ยกเลิกอนุมัติ | **คืนรวมรายงาน+เคส** + ลบ mark (แก้แล้ววันนี้) |
 | ลบรายงานที่อนุมัติแล้ว | คืนคะแนน + ลบ mark + audit `DELETE_WORK_REPORT` |
 
-⚠️ `reviewed_points` ถูกเซ็ตเป็น `10` เสมอ แม้สวิตช์ PPS ปิด (`OperationsPage.tsx:375`) → ตัวเลขบนหน้า admin อาจไม่ตรงคะแนนจริง
+✅ `reviewed_points` บันทึก "คะแนนที่ให้จริง" หลัง clamp แล้ว → ตรงกับ `points_log` เสมอ
 
 ---
 
@@ -153,7 +153,7 @@
 - `revertReportApprovalPoints` เรียกตรงโดยตั้งใจ เพื่อให้การคืนไม่ขึ้นกับสวิตช์
 
 ### ⚠️ ปัญหาโครงสร้าง
-`points_log` เป็น JSON array แบบ **read-modify-write** (`points.ts:86-121`) → ถ้ามีหลาย client เขียนพร้อมกันจะ **lost update**
+✅ `points_log` เขียนผ่าน `add_officer_points()` ที่ล็อกแถวด้วย `FOR UPDATE` แล้ว (ต้องรัน migration `0042` — ถ้ายังไม่รันจะ fallback เป็น read-modify-write แบบเดิม)
 
 ---
 
@@ -189,7 +189,7 @@ netAvailableBudget = (รายได้paid + งบที่เติมเอ
 - สถานะ 5: `pending, reviewing, verified, resolved, dismissed`
 - `verified` → **−30 PPS** หาเจ้าหน้าที่จาก **ชื่อ (text)** → ไม่เจอก็ไม่หัก
 - ⚠️ ไม่มีการคืนคะแนนถ้าเปลี่ยนสถานะออกจาก `verified`
-- ⚠️ หน้า public เช็คสถานะ `'investigating'` แต่หน้า admin ใช้ `'reviewing'` — **ไม่ตรงกัน**
+- ✅ ทุกฝั่งใช้ `'reviewing'` ตรงกับ `complaints_status_check` แล้ว พร้อมแผนที่ป้าย `COMPLAINT_STATUS_LABELS`
 
 ### Emergency
 - ชาวบ้านแจ้งพิกัดแผนที่ + อัปโหลดรูป
@@ -231,7 +231,7 @@ netAvailableBudget = (รายได้paid + งบที่เติมเอ
 | `CitizenManagementPage.tsx:104-110` | `citizens, service_rates, service_records` |
 | `CitizenPage.tsx:206` | หน้า **public** ก็ subscribe realtime |
 
-⚠️ ProfilePage **ไม่ subscribe `duty_logs`** → สถิติเวรไม่อัปเดตสด
+✅ ProfilePage subscribe `duty_logs` แล้ว → สถิติเวรอัปเดตสด
 ⚠️ `useRealtimeSubscription.ts` (hook กลาง) = **dead code** ไม่มีใครใช้
 
 ---
@@ -302,12 +302,12 @@ auditLogs · systemSettings · auth · (dutyLogs 4 ตัว) · realtime/useRea
 5. **`payroll snapshots` ใน localStorage** → ย้ายเข้า DB
 
 ### 🟠 P1 — ความถูกต้อง
-6. Force checkout ทาง Dashboard ไม่หัก −15 → เพิ่ม `applyCheckoutPoints`
-7. `reviewed_points` = 10 แม้สวิตช์ปิด → ใช้ค่าจริงหลัง clamp
-8. Complaint `investigating` vs `reviewing` ไม่ตรง
-9. Complaint verified → คืนคะแนนเมื่อเปลี่ยนสถานะออก
-10. ProfilePage ไม่ subscribe `duty_logs`
-11. `points_log` แบบ read-modify-write → เสี่ยง lost update
+6. ~~Force checkout ทาง Dashboard ไม่หัก −15~~ ✅ รวมเป็น `api/forceCheckout.ts` จุดเดียว
+7. ~~`reviewed_points` = 10 แม้สวิตช์ปิด~~ ✅ บันทึกยอดที่ให้จริงหลัง clamp
+8. ~~Complaint `investigating` vs `reviewing`~~ ✅ ใช้ `reviewing` ตาม CHECK constraint + เพิ่มป้าย `verified`
+9. ~~Complaint verified → คืนคะแนนเมื่อเปลี่ยนสถานะออก~~ ✅ `revertVerifiedComplaintPoints()`
+10. ~~ProfilePage ไม่ subscribe `duty_logs`~~ ✅ เพิ่มแล้ว
+11. ~~`points_log` แบบ read-modify-write~~ ✅ `add_officer_points()` ใช้ `FOR UPDATE` (ต้องรัน migration `0042_atomic_points.sql`)
 
 ### 🟡 P2 — สถาปัตยกรรม
 12. ตัด `select('*')` ทุกจุดที่แตะ `officers` (หยุด `password_hash` รั่ว)

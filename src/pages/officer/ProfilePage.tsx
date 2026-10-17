@@ -168,6 +168,7 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
       .channel(target)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'work_reports' }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'officer_leaves' }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'duty_logs' }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'officers' }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'officer_login_logs' }, () => { void load(); })
       .subscribe();
