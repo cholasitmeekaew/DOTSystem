@@ -28,6 +28,83 @@ import {
 import { resolveScheduledOfficerIds } from '../../lib/dutySchedule';
 import { toIso } from '../../lib/dutySchedule';
 
+/** วันเริ่มสัปดาห์ (จันทร์) ของวันที่ที่ระบุ */
+function weekKeyOf(iso: string): string {
+  const dt = new Date(`${iso}T00:00:00`);
+  const dow = dt.getDay();
+  dt.setDate(dt.getDate() - dow + (dow === 0 ? -6 : 1));
+  return toIso(dt);
+}
+
+/**
+ * ตาราง "ใครมีเวรในสัปดาห์ไหน" ย้อนหลัง 52 สัปดาห์
+ *
+ * ใช้เป็นเงื่อนไขหลักของกฎ "ขาดเวรต่อสัปดาห์" — สัปดาห์ที่ไม่มีตารางเวร
+ * แปลว่ายังไม่มีระบบจัดเวร จึงห้ามหักคะแนนขาดเวรย้อนไปถึงช่วงนั้น
+ */
+function buildWeeklyScheduleMap(
+  schedules: { data: never[] | null },
+  overrides: { data: never[] | null },
+): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  const add = (week: string, id: string) => {
+    const set = result.get(week) ?? new Set<string>();
+    set.add(id);
+    result.set(week, set);
+  };
+
+  // จัดทำ override ลง Map ตามวันที่ เพื่อไม่ต้อง .some() ทั้งอาร์เรย์ทุกครั้ง
+  // (เดิมเป็น 364 รอบ × จำนวน override = แพงมาก)
+  const blocked = new Map<string, Array<string | null>>();
+  for (const o of (overrides.data ?? []) as Array<{
+    override_date: string; override_type: string; officer_id: string | null;
+  }>) {
+    if (o.override_type !== 'leave' && o.override_type !== 'off') continue;
+    const list = blocked.get(o.override_date) ?? [];
+    list.push(o.officer_id);
+    blocked.set(o.override_date, list);
+  }
+
+  const today = new Date();
+  for (const sch of (schedules.data ?? []) as Array<{
+    weekday: number; officer_id: string | null; is_active?: boolean;
+  }>) {
+    if (sch.is_active === false || !sch.officer_id) continue;
+    for (let back = 0; back <= 52 * 7; back++) {
+      const dt = new Date(today);
+      dt.setDate(dt.getDate() - back);
+      if (dt.getDay() !== sch.weekday) continue;
+      const iso = toIso(dt);
+      const list = blocked.get(iso);
+      if (list?.some((id) => id === null || id === sch.officer_id)) continue;
+      add(weekKeyOf(iso), sch.officer_id);
+    }
+  }
+  return result;
+}
+
+/** ตาราง "ใครลาอยู่ในสัปดาห์ไหน" จากใบลาที่อนุมัติแล้ว */
+function buildLeaveWeekMap(
+  leaves: { data: never[] | null },
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const lv of (leaves.data ?? []) as Array<{
+    officer_id: string | null; start_date: string | null; end_date: string | null;
+  }>) {
+    if (!lv.officer_id || !lv.start_date || !lv.end_date) continue;
+    const cur = new Date(`${lv.start_date.slice(0, 10)}T00:00:00`);
+    const end = new Date(`${lv.end_date.slice(0, 10)}T00:00:00`);
+    for (let guard = 0; guard <= 400 && cur <= end; guard++) {
+      const wk = weekKeyOf(toIso(cur));
+      const list = result.get(wk) ?? [];
+      list.push(lv.officer_id);
+      result.set(wk, list);
+      cur.setDate(cur.getDate() + 1);
+    }
+  }
+  return result;
+}
+
 export function AdminSettingsPage() {
   const { officer } = useAuth();
   const [settings, setSettings] = useState<SystemSettings | null>(null);
@@ -109,8 +186,27 @@ const SWEEP_BUTTONS: Array<{
   { key: 'complaint', label: 'ร้องเรียนผลเป็นจริง', hint: '-30 ต่อเรื่องร้องเรียนที่ยืนยันแล้ว', tone: 'text-red-300' },
 ];
 
-/** โหลดข้อมูลที่ทุกกฎต้องใช้ร่วมกัน */
-  async function loadSweepData() {
+/**
+ * โหลดเฉพาะข้อมูลที่กฎที่กดต้องใช้
+ *
+ * เดิมดึงทั้งระบบทุกครั้งที่กดปุ่มไหนก็ตาม (9 query + สร้างตารางเวร 364 รอบ)
+ * ทำให้กดปุ่มเดียวก็เหมือนสแกนทั้งระบบ และช้าผิดปกติ
+ * ตอนนี้แต่ละปุ่มดึงเฉพาะตารางที่ตัวเองใช้
+ */
+  async function loadSweepData(keys: PointsSweepKey[]) {
+    const need = new Set(keys);
+    const needLogs = need.has('checkout') || need.has('force')
+      || need.has('noreport') || need.has('absent');
+    const needReports = need.has('report') || need.has('case') || need.has('noreport');
+    const needSchedules = need.has('absent');
+    const needPaid = need.has('paid');
+    const needOfficers = need.has('absent') || need.has('complaint');
+    const needComplaints = need.has('complaint');
+    const needLeaves = need.has('absent');
+
+    /** ใช้แทน query ที่ไม่ต้องดึง */
+    const skip = { data: null } as { data: never[] | null };
+
     const todayIso = toIso(new Date());
     const weekStartDate = new Date();
     weekStartDate.setDate(weekStartDate.getDate() - 7);
@@ -120,20 +216,41 @@ const SWEEP_BUTTONS: Array<{
     const backfillIso = toIso(backfillDate);
 
     const [officersRes, logsRes, reportsRes, leavesRes, schedRes, ovRes,
-      paidRes, assignRes, casesRes] = await Promise.all([
-      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active'),
-      supabase.from('duty_logs').select('*').is('deleted_at', null),
-      supabase.from('work_reports').select('*'),
-      supabase.from('officer_leaves').select('officer_id, start_date, end_date').eq('status', 'approved'),
-      supabase.from('duty_schedules').select('*').eq('is_active', true),
-      supabase
-        .from('schedule_overrides').select('*')
-        .gte('override_date', weekStart7).lte('override_date', todayIso),
+      paidRes, assignRes, casesRes, complaintsRes] = await Promise.all([
+      needOfficers
+        ? supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active')
+        : Promise.resolve(skip),
+      needLogs
+        ? supabase.from('duty_logs').select('*').is('deleted_at', null)
+        : Promise.resolve(skip),
+      needReports
+        ? supabase.from('work_reports').select('*')
+        : Promise.resolve(skip),
+      needLeaves
+        ? supabase.from('officer_leaves')
+          .select('officer_id, start_date, end_date').eq('status', 'approved')
+        : Promise.resolve(skip),
+      needSchedules
+        ? supabase.from('duty_schedules').select('*').eq('is_active', true)
+        : Promise.resolve(skip),
+      needSchedules
+        ? supabase.from('schedule_overrides').select('*')
+          .gte('override_date', backfillIso).lte('override_date', todayIso)
+        : Promise.resolve(skip),
       // บิลที่ชำระแล้ว — เกณฑ์ +5 ต่อ 1 รายการ
-      supabase.from('service_records').select('*').eq('status', 'paid'),
-      supabase.from('service_record_officers').select('service_record_id, officer_id'),
+      needPaid
+        ? supabase.from('service_records').select('*').eq('status', 'paid')
+        : Promise.resolve(skip),
+      needPaid
+        ? supabase.from('service_record_officers').select('service_record_id, officer_id')
+        : Promise.resolve(skip),
       // เคสย่อยต้องอ่านผ่าน RPC เท่านั้น (query ตรงโดน RLS)
-      supabase.rpc('get_all_completed_report_cases'),
+      need.has('case')
+        ? supabase.rpc('get_all_completed_report_cases')
+        : Promise.resolve(skip),
+      needComplaints
+        ? supabase.from('complaints').select('id, officer_name, status')
+        : Promise.resolve(skip),
     ]);
 
     const assignedMap = new Map<string, string[]>();
@@ -148,58 +265,13 @@ const SWEEP_BUTTONS: Array<{
      * สัปดาห์ที่ไม่มีตารางเวร = ยังไม่มีระบบจัดเวร จึงห้ามหักคะแนน
      * (กันไม่ให้หักย้อนไปถึงช่วงก่อนระบบเริ่มใช้งาน)
      */
-    const weekKey = (iso: string): string => {
-      const dt = new Date(`${iso}T00:00:00`);
-      const dow = dt.getDay();
-      dt.setDate(dt.getDate() - dow + (dow === 0 ? -6 : 1));
-      return toIso(dt);
-    };
+    // สร้างตารางเวร/ตารางลา เฉพาะตอนกด "ขาดเวรต่อสัปดาห์" เท่านั้น
+    // (เป็นส่วนที่หนักที่สุด — 364 รอบ × ทุกแถวของตารางเวร)
+    const scheduledByWeek = needSchedules
+      ? buildWeeklyScheduleMap(schedRes, ovRes)
+      : new Map<string, Set<string>>();
+    const leaveByWeek = needLeaves ? buildLeaveWeekMap(leavesRes) : new Map<string, string[]>();
 
-    const scheduledByWeek = new Map<string, Set<string>>();
-    const addToWeek = (week: string, id: string) => {
-      const set = scheduledByWeek.get(week) ?? new Set<string>();
-      set.add(id);
-      scheduledByWeek.set(week, set);
-    };
-
-    const allOverrides = (ovRes.data ?? []) as Array<{
-      override_date: string; override_type: string;
-      officer_id: string | null; shift_code: string;
-    }>;
-
-    for (const sch of (schedRes.data ?? []) as Array<{
-      weekday: number; officer_id: string | null; is_active?: boolean;
-    }>) {
-      if (sch.is_active === false || !sch.officer_id) continue;
-      for (let back = 0; back <= 52 * 7; back++) {
-        const dt = new Date();
-        dt.setDate(dt.getDate() - back);
-        if (dt.getDay() !== sch.weekday) continue;
-        const iso = toIso(dt);
-        if (iso < backfillIso) continue;
-        const blocked = allOverrides.some((o) => o.override_date === iso
-          && (o.override_type === 'leave' || o.override_type === 'off')
-          && (!o.officer_id || o.officer_id === sch.officer_id));
-        if (!blocked) addToWeek(weekKey(iso), sch.officer_id);
-      }
-    }
-
-    // ใบลาที่อนุมัติ → คนที่ลาในแต่ละสัปดาห์
-    const leaveByWeek = new Map<string, string[]>();
-    for (const lv of (leavesRes.data ?? []) as Array<{
-      officer_id: string | null; start_date: string | null; end_date: string | null;
-    }>) {
-      if (!lv.officer_id || !lv.start_date || !lv.end_date) continue;
-      const cur = new Date(`${lv.start_date.slice(0, 10)}T00:00:00`);
-      const end = new Date(`${lv.end_date.slice(0, 10)}T00:00:00`);
-      for (let guard = 0; guard <= 400 && cur <= end; guard++) {
-        const wk = weekKey(toIso(cur));
-        const list = leaveByWeek.get(wk) ?? [];
-        list.push(lv.officer_id);
-        leaveByWeek.set(wk, list);
-        cur.setDate(cur.getDate() + 1);
-      }
-    }
 
     return {
       todayIso,
@@ -227,7 +299,7 @@ const SWEEP_BUTTONS: Array<{
     setNotice(null);
 
     try {
-      const d = await loadSweepData();
+      const d = await loadSweepData(keys);
       const scheduledIds = resolveScheduledOfficerIds({
         schedules: d.schedules,
         overrides: d.overrides,
@@ -544,9 +616,10 @@ const SWEEP_BUTTONS: Array<{
                   key={b.key}
                   onClick={() => runPointsSweep([b.key])}
                   disabled={!autoPoints || busy}
-                  title={b.hint}
-                  className="text-left p-2.5 rounded-lg border border-blue-900/50 hover:border-amber-500/30
-                             disabled:opacity-40 disabled:cursor-not-allowed transition-colors bg-navy-800/40"
+                  title={`กดเพื่อสแกนเฉพาะเกณฑ์นี้ — ${b.hint}`}
+                  className="text-left p-2.5 rounded-lg border border-blue-900/50 hover:border-amber-500/40
+                             disabled:opacity-40 disabled:cursor-not-allowed transition-colors
+                             bg-navy-800/40 hover:bg-navy-800/70"
                 >
                   <span className="flex items-center gap-1.5">
                     {busy
