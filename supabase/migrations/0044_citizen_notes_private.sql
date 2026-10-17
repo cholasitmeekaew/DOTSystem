@@ -84,5 +84,13 @@ as $$
   select notes from private.citizen_notes where citizen_id = p_citizen_id;
 $$;
 
-grant execute on function set_citizen_note(uuid, text, uuid, text) to authenticated;
-grant execute on function get_citizen_note(uuid) to authenticated;
+-- ต้องให้สิทธิ์ anon ด้วย
+--
+-- ระบบนี้ล็อกอินด้วย localStorage ไม่ได้ใช้ Supabase Auth
+-- ทุก request จึงเป็น role "anon" ไม่ใช่ "authenticated"
+-- ถ้าให้สิทธิ์เฉพาะ authenticated เจ้าหน้าที่จะอ่าน notes ไม่ได้เลย
+--
+-- ยังปลอดภัยอยู่ เพราะตารางอยู่ใน schema private ที่ PostgREST มองไม่เห็น
+-- เมื่อย้ายไป Supabase Auth แล้วค่อยตัด anon ออก
+grant execute on function set_citizen_note(uuid, text, uuid, text) to anon, authenticated;
+grant execute on function get_citizen_note(uuid) to anon, authenticated;
