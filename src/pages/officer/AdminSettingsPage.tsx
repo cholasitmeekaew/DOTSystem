@@ -7,11 +7,12 @@
  * เจ้าหน้าที่ทั่วไปไม่มีทางเข้าถึงหน้านี้ (ถูกบล็อกที่ App.tsx)
  * ============================================================= */
 
+import type { WorkReport } from '../../lib/types';
 import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { forceCheckoutAllOpenLogs } from '../../lib/api/forceCheckout';
 import { useEffect, useState } from 'react';
 import {
-  Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw, FileText,
+  Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw, FileText, AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
@@ -19,6 +20,9 @@ import { PageHeader } from '../../components/PageHeader';
 import type { SystemSettings } from '../../lib/types';
 import {
   applyMissingReportPoints, applyWeeklyAbsencePoints, applyPaidRecordsSweep,
+  applyCheckoutPointsSweep, applyForceCheckoutSweep,
+  applyReportApprovalSweep, applyCompletedCaseSweep,
+  type AutoAwardResult,
   AUTO_POINTS_SUMMARY, AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 import { resolveScheduledOfficerIds } from '../../lib/dutySchedule';
@@ -82,76 +86,151 @@ export function AdminSettingsPage() {
   }
 
   /** สแกนหาคะแนนค้างแล้วให้/หักตามเกณฑ์ */
-  async function runPointsSweep() {
+
+  /** กฎคะแนนที่ตรวจย้อนหลังได้ */
+type PointsSweepKey =
+  | 'checkout' | 'force' | 'report' | 'case' | 'paid' | 'noreport' | 'absent';
+
+/** ปุ่มตรวจคะแนนค้าง แยกทีละกฎ */
+const SWEEP_BUTTONS: Array<{
+  key: PointsSweepKey;
+  label: string;
+  hint: string;
+  tone: string;
+}> = [
+  { key: 'checkout', label: 'ออกเวร', hint: `+5/ชม. ต่อเวรที่ออกแล้วแต่ยังไม่ได้คะแนน`, tone: 'text-emerald-300' },
+  { key: 'report', label: 'รายงานได้รับอนุมัติ', hint: '+10 ต่อรายงานที่อนุมัติแล้ว', tone: 'text-emerald-300' },
+  { key: 'case', label: 'ปิดเคส', hint: '+5 ต่อเคสย่อยที่ปิดสำเร็จ', tone: 'text-emerald-300' },
+  { key: 'paid', label: 'รับชำระครบ', hint: '+5 ต่อ 1 รายการที่ชำระแล้ว ให้ทุกคนที่ดูแลเคส', tone: 'text-emerald-300' },
+  { key: 'absent', label: 'ขาดเวรต่อสัปดาห์', hint: '-5 ต่อคนที่ไม่เข้าเวรครบ 7 วัน', tone: 'text-red-300' },
+  { key: 'noreport', label: 'ไม่ส่งรายงาน', hint: '-5 ต่อเวรที่ออกแล้วไม่ส่งรายงาน', tone: 'text-red-300' },
+  { key: 'force', label: 'ถูกบังคับออกเวร', hint: '-15 ต่อเวรที่ถูกบังคับออก', tone: 'text-red-300' },
+];
+
+/** โหลดข้อมูลที่ทุกกฎต้องใช้ร่วมกัน */
+  async function loadSweepData() {
+    const todayIso = toIso(new Date());
+    const weekStartDate = new Date();
+    weekStartDate.setDate(weekStartDate.getDate() - 7);
+    const weekStart7 = toIso(weekStartDate);
+
+    const [officersRes, logsRes, reportsRes, leavesRes, schedRes, ovRes,
+      paidRes, assignRes, casesRes] = await Promise.all([
+      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active'),
+      supabase.from('duty_logs').select('*').is('deleted_at', null),
+      supabase.from('work_reports').select('*'),
+      supabase.from('officer_leaves').select('officer_id').eq('status', 'approved'),
+      supabase.from('duty_schedules').select('*').eq('is_active', true),
+      supabase
+        .from('schedule_overrides').select('*')
+        .gte('override_date', weekStart7).lte('override_date', todayIso),
+      // บิลที่ชำระแล้ว — เกณฑ์ +5 ต่อ 1 รายการ
+      supabase.from('service_records').select('*').eq('status', 'paid'),
+      supabase.from('service_record_officers').select('service_record_id, officer_id'),
+      // เคสย่อยต้องอ่านผ่าน RPC เท่านั้น (query ตรงโดน RLS)
+      supabase.rpc('get_all_completed_report_cases'),
+    ]);
+
+    const assignedMap = new Map<string, string[]>();
+    for (const row of (assignRes.data ?? []) as Array<{ service_record_id: string; officer_id: string }>) {
+      const list = assignedMap.get(row.service_record_id) ?? [];
+      list.push(row.officer_id);
+      assignedMap.set(row.service_record_id, list);
+    }
+
+    return {
+      todayIso,
+      weekStart7,
+      officers: (officersRes.data ?? []) as never[],
+      logs: (logsRes.data ?? []) as never[],
+      reports: (reportsRes.data ?? []) as WorkReport[],
+      onLeave: ((leavesRes.data ?? []) as Array<{ officer_id: string | null }>)
+        .map((r) => r.officer_id).filter((id): id is string => !!id),
+      schedules: (schedRes.data ?? []) as never[],
+      overrides: (ovRes.data ?? []) as never[],
+      paidRecords: (paidRes.data ?? []) as never[],
+      assignedMap,
+      allCases: (casesRes.data ?? []) as Array<{ id: string; work_report_id: string }>,
+      casesAvailable: !casesRes.error,
+    };
+  }
+
+  /** รันกฎคะแนนที่เลือก (key = PointsSweepKey) */
+  async function runPointsSweep(keys: PointsSweepKey[]) {
     if (!settings?.auto_points_enabled || busy) return;
     setBusy(true);
     setNotice(null);
+
     try {
-      const todayIso = toIso(new Date());
-      const weekStartDate = new Date();
-      weekStartDate.setDate(weekStartDate.getDate() - 7);
-      const weekStart7 = toIso(weekStartDate);
-
-      const [allOfficers, allLogs, allReports, leavesRes, schedRes, ovRes, paidRes, assignRes] = await Promise.all([
-        supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active'),
-        supabase.from('duty_logs').select('*').is('deleted_at', null),
-        supabase.from('work_reports').select('*'),
-        supabase.from('officer_leaves').select('officer_id').eq('status', 'approved'),
-        supabase.from('duty_schedules').select('*').eq('is_active', true),
-        supabase
-          .from('schedule_overrides').select('*')
-          .gte('override_date', weekStart7).lte('override_date', todayIso),
-        // บิลที่ชำระแล้วทั้งหมด — เกณฑ์ PPS: +5 ให้เจ้าหน้าที่ที่ดูแลเคส
-        supabase.from('service_records').select('*').eq('status', 'paid'),
-        supabase.from('service_record_officers').select('service_record_id, officer_id'),
-      ]);
-
-      const officers = (allOfficers.data ?? []) as never[];
-      const logs = (allLogs.data ?? []) as never[];
-      const reports = (allReports.data ?? []) as Array<{ duty_log_id: string | null }>;
-      const onLeave = ((leavesRes.data ?? []) as Array<{ officer_id: string | null }>)
-        .map((r) => r.officer_id).filter((id): id is string => !!id);
-
+      const d = await loadSweepData();
       const scheduledIds = resolveScheduledOfficerIds({
-        schedules: (schedRes.data ?? []) as never,
-        overrides: (ovRes.data ?? []) as never,
-        fromIso: weekStart7,
-        toIso: todayIso,
+        schedules: d.schedules,
+        overrides: d.overrides,
+        fromIso: d.weekStart7,
+        toIso: d.todayIso,
       });
 
-      // แผนที่ service_record_id -> รายชื่อเจ้าหน้าที่ที่ดูแลเคส
-      const assignedMap = new Map<string, string[]>();
-      for (const row of (assignRes.data ?? []) as Array<{ service_record_id: string; officer_id: string }>) {
-        const list = assignedMap.get(row.service_record_id) ?? [];
-        list.push(row.officer_id);
-        assignedMap.set(row.service_record_id, list);
+      const runs: Array<Promise<AutoAwardResult[]> | AutoAwardResult[]> = [];
+
+      for (const key of keys) {
+        if (key === 'checkout') {
+          runs.push(applyCheckoutPointsSweep(d.logs));
+        } else if (key === 'force') {
+          runs.push(applyForceCheckoutSweep(d.logs));
+        } else if (key === 'report') {
+          // เฉพาะรายงานที่อนุมัติแล้ว — ยังไม่เคยได้คะแนน
+          runs.push(applyReportApprovalSweep(
+            d.reports.filter((r) => (r.status ?? 'pending') === 'approved'),
+          ));
+        } else if (key === 'case') {
+          const map = new Map<string, Array<{ id: string; case_status?: string | null }>>();
+          for (const c of d.allCases) {
+            const list = map.get(c.work_report_id) ?? [];
+            list.push(c);
+            map.set(c.work_report_id, list);
+          }
+          runs.push(applyCompletedCaseSweep(
+            async (reportId) => map.get(reportId) ?? [],
+            d.reports,
+          ));
+        } else if (key === 'paid') {
+          // +5 ต่อ 1 รายการที่ชำระแล้ว ให้ทุกเจ้าหน้าที่ที่ดูแลเคส
+          runs.push(applyPaidRecordsSweep(d.paidRecords, d.assignedMap));
+        } else if (key === 'noreport') {
+          runs.push(applyMissingReportPoints(d.logs as never, new Set(
+            d.reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
+          )));
+        } else if (key === 'absent') {
+          runs.push(applyWeeklyAbsencePoints({
+            officers: d.officers,
+            dutyLogs: d.logs,
+            scheduledOfficerIds: [...scheduledIds],
+            approvedLeaveOfficerIds: d.onLeave,
+          }));
+        }
       }
 
-      const results = [
-        ...(await applyMissingReportPoints(logs as never, new Set(
-          reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
-        ))),
-        ...(await applyWeeklyAbsencePoints({
-          officers,
-          dutyLogs: logs,
-          scheduledOfficerIds: [...scheduledIds],
-          approvedLeaveOfficerIds: onLeave,
-        })),
-        // เกณฑ์ PPS: รับชำระครบ +5 ให้ทุกคนที่ดูแลเคสนั้น
-        // ครอบคลุมบิลที่ถูกตั้งเป็น "ชำระแล้ว" ทางอื่นที่ไม่ได้กดรับเงินในหน้าค่าบริการ
-        ...(await applyPaidRecordsSweep(
-          (paidRes.data ?? []) as never,
-          assignedMap,
-        )),
-      ];
-
+      const results = (await Promise.all(runs)).flat();
       const given = results.filter((r) => r.awarded);
-      setNotice({
-        kind: 'ok',
-        text: given.length === 0
-          ? 'ไม่มีเหตุการณ์ที่ต้องให้คะแนน (หรือให้ไปแล้วทั้งหมด)'
-          : `ให้คะแนนอัตโนมัติ ${given.length} รายการ · รวม ${given.reduce((s, r) => s + r.delta, 0)} คะแนน`,
-      });
+
+      if (given.length === 0) {
+        const dup = results.length;
+        setNotice({
+          kind: 'ok',
+          text: dup > 0
+            ? `ไม่มีคะแนนค้าง — ตรวจแล้ว ${dup} รายการ เคยให้ไปแล้วทั้งหมด`
+            : 'ไม่พบเหตุการณ์ที่เข้าเกณฑ์คะแนน',
+        });
+      } else {
+        const plus = given.filter((r) => r.delta > 0).reduce((s, r) => s + r.delta, 0);
+        const minus = given.filter((r) => r.delta < 0).reduce((s, r) => s + r.delta, 0);
+        setNotice({
+          kind: 'ok',
+          text: `ให้/หักคะแนน ${given.length} รายการ`
+            + (plus ? ` · ให้ +${plus}` : '')
+            + (minus ? ` · หัก ${minus}` : ''),
+        });
+      }
     } catch (e) {
       setNotice({ kind: 'err', text: `สแกนไม่สำเร็จ: ${(e as Error).message}` });
     } finally {
@@ -343,13 +422,13 @@ export function AdminSettingsPage() {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={runPointsSweep}
+                  onClick={() => runPointsSweep(SWEEP_BUTTONS.map((b) => b.key))}
                   disabled={!autoPoints || busy}
                   className="btn-secondary text-xs py-2 px-3 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-                  title="สแกนหาคะแนนที่ค้างแล้วให้คะแนน/หักคะแนนตามเกณฑ์"
+                  title="ตรวจและให้คะแนนที่ค้างทั้งหมดตามทุกเกณฑ์"
                 >
                   {busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-                  สแกนคะแนนค้าง
+                  ตรวจคะแนนค้างทั้งหมด
                 </button>
                 <button
                   onClick={toggleAutoPoints}
@@ -367,6 +446,54 @@ export function AdminSettingsPage() {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* ── ตรวจคะแนนค้าง แยกรายกฎ ── */}
+          <div className="card p-4 sm:p-5">
+            <div className="flex items-start gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center flex-shrink-0">
+                <Award size={20} className="text-amber-400" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-white">ตรวจสอบคะแนนค้างรายเกณฑ์</h2>
+                <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">
+                  ถ้าเครื่องล่มหรือปิดเบราว์เซอร์ก่อนคะแนนจะบันทึก
+                  กดปุ่มของเกณฑ์นั้นเพื่อให้คะแนนที่ค้างย้อนหลังได้
+                  กดซ้ำได้โดยไม่ให้คะแนนซ้ำ
+                </p>
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {SWEEP_BUTTONS.map((b) => (
+                <button
+                  key={b.key}
+                  onClick={() => runPointsSweep([b.key])}
+                  disabled={!autoPoints || busy}
+                  title={b.hint}
+                  className="text-left p-2.5 rounded-lg border border-blue-900/50 hover:border-amber-500/30
+                             disabled:opacity-40 disabled:cursor-not-allowed transition-colors bg-navy-800/40"
+                >
+                  <span className="flex items-center gap-1.5">
+                    {busy
+                      ? <Loader2 size={12} className="animate-spin text-amber-400" />
+                      : <Sparkles size={12} className={b.tone} />}
+                    <span className="text-xs font-semibold text-white leading-tight">
+                      {b.label}
+                    </span>
+                  </span>
+                  <span className="block text-[10px] text-gray-500 mt-1 leading-snug">
+                    {b.hint}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {!autoPoints && (
+              <p className="text-[11px] text-amber-400 mt-3 flex items-center gap-1.5">
+                <AlertTriangle size={12} /> ต้องเปิดสวิตช์ PPS Engine ก่อน จึงจะตรวจคะแนนค้างได้
+              </p>
+            )}
           </div>
 
           {/* ระบบเข้าเวร */}

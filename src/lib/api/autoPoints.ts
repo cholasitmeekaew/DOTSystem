@@ -488,3 +488,79 @@ export function summarize(results: AutoAwardResult[]): AutoPointsRunSummary {
   }
   return summary;
 }
+/* =========================================================================
+ * การสแกนคะแนนค้างรายกฎ
+ * -------------------------------------------------------------------------
+ * ทุกกฎคะแนนที่คำนวณตอน "เหตุการณ์" อาจไม่ได้ทำงาน ถ้าผู้ใช้ปิดเบราว์เซอร์
+ * หรือเครื่องล่มกลางทาง ระบบจึงต้องมีทางไล่ย้อนหลังมาให้คะแนนที่ค้าง
+ *
+ * ทุกฟังก์ชันปลอดภัยเมื่อเรียกซ้ำ เพราะ awardAutoPoints จะข้ามรายการที่
+ * มี mark_key อยู่แล้ว → กดสแกนเป็นร้อยครั้งก็ได้คะแนนครั้งเดียว
+ * ========================================================================= */
+
+/** ออกเวรปกติ: +5 ต่อชั่วโมงที่ทำได้ครบ */
+export async function applyCheckoutPointsSweep(logs: DutyLog[]): Promise<AutoAwardResult[]> {
+  const results: AutoAwardResult[] = [];
+  for (const log of logs ?? []) {
+    // ข้ามที่ยังออกเวรไม่เสร็จ หรือถูกบังคับออกเวร (มีกฎของตัวเองแยก)
+    if (!log?.id || !log.clock_out || log.checkout_method === 'forced') continue;
+    const r = await applyCheckoutPoints(log);
+    if (r) results.push(r);
+  }
+  return results;
+}
+
+/** ถูกบังคับออกเวร: −15 */
+export async function applyForceCheckoutSweep(logs: DutyLog[]): Promise<AutoAwardResult[]> {
+  const results: AutoAwardResult[] = [];
+  for (const log of logs ?? []) {
+    if (!log?.id || !log.clock_out || log.checkout_method !== 'forced') continue;
+    const r = await applyCheckoutPoints(log);
+    if (r) results.push(r);
+  }
+  return results;
+}
+
+/** รายงานได้รับอนุมัติ: +10 */
+export async function applyReportApprovalSweep(
+  reports: Array<Pick<WorkReport, 'id' | 'officer_id' | 'officer_name'>>,
+): Promise<AutoAwardResult[]> {
+  const results: AutoAwardResult[] = [];
+  for (const r of reports ?? []) {
+    if (!r?.id || !r.officer_id) continue;
+    const res = await applyReportApprovalPoints({ ...r, status: 'approved' } as WorkReport);
+    if (res) results.push(res);
+  }
+  return results;
+}
+
+/**
+ * ปิดเคสย่อยสำเร็จ: +5 ต่อเคส
+ *
+ * ต้องดึงเคสผ่าน RPC เท่านั้น เพราะ query ตรงถูก RLS บัง (ได้ 0 แถวเสมอ)
+ * และต้องจำกัดจำนวนไม่ให้ยิงพร้อมกันหลายพันคำขอจนล้ม
+ */
+export async function applyCompletedCaseSweep(
+  loadCases: (reportId: string) => Promise<Array<{ id: string; case_status?: string | null }>>,
+  reports: Array<Pick<WorkReport, 'id' | 'officer_id' | 'officer_name'>>,
+  maxReports = 60,
+): Promise<AutoAwardResult[]> {
+  const results: AutoAwardResult[] = [];
+  const targets = (reports ?? []).slice(0, maxReports);
+
+  for (const report of targets) {
+    if (!report?.id || !report.officer_id) continue;
+    let cases: Array<{ id: string; case_status?: string | null }>;
+    try {
+      cases = await loadCases(report.id);
+    } catch {
+      continue;   // รายงานนี้อ่านเคสไม่ได้ → ข้าม ไม่ทำให้ทั้งรอบล้ม
+    }
+    if (!cases?.length) continue;
+    results.push(...await applyCompletedCasePoints(
+      { ...report, status: 'approved' } as WorkReport,
+      cases,
+    ));
+  }
+  return results;
+}
