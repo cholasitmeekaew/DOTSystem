@@ -611,11 +611,22 @@ export async function revertVerifiedComplaintPoints(params: {
  * ระบบผู้ถูกร้องเรียนเก็บเป็น "ชื่อ" (officer_name) ไม่ใช่ id
  * จึงต้องจับคู่ชื่อกับตาราง officers ณ ปัจจุบัน
  */
-export async function applyVerifiedComplaintSweep(): Promise<AutoAwardResult[]> {
+export async function applyVerifiedComplaintSweep(
+  /**
+   * รายการร้องเรียนที่จะพิจารณา
+   *
+   * เว้นว่างไว้เพื่อให้เรียกแบบเดิมได้ (อ่านทั้งหมดจากตาราง)
+   * แต่ตอนสแกนคะแนนจะส่งเฉพาะรายการในช่วงวันที่ที่เลือกมา
+   * เพื่อไม่ให้ย้อนกลับไปแตะเรื่องเก่าที่อยู่นอกช่วง
+   */
+  records?: Array<{ id: string; officer_name?: string | null; complainant_name?: string | null }>,
+): Promise<AutoAwardResult[]> {
   const results: AutoAwardResult[] = [];
 
-  const [{ data: complaints }, { data: officers }] = await Promise.all([
-    supabase.from('complaints').select('id, officer_name, complainant_name').eq('status', 'verified'),
+  const [{ complaints }, { data: officers }] = await Promise.all([
+    records
+      ? Promise.resolve({ complaints: records, error: null })
+      : supabase.from('complaints').select('id, officer_name, complainant_name').eq('status', 'verified'),
     supabase.from('officers').select('id, name').neq('status', 'deleted'),
   ]);
 

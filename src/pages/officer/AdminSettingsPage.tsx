@@ -9,10 +9,15 @@
 
 import type { WorkReport, DutyLog, ServiceRecord } from '../../lib/types';
 import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import {
+  describeRange, filterByRangeDetailed, presetRange,
+  type SweepDatePreset,
+} from '../../lib/sweepDateFilter';
 import { forceCheckoutAllOpenLogs } from '../../lib/api/forceCheckout';
 import { useEffect, useState } from 'react';
 import {
   Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw, FileText, AlertTriangle,
+  CalendarDays,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
@@ -162,6 +167,11 @@ export function AdminSettingsPage() {
     });
   }
 
+  /** ช่วงวันที่สำหรับสแกนคะแนน — เว่งเพื่อความเป็นธรรม */
+  const [sweepFrom, setSweepFrom] = useState('');
+  const [sweepTo, setSweepTo] = useState('');
+  const [sweepPreset, setSweepPreset] = useState<SweepDatePreset>('all');
+
   /** สแกนหาคะแนนค้างแล้วให้/หักตามเกณฑ์ */
 
   /** กฎคะแนนที่ตรวจย้อนหลังได้ */
@@ -249,7 +259,7 @@ const SWEEP_BUTTONS: Array<{
         ? supabase.rpc('get_all_completed_report_cases')
         : Promise.resolve(skip),
       needComplaints
-        ? supabase.from('complaints').select('id, officer_name, status')
+        ? supabase.from('complaints').select('id, officer_name, status, created_at')
         : Promise.resolve(skip),
     ]);
 
@@ -288,7 +298,7 @@ const SWEEP_BUTTONS: Array<{
       scheduledByWeek,
       leaveByWeek,
       allCases: (casesRes.data ?? []) as Array<{ id: string; work_report_id: string; case_status?: string }>,
-      complaints: (complaintsRes.data ?? []) as Array<{ id: string; officer_name: string | null; status: string }>,
+      complaints: (complaintsRes.data ?? []) as Array<{ id: string; officer_name: string | null; status: string; created_at?: string | null }>,
       casesAvailable: !casesRes.error,
     };
   }
@@ -312,24 +322,55 @@ const SWEEP_BUTTONS: Array<{
       /** จำนวนรายการที่แต่ละกฎไปตรวจเทียบ — ใช้บอกผู้ใช้ว่า "ตรวจแล้ว ไม่ได้ไม่ทำงาน" */
       const checked: Partial<Record<PointsSweepKey, number>> = {};
 
+      /*
+       * จำกัดช่วงวันที่ก่อนให้แต่ละกฎไปคำนวณ
+       *
+       * ทำตรงนี้ (ไม่ใช่ใน loadSweepData) เพราะแต่ละกฎอ้างคอลัมน์วันที่คนละชื่อ
+       * และบางกฎต้องเห็นข้อมูลนอกช่วงเพื่อคำนวณให้ถูก
+       * เช่น "รายงานได้รับอนุมัติ" ใช้วันที่สร้างรายงาน แต่ปิดเคสใช้วันที่ของเคส
+       *
+       * รายการที่ถูกตัดเพราะ "ไม่มีวันที่" นับไว้แล้วจะแจ้งผู้ใช้ท้ายหน้า
+       * ไม่ปล่อยให้หายเงียบ
+       */
+      let noDateSkipped = 0;
+
+      const logsInRange = filterByRangeDetailed(d.logs, sweepFrom, sweepTo, (l) => l.clock_in).kept;
+      const reportsInRange = filterByRangeDetailed(d.reports, sweepFrom, sweepTo, (r) => r.created_at).kept;
+      // เคสย่อยไม่มีวันที่ของตัวเอง (RPC คืนมาแค่ id/work_report_id/status)
+      // จึงใช้ "วันที่ของรายงานแม่" แทน ซึ่งเป็นวันที่ทำงานจริง
+      const reportIdsInRange = new Set(reportsInRange.map((r) => r.id));
+      const casesInRange = d.allCases.filter((c) => reportIdsInRange.has(c.work_report_id));
+      const paidInRange = filterByRangeDetailed(d.paidRecords, sweepFrom, sweepTo, (r) => r.service_date).kept;
+      const complaintsInRange = filterByRangeDetailed(d.complaints, sweepFrom, sweepTo, (c) => c.created_at ?? null).kept;
+
+      noDateSkipped
+        += filterByRangeDetailed(d.logs, sweepFrom, sweepTo, (l) => l.clock_in).skipped
+        + filterByRangeDetailed(d.reports, sweepFrom, sweepTo, (r) => r.created_at).skipped
+        + filterByRangeDetailed(d.paidRecords, sweepFrom, sweepTo, (r) => r.service_date).skipped
+        + filterByRangeDetailed(d.complaints, sweepFrom, sweepTo, (c) => c.created_at ?? null).skipped;
+
+      // รายงานที่ผ่านการกรอง — ใช้ทั้งกฎ report, case และ noreport
+      // (noreport ต้องรู้ duty_log_id ของรายงานที่ส่งแล้ว แม้รายงานนั้นอยู่นอกช่วง)
+      const reportsForNoReport = d.reports;
+
       for (const key of keys) {
         if (key === 'checkout') {
-          checked.checkout = d.logs.filter(
+          checked.checkout = logsInRange.filter(
             (l) => l.id && l.clock_out && l.checkout_method !== 'forced').length;
-          runs.push(applyCheckoutPointsSweep(d.logs));
+          runs.push(applyCheckoutPointsSweep(logsInRange));
         } else if (key === 'force') {
-          checked.force = d.logs.filter(
+          checked.force = logsInRange.filter(
             (l) => l.id && l.clock_out && l.checkout_method === 'forced').length;
-          runs.push(applyForceCheckoutSweep(d.logs));
+          runs.push(applyForceCheckoutSweep(logsInRange));
         } else if (key === 'report') {
           // เฉพาะรายงานที่อนุมัติแล้ว — ยังไม่เคยได้คะแนน
-          const approved = d.reports.filter((r) => (r.status ?? 'pending') === 'approved');
+          const approved = reportsInRange.filter((r) => (r.status ?? 'pending') === 'approved');
           checked.report = approved.length;
           runs.push(applyReportApprovalSweep(approved));
         } else if (key === 'case') {
-          checked.case = d.allCases.filter((c) => c.case_status === 'completed').length;
+          checked.case = casesInRange.filter((c) => c.case_status === 'completed').length;
           const map = new Map<string, Array<{ id: string; case_status?: string | null }>>();
-          for (const c of d.allCases) {
+          for (const c of casesInRange) {
             const list = map.get(c.work_report_id) ?? [];
             list.push(c);
             map.set(c.work_report_id, list);
@@ -341,7 +382,7 @@ const SWEEP_BUTTONS: Array<{
         } else if (key === 'paid') {
           // +5 ต่อ 1 รายการที่ชำระแล้ว ให้ทุกเจ้าหน้าที่ที่ดูแลเคส
           let pairCount = 0;
-          for (const r of d.paidRecords) {
+          for (const r of paidInRange) {
             if (!r?.id || (r.status as string) !== 'paid') continue;
             const ids = new Set<string>();
             if (r.officer_id) ids.add(r.officer_id);
@@ -349,20 +390,22 @@ const SWEEP_BUTTONS: Array<{
             pairCount += ids.size;
           }
           checked.paid = pairCount;
-          runs.push(applyPaidRecordsSweep(d.paidRecords, d.assignedMap));
+          runs.push(applyPaidRecordsSweep(paidInRange, d.assignedMap));
         } else if (key === 'noreport') {
-          runs.push(applyMissingReportPoints(d.logs as never, new Set(
-            d.reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
+          // รายงานที่ส่งแล้วต้องดูทั้งหมด ไม่งั้นเวรในช่วงที่เลือก
+          // จะถูกหักเพราะ "ไม่ส่งรายงาน" ทั้งที่ส่งแล้วเมื่อวันที่อยู่นอกช่วง
+          runs.push(applyMissingReportPoints(logsInRange as never, new Set(
+            reportsForNoReport.map((r) => r.duty_log_id).filter((id): id is string => !!id),
           )));
         } else if (key === 'complaint') {
-          checked.complaint = d.complaints.filter(
+          checked.complaint = complaintsInRange.filter(
             (c) => (c.status as string) === 'verified').length;
-          runs.push(applyVerifiedComplaintSweep());
+          runs.push(applyVerifiedComplaintSweep(complaintsInRange));
         } else if (key === 'absent') {
           checked.absent = d.scheduledByWeek.size;
           runs.push(applyWeeklyAbsencePoints({
             officers: d.officers,
-            dutyLogs: d.logs,
+            dutyLogs: logsInRange,
             scheduledOfficerIds: [...scheduledIds],
             approvedLeaveOfficerIds: d.onLeave,
             scheduledByWeek: new Map(
@@ -399,7 +442,11 @@ const SWEEP_BUTTONS: Array<{
           kind: 'ok',
           text: `ให้/หักคะแนน ${given.length} รายการ`
             + (plus ? ` · ให้ +${plus}` : '')
-            + (minus ? ` · หัก ${minus}` : ''),
+            + (minus ? ` · หัก ${minus}` : '')
+            + ((sweepFrom || sweepTo) ? `\nช่วงวันที่: ${describeRange(sweepFrom, sweepTo)}` : '')
+            + (noDateSkipped > 0
+              ? `\nข้าม ${noDateSkipped} รายการที่ไม่มีวันที่ จึงเทียบช่วงไม่ได้`
+              : ''),
         });
       }
     } catch (e) {
@@ -635,6 +682,91 @@ const SWEEP_BUTTONS: Array<{
                   ไม่จำกัดเฉพาะเดือนนี้ และกดซ้ำได้โดยไม่ให้คะแนนซ้ำ
                 </p>
               </div>
+            </div>
+
+            {/* ---------- ช่วงวันที่สำหรับสแกน ---------- */}
+            <div className="mt-3 p-3 rounded-lg border border-blue-900/50 bg-navy-800/30">
+              <div className="flex items-center gap-1.5 mb-2">
+                <CalendarDays size={13} className="text-amber-400" />
+                <span className="text-xs font-semibold text-white">ช่วงวันที่ที่จะสแกน</span>
+                <span className="text-[10px] text-gray-500">เว่งไว้เพื่อความเป็นธรรม</span>
+              </div>
+
+              {/* ตัวเลือกลัด */}
+              <div className="flex flex-wrap gap-1 mb-2">
+                {([
+                  ['all', 'ทั้งหมด'],
+                  ['today', 'วันนี้'],
+                  ['last7', '7 วันล่าสุด'],
+                  ['last30', '30 วันล่าสุด'],
+                  ['thisMonth', 'เดือนนี้'],
+                  ['lastMonth', 'เดือนก่อน'],
+                ] as Array<[SweepDatePreset, string]>).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      const r = presetRange(key);
+                      setSweepPreset(key);
+                      setSweepFrom(r.from);
+                      setSweepTo(r.to);
+                    }}
+                    className={`px-2 py-1 rounded text-[11px] border transition-colors ${
+                      sweepPreset === key
+                        ? 'border-amber-500/60 bg-amber-500/10 text-amber-300'
+                        : 'border-blue-900/40 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* เลือกเอง */}
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                  <span>ตั้งแต่</span>
+                  <input
+                    type="date"
+                    value={sweepFrom}
+                    max={sweepTo || undefined}
+                    onChange={(e) => {
+                      setSweepFrom(e.target.value);
+                      if (!sweepTo || (e.target.value && e.target.value > sweepTo)) {
+                        setSweepTo(e.target.value);
+                      }
+                      setSweepPreset('all');
+                    }}
+                    className="bg-navy-900 border border-blue-900/50 rounded px-2 py-1 text-[11px] text-white focus:outline-none focus:border-amber-500"
+                  />
+                </label>
+                <label className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                  <span>ถึง</span>
+                  <input
+                    type="date"
+                    value={sweepTo}
+                    min={sweepFrom || undefined}
+                    onChange={(e) => {
+                      setSweepTo(e.target.value);
+                      setSweepPreset('all');
+                    }}
+                    className="bg-navy-900 border border-blue-900/50 rounded px-2 py-1 text-[11px] text-white focus:outline-none focus:border-amber-500"
+                  />
+                </label>
+                {(sweepFrom || sweepTo) && (
+                  <button
+                    onClick={() => { setSweepFrom(''); setSweepTo(''); setSweepPreset('all'); }}
+                    className="text-[11px] text-gray-500 hover:text-white"
+                  >
+                    ล้าง
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[11px] text-gray-500 mt-1.5">
+                กำลังสแกน: <span className="text-amber-300">{describeRange(sweepFrom, sweepTo)}</span>
+                {' · '}แต่ละเกณฑ์ใช้วันที่ของตัวเอง
+                {' · '}รายการที่ยังไม่เคยได้คะแนนจะได้เฉพาะในช่วงนี้
+              </p>
             </div>
 
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
