@@ -456,6 +456,7 @@ export function ServiceFeesPage() {
     // เก็บข้อมูลใบเสร็จรายครั้งที่จ่าย (ก่อนล้าง state)
     const paidBefore = getPaidAmount(paymentRecord);
     const paidTotal = paidBefore + amount;
+
     const now = new Date();
     const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
     setReceipt({
@@ -479,14 +480,40 @@ export function ServiceFeesPage() {
     setPaymentNotes('');
 
     // +5 PPS อัตโนมัติเมื่อเคสค่าบริการถูกปิด (ชำระครบทั้งบิล)
+    // ให้ +5 ทุกคนที่ดูแลเคส: ผู้รับผิดชอบหลัก + ผู้ได้รับมอบหมายใน service_record_officers
     if (paidTotal >= paymentRecord.amount) {
       try {
-        await applyServiceClosedPoints(
+        const results = await applyServiceClosedPoints(
           { ...paymentRecord, status: 'paid' },
           assignedOfficerMap[paymentRecord.id] ?? (paymentRecord.officer_id ? [paymentRecord.officer_id] : []),
         );
-      } catch {
-        // ให้คะแนนไม่สำเร็จไม่ควรทำให้การรับเงินล้มเหลว
+        const awarded = results.filter((r) => r.awarded).length;
+        const already = results.length - awarded;
+
+        if (results.length === 0) {
+          // ยังไม่รู้ว่าเพราะสวิตช์ปิด หรือบิลนี้ไม่มีผู้ดูแลเคส — บอกให้ชัด ไม่ใช่เงียบ
+          toast({
+            title: 'ชำระครบแล้ว',
+            description: 'ไม่พบผู้ดูแลเคสในบิลนี้ จึงไม่มีคะแนนให้',
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: `ชำระครบ · ให้คะแนนผู้ดูแลเคส ${awarded} คน`,
+            description: already > 0
+              ? `+5 คะแนน/คน · ข้าม ${already} คนที่เคยได้คะแนนบิลนี้แล้ว`
+              : '+5 คะแนนต่อผู้ดูแลเคส',
+          });
+        }
+      } catch (err) {
+        // ให้คะแนนไม่สำเร็จไม่ควรทำให้การรับเงินล้มเหลว (เงินเข้าแล้ว)
+        // แต่ต้องเตือน เพราะเดิมกลืน error ทิ้งเงียบ ๆ ทำให้คะแนนค้างโดยไม่มีใครรู้
+        toast({
+          title: 'ชำระเงินสำเร็จ แต่ให้คะแนนไม่สำเร็จ',
+          description: 'กด "ตรวจคะแนนทั้งหมด" ในหน้าตั้งค่าระบบเพื่อให้คะแนนเติมภายหลัง',
+          variant: 'destructive',
+        });
+        console.error('ให้คะแนนผู้ดูแลเคสไม่สำเร็จ:', err);
       }
     }
 
