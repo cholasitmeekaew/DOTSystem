@@ -9,6 +9,7 @@
  *   });
  */
 import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabase';
 
 export type RealtimeEvent = 'INSERT' | 'UPDATE' | 'DELETE' | '*';
@@ -48,6 +49,10 @@ export function useRealtimeInvalidate(
   events: RealtimeEvent | RealtimeEvent[] = '*',
   filter?: string,
 ) {
+  // ต้องเรียกที่ระดับ hook ไม่ใช่ใน callback ของ promise
+  // ไม่งั้น React จะโยน "Invalid hook call" ตอน event ยิงจริง
+  const queryClient = useQueryClient();
+
   useEffect(() => {
     const eventList = Array.isArray(events) ? events : [events];
     const channel = supabase
@@ -56,13 +61,15 @@ export function useRealtimeInvalidate(
         'postgres_changes',
         { event: eventList.join(','), schema: 'public', table, filter },
         () => {
-          // import dynamically to avoid circular dep
-          import('@tanstack/react-query').then(({ useQueryClient }) => {
-            const qc = useQueryClient();
-            for (const k of queryKeysToInvalidate) {
-              qc.invalidateQueries({ queryKey: k as unknown[] });
-            }
-          });
+          // ต้องเรียก queryClient.invalidateQueries() โดยตรง
+          //
+          // เดิม import useQueryClient แล้วเรียกใน promise callback
+          // ซึ่งผิดกฎของ React — hook ต้องถูกเรียกตอน render เท่านั้น
+          // พอ realtime event ยิงจริงจะโยน "Invalid hook call"
+          // แล้วหน้าจอว่างเปล่า (ไม่มี Error Boundary ครอบ)
+          for (const k of queryKeysToInvalidate) {
+            queryClient.invalidateQueries({ queryKey: k as unknown[] });
+          }
         },
       )
       .subscribe();

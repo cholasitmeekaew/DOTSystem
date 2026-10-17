@@ -1,4 +1,5 @@
 import { ClaimSharePage } from './pages/officer/ClaimSharePage';
+import { ErrorBoundary } from './components/error-boundary';
 import { useState, lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import { QueryProvider } from './hooks/useQueryProvider';
@@ -106,8 +107,18 @@ function OfficerApp() {
 
   return (
     <OfficerLayout currentPage={currentPage} onNavigate={handleNavigate} onLogout={logout}>
-      <Suspense fallback={<PageFallback />}>
-        {isDenied ? (
+      {/*
+       * ErrorBoundary ครอบทุกหน้า
+       *
+       * ไฟล์นี้มีอยู่ตั้งแต่แรกแต่ไม่เคยถูกใช้ที่ไหน
+       * พอ React พังในหน้าใดหน้าหนึ่ง ผู้ใช้เห็นแค่หน้าจอว่าง
+       * ไม่มีข้อความบอกว่าเกิดอะไร — หาสาเหตุยากมาก
+       *
+       * resetKey={currentPage} = เปลี่ยนหน้าแล้วเริ่มใหม่อัตโนมัติ
+       */}
+      <ErrorBoundary resetKey={currentPage}>
+        <Suspense fallback={<PageFallback />}>
+          {isDenied ? (
           <AccessDenied onBack={() => setCurrentPage('dashboard')} />
         ) : (
           <>
@@ -151,7 +162,8 @@ function OfficerApp() {
             {currentPage === 'case-officers' && <CaseOfficersPage />}
           </>
         )}
-      </Suspense>
+        </Suspense>
+      </ErrorBoundary>
     </OfficerLayout>
   );
 }

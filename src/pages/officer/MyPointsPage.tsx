@@ -63,20 +63,30 @@ export function MyPointsPage() {
     return () => { void supabase.removeChannel(ch); };
   }, [officer]);
 
-  if (!officer) return null;
-  if (loading) {
-    return <div className="text-center text-gray-400 py-12">กำลังโหลด...</div>;
-  }
-
   const points = officerData?.points ?? 0;
   const log = (officerData?.points_log ?? []).slice().reverse();
 
-  /** จัดกลุ่มตามหมวดหมู่ + ยอดรวมของแต่ละหมวด */
+  /**
+   * จัดกลุ่มตามหมวดหมู่ + ยอดรวมของแต่ละหมวด
+   */
   const logGroups = useMemo(() => groupPointsLog(log), [log]);
   const filteredLog = useMemo(
     () => (logCategory ? log.filter((l) => pointsCategoryOf(l.reason) === logCategory) : log),
     [log, logCategory],
   );
+
+  /*
+   * ⚠ hooks ทั้งหมดต้องอยู่ก่อน early return
+   * ถ้าเรียก useMemo หลัง `if (loading) return ...` จะทำให้จำนวน hook
+   * ของ render แรก (0 ตัว) ไม่เท่ากับ render หลัง (2 ตัว)
+   * React จะโยน error "Rendered more hooks than during the previous render"
+   * แล้วหน้าจอจะว่างเปล่า เพราะไม่มี Error Boundary ครอบไว้
+   */
+  if (!officer) return null;
+  if (loading) {
+    return <div className="text-center text-gray-400 py-12">กำลังโหลด...</div>;
+  }
+
   const period = officerData?.points_period ?? new Date().toISOString().slice(0, 7);
   const level = getPointsLevel(points);
   const next = getNextPointsLevel(points);
