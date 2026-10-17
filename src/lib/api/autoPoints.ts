@@ -23,7 +23,7 @@ import { supabase } from '../supabase';
 import type {
   Officer, DutyLog, WorkReport, ServiceRecord, SystemSettings,
 } from '../types';
-import { addAutomaticPoints, addOfficerPoints, isAutoPointsEnabled } from './points';
+import { addAutomaticPoints, addOfficerPoints, isAutoPointsEnabled, isWorkReportsEnabled } from './points';
 
 /* ---------- เกณฑ์คะแนน ---------- */
 
@@ -429,6 +429,10 @@ export async function applyMissingReportPoints(
 ): Promise<AutoAwardResult[]> {
   const today = new Date().toISOString().slice(0, 10);
   const results: AutoAwardResult[] = [];
+
+  // สวิตช์รายงานปิดอยู่ = ไม่มีระบบรายงาน → ห้ามหักคะแนน
+  // เจ้าหน้าที่ไม่ได้ทำผิด เพราะระบบไม่ได้เปิดให้ส่งรายงาน
+  if (!(await isWorkReportsEnabled())) return [];
 
   for (const log of logs) {
     if (!log?.officer_id || !log.clock_out || !log.clock_in) continue;

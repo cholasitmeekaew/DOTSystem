@@ -78,6 +78,26 @@ export function pointsDebt(points: number): number {
   return points < 0 ? -points : 0;
 }
 
+/**
+ * สวิตช์ "บังคับส่งรายงานปฏิบัติงาน" เปิดอยู่ไหม
+ *
+ * ถ้าปิด = ไม่มีระบบรายงาน → ห้ามหักคะแนนเพราะ "ไม่ส่งรายงาน"
+ * เพราะเจ้าหน้าที่ไม่ได้ทำผิดอะไร ระบบไม่ได้เปิดให้ส่ง
+ */
+export async function isWorkReportsEnabled(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from('system_settings')
+      .select('work_reports_enabled')
+      .eq('id', 1)
+      .maybeSingle();
+    if (error) return false;   // อ่านไม่ได้ = ปิดไว้เพื่อความปลอดภัย ไม่หักผิดคน
+    return (data as { work_reports_enabled?: boolean } | null)?.work_reports_enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 export function clampPoints(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(POINTS_MAX, Math.round(value));
