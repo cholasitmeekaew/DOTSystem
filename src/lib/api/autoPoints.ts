@@ -340,8 +340,9 @@ export async function applyPaidRecordsSweep(
   const results: AutoAwardResult[] = [];
 
   for (const record of records) {
-    if (record?.id || record?.status !== 'paid') continue;
-    if (!record.id || record.status !== 'paid') continue;
+    // ข้ามบิลที่ยังไม่ชำระเงินจริง หรือข้อมูลไม่ครบ
+    // (เคยพลาดเป็น || ทำให้ข้ามทุกแถวทันที → ไม่เคยให้คะแนนเลย)
+    if (!record?.id || record.status !== 'paid') continue;
 
     const targets = new Set<string>();
     if (record.officer_id) targets.add(record.officer_id);

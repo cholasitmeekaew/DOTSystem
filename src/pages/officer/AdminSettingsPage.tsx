@@ -7,7 +7,7 @@
  * เจ้าหน้าที่ทั่วไปไม่มีทางเข้าถึงหน้านี้ (ถูกบล็อกที่ App.tsx)
  * ============================================================= */
 
-import type { WorkReport } from '../../lib/types';
+import type { WorkReport, DutyLog, ServiceRecord } from '../../lib/types';
 import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
 import { forceCheckoutAllOpenLogs } from '../../lib/api/forceCheckout';
 import { useEffect, useState } from 'react';
@@ -277,17 +277,18 @@ const SWEEP_BUTTONS: Array<{
       todayIso,
       weekStart7,
       officers: (officersRes.data ?? []) as never[],
-      logs: (logsRes.data ?? []) as never[],
+      logs: (logsRes.data ?? []) as DutyLog[],
       reports: (reportsRes.data ?? []) as WorkReport[],
       onLeave: ((leavesRes.data ?? []) as Array<{ officer_id: string | null }>)
         .map((r) => r.officer_id).filter((id): id is string => !!id),
       schedules: (schedRes.data ?? []) as never[],
       overrides: (ovRes.data ?? []) as never[],
-      paidRecords: (paidRes.data ?? []) as never[],
+      paidRecords: (paidRes.data ?? []) as ServiceRecord[],
       assignedMap,
       scheduledByWeek,
       leaveByWeek,
-      allCases: (casesRes.data ?? []) as Array<{ id: string; work_report_id: string }>,
+      allCases: (casesRes.data ?? []) as Array<{ id: string; work_report_id: string; case_status?: string }>,
+      complaints: (complaintsRes.data ?? []) as Array<{ id: string; officer_name: string | null; status: string }>,
       casesAvailable: !casesRes.error,
     };
   }
@@ -308,18 +309,25 @@ const SWEEP_BUTTONS: Array<{
       });
 
       const runs: Array<Promise<AutoAwardResult[]> | AutoAwardResult[]> = [];
+      /** จำนวนรายการที่แต่ละกฎไปตรวจเทียบ — ใช้บอกผู้ใช้ว่า "ตรวจแล้ว ไม่ได้ไม่ทำงาน" */
+      const checked: Partial<Record<PointsSweepKey, number>> = {};
 
       for (const key of keys) {
         if (key === 'checkout') {
+          checked.checkout = d.logs.filter(
+            (l) => l.id && l.clock_out && l.checkout_method !== 'forced').length;
           runs.push(applyCheckoutPointsSweep(d.logs));
         } else if (key === 'force') {
+          checked.force = d.logs.filter(
+            (l) => l.id && l.clock_out && l.checkout_method === 'forced').length;
           runs.push(applyForceCheckoutSweep(d.logs));
         } else if (key === 'report') {
           // เฉพาะรายงานที่อนุมัติแล้ว — ยังไม่เคยได้คะแนน
-          runs.push(applyReportApprovalSweep(
-            d.reports.filter((r) => (r.status ?? 'pending') === 'approved'),
-          ));
+          const approved = d.reports.filter((r) => (r.status ?? 'pending') === 'approved');
+          checked.report = approved.length;
+          runs.push(applyReportApprovalSweep(approved));
         } else if (key === 'case') {
+          checked.case = d.allCases.filter((c) => c.case_status === 'completed').length;
           const map = new Map<string, Array<{ id: string; case_status?: string | null }>>();
           for (const c of d.allCases) {
             const list = map.get(c.work_report_id) ?? [];
@@ -332,14 +340,26 @@ const SWEEP_BUTTONS: Array<{
           ));
         } else if (key === 'paid') {
           // +5 ต่อ 1 รายการที่ชำระแล้ว ให้ทุกเจ้าหน้าที่ที่ดูแลเคส
+          let pairCount = 0;
+          for (const r of d.paidRecords) {
+            if (!r?.id || (r.status as string) !== 'paid') continue;
+            const ids = new Set<string>();
+            if (r.officer_id) ids.add(r.officer_id);
+            for (const id of d.assignedMap.get(r.id) ?? []) if (id) ids.add(id);
+            pairCount += ids.size;
+          }
+          checked.paid = pairCount;
           runs.push(applyPaidRecordsSweep(d.paidRecords, d.assignedMap));
         } else if (key === 'noreport') {
           runs.push(applyMissingReportPoints(d.logs as never, new Set(
             d.reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
           )));
         } else if (key === 'complaint') {
+          checked.complaint = d.complaints.filter(
+            (c) => (c.status as string) === 'verified').length;
           runs.push(applyVerifiedComplaintSweep());
         } else if (key === 'absent') {
+          checked.absent = d.scheduledByWeek.size;
           runs.push(applyWeeklyAbsencePoints({
             officers: d.officers,
             dutyLogs: d.logs,
@@ -357,13 +377,20 @@ const SWEEP_BUTTONS: Array<{
       const results = (await Promise.all(runs)).flat();
       const given = results.filter((r) => r.awarded);
 
+      const label = keys.length === 1
+        ? SWEEP_BUTTONS.find((b) => b.key === keys[0])?.label ?? keys[0]
+        : `${keys.length} เกณฑ์`;
+      const checkedTotal = keys.reduce((s, k) => s + (checked[k] ?? 0), 0);
+
       if (given.length === 0) {
         const dup = results.length;
         setNotice({
           kind: 'ok',
           text: dup > 0
-            ? `ไม่มีคะแนนค้าง — ตรวจแล้ว ${dup} รายการ เคยให้ไปแล้วทั้งหมด`
-            : 'ไม่พบเหตุการณ์ที่เข้าเกณฑ์คะแนน',
+            ? `[${label}] ตรวจแล้ว ${checkedTotal} รายการ · เคยให้/หักไปแล้วทั้งหมด ${dup} รายการ ไม่มีคะแนนค้าง`
+            : checkedTotal > 0
+              ? `[${label}] ตรวจแล้ว ${checkedTotal} รายการ · ไม่พบรายการที่เข้าเกณฑ์ (ยังไม่ต้องให้คะแนน)`
+              : `[${label}] ยังไม่มีข้อมูลที่เข้าเกณฑ์ในระบบ`,
         });
       } else {
         const plus = given.filter((r) => r.delta > 0).reduce((s, r) => s + r.delta, 0);
