@@ -46,7 +46,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [officer, setOfficerState] = useState<Officer | null>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      return stored ? (JSON.parse(stored) as Officer) : null;
+      if (!stored) return null;
+      const parsed = JSON.parse(stored) as Officer;
+
+      // ล้างข้อมูลลับที่ session เก่าอาจยังเก็บไว้ในเครื่องผู้ใช้
+      // (ก่อน migration 0043 เคยเขียน password_hash ลงที่นี่)
+      // เขียนทับใหม่ทันที ไม่ต้องรอผู้ใช้ล็อกอินใหม่
+      const hadSecret =
+        'password_hash' in parsed || 'username' in parsed;
+      if (hadSecret) {
+        const safe = toSafeSession(parsed);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
+        return safe;
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -107,10 +120,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval);
   }, []);
 
+/**
+ * ฟิลด์ที่ห้ามเก็บลง localStorage
+ *
+ * เคยเกิดขึ้นจริง: session ที่สร้างก่อน migration 0043 ถูกเขียนทั้ง object
+ * รวม `password_hash` ลง `dot_officer` — ใครเปิด DevTools ก็เห็น
+ *
+ * ตอนนี้ `login_officer()` ไม่คืน hash มาแล้ว แต่ข้อมูลเก่าในเครื่องผู้ใช้
+ * ยังค้างอยู่จนกว่าจะล็อกอินใหม่ — การกรองตรงนี้ทำให้เก่าไม่ถูกเขียนซ้ำ
+ */
+const SESSION_SAFE_FIELDS = [
+  'id', 'name', 'rank', 'department', 'status', 'is_on_duty',
+  'photo_url', 'duty_rate', 'service_category', 'points', 'points_period',
+  'points_log', 'accumulated_share', 'generation', 'sort_order',
+  'last_login_at', 'last_login_ip', 'created_at', 'updated_at',
+] as const;
+
+function toSafeSession(o: Officer): Officer {
+  const safe: Record<string, unknown> = {};
+  for (const f of SESSION_SAFE_FIELDS) {
+    if (f in o) safe[f] = (o as unknown as Record<string, unknown>)[f];
+  }
+  return safe as unknown as Officer;
+}
+
   const setAuth = useCallback((o: Officer | null, token: string | null = null) => {
     setOfficerState(o);
     if (o) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(o));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSafeSession(o)));
       if (token) {
         localStorage.setItem(TOKEN_KEY, token);
         setAccessToken(token);
