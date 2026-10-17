@@ -237,6 +237,19 @@ function mockRpc(fn: string, params: Row): RpcResult {
       return { data: true, error: null };
     }
 
+    case 'list_officer_usernames': {
+      return {
+        data: ensureTable('officer_credentials')
+          .filter((c) => {
+            const o = ensureTable('officers').find((x) => x.id === c.officer_id);
+            return o && o.status !== 'deleted';
+          })
+          .map((c) => ({ officer_id: c.officer_id, username: c.username }))
+          .sort((a, b) => String(a.username).localeCompare(String(b.username))),
+        error: null,
+      };
+    }
+
     case 'get_citizen_note': {
       const row = ensureTable('citizen_notes').find((c) => c.citizen_id === params.p_citizen_id);
       return { data: (row?.notes as string) ?? '', error: null };

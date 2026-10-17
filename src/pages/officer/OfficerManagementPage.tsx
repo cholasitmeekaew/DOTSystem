@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { hashPassword } from '../../lib/crypto';
+import { clearOfficerUsernameCache, withUsernames } from '../../lib/api/officerUsernames';
 import { uploadImage } from '../../lib/storage';
 import {
   Officer, OfficerRank, OfficerRankRecord, OfficerGenerationRecord, Department,
@@ -239,7 +240,9 @@ export function OfficerManagementPage() {
       .neq('status', 'deleted')
       .order('sort_order')
       .order('name');
-    setOfficers(data ?? []);
+    // username ไม่ได้อยู่ในตาราง officers อีกแล้ว (migration 0043)
+    // ต้องดึงแยกผ่าน RPC มาเติมก่อนแสดงผล
+    setOfficers(await withUsernames((data ?? []) as Officer[]));
     setLoading(false);
   }
 
@@ -1153,7 +1156,7 @@ export function OfficerManagementPage() {
                               )}
                               <span className="truncate">{o.name}</span>
                             </div>
-                            <div className="text-gray-500 text-[11px] font-mono truncate">@{o.username}</div>
+                            <div className="text-gray-500 text-[11px] font-mono truncate">{o.username ? `@${o.username}` : ''}</div>
                           </div>
                         </div>
                       </td>

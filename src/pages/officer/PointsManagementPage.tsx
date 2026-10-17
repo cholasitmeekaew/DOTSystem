@@ -9,6 +9,7 @@ import {
   POINTS_REWARDS, POINTS_PENALTIES, getPointsLevel,
 } from '../../lib/types';
 import { supabase } from '../../lib/supabase';
+import { withUsernames } from '../../lib/api/officerUsernames';
 import {
   addOfficerPoints, deleteOfficerPointsLog, resetMonthlyPeriod, previewPointsReset,
   previewClearHistory, clearAllPointsHistory,
@@ -74,7 +75,9 @@ export function PointsManagementPage() {
     if (error) {
       toast({ title: 'โหลดข้อมูลไม่สำเร็จ', description: error.message, variant: 'destructive' });
     }
-    const list = (data as unknown as Officer[]) ?? [];
+    // เติม username ด้วย เพราะถูกย้ายออกจากตาราง officers แล้ว (migration 0043)
+    // ค้นหาด้วยชื่อผู้ใช้จึงต้องใช้ค่านี้
+    const list = await withUsernames((data as unknown as Officer[]) ?? []);
     // เรียงตามคะแนนใน JS (กัน null + fallback)
     setOfficers(list.slice().sort((a, b) => (b.points ?? 0) - (a.points ?? 0)));
     setLoading(false);
