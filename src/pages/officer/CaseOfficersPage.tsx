@@ -11,7 +11,7 @@ import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../lib/AuthContext';
 import {
   Users, Search, Check, X, ChevronDown, ChevronUp, UserPlus,
-  DollarSign, Award, AlertTriangle,
+  DollarSign, Award, AlertTriangle, UserCheck,
 } from 'lucide-react';
 
 type StatusFilter = 'all' | 'unpaid' | 'paid';
@@ -54,6 +54,7 @@ export function CaseOfficersPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const [view, setView] = useState<'records' | 'officers'>('records');
 
   const [editing, setEditing] = useState<ServiceRecord | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -181,6 +182,85 @@ export function CaseOfficersPage() {
     }
   }
 
+
+  /* ---------- รวมรายชื่อเจ้าหน้าที่จากทุกรายการแจ้งค่าบริการ ---------- */
+
+  /**
+   * ดึงรายชื่อผู้ดูแลเคสออกจากทุกบิล แล้วรวมเป็นรายคน
+   *
+   * นับทั้ง "ผู้รับผิดชอบหลัก" (`officer_id`) และ "ผู้ร่วมงาน"
+   * ที่บันทึกไว้ใน service_record_officers — คนเดียวกัน
+   * อาจดูแลหลายบิลจึงต้องรวมให้ถูก
+   */
+  const officerRollup = useMemo(() => {
+    interface Acc {
+      officerId: string;
+      cases: number;
+      unpaid: number;
+      totalAmount: number;
+      asPrimary: number;
+      asTeam: number;
+      /** ใช้กันนับบิลซ้ำเวลาคนเดียวกันเป็นทั้งหลักและร่วม */
+      casesById: Set<string>;
+    }
+    const map = new Map<string, Acc>();
+
+    const bump = (id: string, r: ServiceRecord, role: 'primary' | 'team') => {
+      if (!id) return;
+      let acc = map.get(id);
+      if (!acc) {
+        acc = {
+          officerId: id, cases: 0, unpaid: 0, totalAmount: 0,
+          asPrimary: 0, asTeam: 0, casesById: new Set<string>(),
+        };
+        map.set(id, acc);
+      }
+      // กันนับบิลเดียวสองครั้ง (เป็นทั้งหลักและร่วม)
+      if (acc.casesById.has(r.id)) return;
+      acc.casesById.add(r.id);
+
+      acc.cases += 1;
+      if (r.status !== 'paid') acc.unpaid += 1;
+      acc.totalAmount += Number(r.amount || 0);
+      if (role === 'primary') acc.asPrimary += 1;
+      else acc.asTeam += 1;
+    };
+
+    for (const r of records) {
+      bump(r.officer_id ?? '', r, 'primary');
+      for (const id of assignedMap[r.id] ?? []) {
+        if (id !== r.officer_id) bump(id, r, 'team');
+      }
+    }
+
+    const list = [...map.values()];
+    const q = search.trim().toLowerCase();
+    const filtered = q
+      ? list.filter((a) => {
+          const o = officers.find((x) => x.id === a.officerId);
+          if (!o) return false;
+          const u = usernameMap.get(o.id);
+          return (
+            o.name.toLowerCase().includes(q) ||
+            (u ?? '').toLowerCase().includes(q) ||
+            o.rank.toLowerCase().includes(q) ||
+            o.department.toLowerCase().includes(q)
+          );
+        })
+      : list;
+
+    return filtered.sort((a, b) => b.cases - a.cases || b.totalAmount - a.totalAmount);
+  }, [records, assignedMap, officers, usernameMap, search]);
+
+  /** บิลที่เจ้าหน้าที่คนนี้ดูแล */
+  function casesOf(officerId: string): ServiceRecord[] {
+    return records.filter((r) =>
+      r.officer_id === officerId || (assignedMap[r.id] ?? []).includes(officerId),
+    );
+  }
+
+  const [openOfficer, setOpenOfficer] = useState<string | null>(null);
+
   const visible = rows.slice(0, limit);
 
   return (
@@ -226,6 +306,33 @@ export function CaseOfficersPage() {
         </div>
       )}
 
+
+      {/* สลับมุมมอง: รายบิล ↔ รายชื่อเจ้าหน้าที่ */}
+      <div className="flex gap-1 mb-3">
+        {([
+          ['records', 'รายการบิล', Users],
+          ['officers', 'รายชื่อเจ้าหน้าที่', UserCheck],
+        ] as const).map(([key, label, Icon]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-colors ${
+              view === key
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                : 'bg-navy-900 text-gray-400 border border-blue-900/40 hover:text-white'
+            }`}
+          >
+            <Icon size={13} />
+            {label}
+          </button>
+        ))}
+        {view === 'officers' && (
+          <span className="text-xs text-gray-500 self-center ml-1">
+            {officerRollup.length} คน (ดึงจากทุกรายการในแจ้งค่าบริการ)
+          </span>
+        )}
+      </div>
+
       {/* ตัวกรอง */}
       <div className="card p-3 mb-3 flex flex-col sm:flex-row gap-2">
         <div className="relative flex-1">
@@ -260,6 +367,107 @@ export function CaseOfficersPage() {
 
       {loading ? (
         <div className="text-center text-gray-500 text-sm py-10">กำลังโหลด…</div>
+      ) : view === 'officers' ? (
+        officerRollup.length === 0 ? (
+          <div className="text-center text-gray-500 text-sm py-10">ยังไม่มีข้อมูลผู้ดูแลเคส</div>
+        ) : (
+          <div className="space-y-2">
+            {officerRollup.map((a) => {
+              const o = officers.find((x) => x.id === a.officerId);
+              const open = openOfficer === a.officerId;
+              const list = casesOf(a.officerId);
+              return (
+                <div key={a.officerId} className="card p-3">
+                  <button
+                    onClick={() => setOpenOfficer(open ? null : a.officerId)}
+                    className="w-full flex items-center gap-3 text-left"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-semibold text-white text-sm truncate">
+                          {o?.name ?? a.officerId.slice(0, 8)}
+                        </span>
+                        {o && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 bg-blue-500/10 text-blue-300">
+                            {o.rank}
+                          </span>
+                        )}
+                        {a.asTeam > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border border-cyan-500/30 bg-cyan-500/10 text-cyan-300">
+                            ร่วมงาน {a.asTeam} เคส
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        @{usernameMap.get(a.officerId) ?? '—'} · {o?.department ?? '-'}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <div className="text-right">
+                        <div className="text-[10px] text-gray-500">เคส</div>
+                        <div className="text-sm font-bold text-white">{a.cases}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] text-gray-500">ค้างชำระ</div>
+                        <div className={`text-sm font-bold ${a.unpaid > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
+                          {a.unpaid}
+                        </div>
+                      </div>
+                      <div className="text-right hidden sm:block">
+                        <div className="text-[10px] text-gray-500">มูลค่ารวม</div>
+                        <div className="text-sm font-bold text-emerald-400">
+                          {formatMoney(a.totalAmount)}
+                        </div>
+                      </div>
+                      {open ? <ChevronUp size={15} className="text-gray-500" /> : <ChevronDown size={15} className="text-gray-500" />}
+                    </div>
+                  </button>
+
+                  {open && (
+                    <div className="mt-3 pt-3 border-t border-blue-900/40 space-y-1">
+                      {list.map((r) => {
+                        const isPrimary = r.officer_id === a.officerId;
+                        return (
+                          <div
+                            key={r.id}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded bg-navy-900/40 border border-blue-900/30"
+                          >
+                            <span
+                              className={
+                                'text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 border '
+                                + (isPrimary
+                                  ? 'border-blue-500/30 bg-blue-500/10 text-blue-300'
+                                  : 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300')
+                              }
+                            >
+                              {isPrimary ? 'หลัก' : 'ร่วม'}
+                            </span>
+                            <span className="text-[11px] text-gray-300 flex-1 min-w-0 truncate">
+                              {r.service_name} · {r.roblox_username}
+                            </span>
+                            <Badge variant={r.status === 'paid' ? 'success' : 'danger'}>
+                              {r.status === 'paid' ? 'จ่ายแล้ว' : 'ค้างชำระ'}
+                            </Badge>
+                            <span className="text-[11px] text-amber-300 flex-shrink-0">
+                              {formatMoney(r.amount)}
+                            </span>
+                            <button
+                              onClick={() => openAssign(r)}
+                              className="text-[10px] text-cyan-400 hover:text-cyan-300 flex-shrink-0"
+                            >
+                              จัดการ
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )
       ) : visible.length === 0 ? (
         <div className="text-center text-gray-500 text-sm py-10">ไม่พบรายการ</div>
       ) : (
