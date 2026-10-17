@@ -6,6 +6,9 @@
  * ============================================================= */
 
 import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import {
+  groupPointsLog, pointsCategoryOf, POINTS_CATEGORIES, type PointsCategoryKey,
+} from '../../lib/pointsCategory';
 import { useEffect, useMemo, useState } from 'react';
 import {
   UserCircle, FileText, Palmtree, DollarSign,
@@ -19,6 +22,7 @@ import { PageHeader } from '../../components/PageHeader';
 import {
   RANK_LABELS, DEPARTMENT_LABELS, WORK_REPORT_STATUS_LABELS,
   getPointsLevel, getNextPointsLevel, getPointsProgress, POINTS_LEVELS,
+  type PointsLogEntry,
   type Officer, type WorkReport, type OfficerLeave, type LeaveType, type LeaveQuota,
 } from '../../lib/types';
 import {
@@ -213,7 +217,28 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
     return buildQuotaUsage(leaves, resolveQuotas(quotaRows), currentMonthKey());
   }, [leaves, quotaRows]);
 
-  const visibleLogs = showAllLogs ? pointsLog : pointsLog.slice(0, 5);
+  /** หมวดที่เลือกดู — null = ดูทั้งหมด */
+  const [logCategory, setLogCategory] = useState<PointsCategoryKey | null>(null);
+
+  /** จัดกลุ่มตามหมวด พร้อมยอดรวมของแต่ละหมวด */
+  const logGroups = useMemo(
+    () => groupPointsLog(pointsLog as PointsLogEntry[]),
+    [pointsLog],
+  );
+
+  /** หมวดที่มีข้อมูลจริง (ไม่เอาหมวดที่ไม่มีรายการไปกวนสายตา) */
+  const availableCategories = useMemo(
+    () => logGroups.map((g) => g.category),
+    [logGroups],
+  );
+
+  /** รายการที่แสดงหลังกรองตามหมวด */
+  const filteredLogs = useMemo(() => {
+    if (!logCategory) return pointsLog;
+    return pointsLog.filter((l) => pointsCategoryOf(l.reason) === logCategory);
+  }, [pointsLog, logCategory]);
+
+  const visibleLogs = showAllLogs ? filteredLogs : filteredLogs.slice(0, 5);
   const visibleReports = showAllReports ? reports : reports.slice(0, 5);
   const visibleLeaves = showAllLeaves ? leaves : leaves.slice(0, 5);
 
@@ -447,7 +472,7 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
                 <div className="text-[10px] text-amber-400">ถึงระดับสูงสุดแล้ว</div>
               )}
 
-              {/* ประวัติคะแนน */}
+              {/* ประวัติคะแนน — แยกตามหมวดหมู่ */}
               <div className="mt-4 pt-3 border-t border-blue-900/40">
                 <div className="flex items-center gap-1.5 mb-2">
                   <History size={12} className="text-gray-500" />
@@ -455,37 +480,81 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
                     ประวัติการได้/หักคะแนน ({pointsLog.length})
                   </span>
                 </div>
+
                 {pointsLog.length === 0 ? (
                   <div className="text-[11px] text-gray-600 py-2">ไม่พบรายการ</div>
                 ) : (
                   <>
-                    <div className="space-y-1">
-                      {visibleLogs.map((l, i) => (
-                        <div
-                          key={i}
-                          className="flex items-center gap-2 rounded px-2 py-1.5 bg-navy-900/40 border border-blue-900/30"
+                    <div className="flex flex-wrap gap-1 mb-2.5">
+                      <button
+                        onClick={() => { setLogCategory(null); setShowAllLogs(false); }}
+                        className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                          logCategory === null
+                            ? 'border-amber-500/60 bg-amber-500/10 text-amber-300'
+                            : 'border-blue-900/40 text-gray-400 hover:text-white'
+                        }`}
+                      >
+                        ทั้งหมด
+                      </button>
+                      {logGroups.map((g) => (
+                        <button
+                          key={g.category.key}
+                          onClick={() => {
+                            setLogCategory(logCategory === g.category.key ? null : g.category.key);
+                            setShowAllLogs(false);
+                          }}
+                          title={`${g.category.hint} · ${g.count} รายการ`}
+                          className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${g.category.bgClass} ${g.category.borderClass} ${g.category.textClass} ${logCategory === g.category.key ? '' : 'opacity-55 hover:opacity-100'}`}
                         >
-                          {l.delta >= 0
-                            ? <TrendingUp size={12} className="text-emerald-400 flex-shrink-0" />
-                            : <TrendingDown size={12} className="text-red-400 flex-shrink-0" />}
-                          <span className="text-[11px] text-gray-300 flex-1 min-w-0 truncate">
-                            {l.reason}
-                          </span>
-                          <span className={`text-[11px] font-bold flex-shrink-0 ${
-                            l.delta >= 0 ? 'text-emerald-400' : 'text-red-400'
-                          }`}>
-                            {l.delta >= 0 ? '+' : ''}{l.delta}
-                          </span>
-                        </div>
+                          {g.category.label} {g.total > 0 ? '+' : ''}{g.total}
+                        </button>
                       ))}
                     </div>
-                    {pointsLog.length > 5 && (
+
+                    {logCategory && (
+                      <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                        <span className={`text-[10px] font-semibold ${POINTS_CATEGORIES[logCategory].textClass}`}>
+                          {POINTS_CATEGORIES[logCategory].label}
+                        </span>
+                        <span className="text-[10px] text-gray-500">
+                          · {POINTS_CATEGORIES[logCategory].hint}
+                          · {filteredLogs.length} รายการ
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="space-y-1">
+                      {visibleLogs.map((l, i) => {
+                        const meta = POINTS_CATEGORIES[pointsCategoryOf(l.reason)];
+                        return (
+                          <div
+                            key={i}
+                            className="flex items-center gap-2 rounded px-2 py-1.5 bg-navy-900/40 border border-blue-900/30"
+                          >
+                            {l.delta >= 0
+                              ? <TrendingUp size={12} className="text-emerald-400 flex-shrink-0" />
+                              : <TrendingDown size={12} className="text-red-400 flex-shrink-0" />}
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 border ${meta.bgClass} ${meta.borderClass} ${meta.textClass}`}>
+                              {meta.label}
+                            </span>
+                            <span className="text-[11px] text-gray-300 flex-1 min-w-0 truncate">
+                              {l.reason}
+                            </span>
+                            <span className={`text-[11px] font-bold flex-shrink-0 ${l.delta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {l.delta >= 0 ? '+' : ''}{l.delta}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {filteredLogs.length > 5 && (
                       <button
                         onClick={() => setShowAllLogs((v) => !v)}
                         className="mt-1.5 text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1"
                       >
                         {showAllLogs ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-                        {showAllLogs ? 'ย่อ' : `ดูทั้งหมด (${pointsLog.length})`}
+                        {showAllLogs ? 'ย่อ' : `ดูทั้งหมด (${filteredLogs.length})`}
                       </button>
                     )}
                   </>

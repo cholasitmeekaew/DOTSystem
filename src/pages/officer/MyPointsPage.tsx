@@ -1,7 +1,10 @@
 import { BackdropScrim } from '../../components/BackdropScrim';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Award, TrendingUp, TrendingDown, Trophy, Target, History } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
+import {
+  groupPointsLog, pointsCategoryOf, POINTS_CATEGORIES, type PointsCategoryKey,
+} from '../../lib/pointsCategory';
 import {
   Officer, PointsLogEntry, getPointsLevel, getNextPointsLevel, getPointsProgress,
 } from '../../lib/types';
@@ -19,6 +22,7 @@ export function MyPointsPage() {
   const { officer } = useAuth();
   const [officerData, setOfficerData] = useState<Officer | null>(null);
   const [loading, setLoading] = useState(true);
+  const [logCategory, setLogCategory] = useState<PointsCategoryKey | null>(null);
 
   useEffect(() => {
     if (!officer) return;
@@ -66,6 +70,13 @@ export function MyPointsPage() {
 
   const points = officerData?.points ?? 0;
   const log = (officerData?.points_log ?? []).slice().reverse();
+
+  /** จัดกลุ่มตามหมวดหมู่ + ยอดรวมของแต่ละหมวด */
+  const logGroups = useMemo(() => groupPointsLog(log), [log]);
+  const filteredLog = useMemo(
+    () => (logCategory ? log.filter((l) => pointsCategoryOf(l.reason) === logCategory) : log),
+    [log, logCategory],
+  );
   const period = officerData?.points_period ?? new Date().toISOString().slice(0, 7);
   const level = getPointsLevel(points);
   const next = getNextPointsLevel(points);
@@ -151,15 +162,46 @@ export function MyPointsPage() {
             <span className="text-xs text-gray-500">({log.length} รายการ)</span>
           </div>
 
+          {/* ตัวกรองหมวดหมู่ */}
+          {log.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              <button
+                onClick={() => setLogCategory(null)}
+                className={`px-2 py-1 rounded-lg text-[11px] border transition-colors ${
+                  logCategory === null
+                    ? 'border-amber-500/60 bg-amber-500/10 text-amber-300'
+                    : 'border-blue-900/40 text-gray-400 hover:text-white'
+                }`}
+              >
+                ทั้งหมด ({log.length})
+              </button>
+              {logGroups.map((g) => (
+                <button
+                  key={g.category.key}
+                  onClick={() => setLogCategory(logCategory === g.category.key ? null : g.category.key)}
+                  title={`${g.category.hint} · ${g.count} รายการ`}
+                  className={`px-2 py-1 rounded-lg text-[11px] border transition-colors ${g.category.bgClass} ${g.category.borderClass} ${g.category.textClass} ${logCategory === g.category.key ? '' : 'opacity-55 hover:opacity-100'}`}
+                >
+                  {g.category.label} ({g.count}) · {g.total > 0 ? '+' : ''}{g.total}
+                </button>
+              ))}
+            </div>
+          )}
+
           {log.length === 0 ? (
             <div className="text-center text-gray-500 text-sm py-8">
               ยังไม่มีประวัติการทำรายการ
             </div>
+          ) : filteredLog.length === 0 ? (
+            <div className="text-center text-gray-500 text-sm py-8">
+              ไม่มีรายการในหมวดนี้
+            </div>
           ) : (
             <ul className="space-y-2">
-              {log.map((entry, i) => {
+              {filteredLog.map((entry, i) => {
                 const positive = entry.delta > 0;
                 const debt = (entry.balance_after ?? 0) < 0;
+                const meta = POINTS_CATEGORIES[pointsCategoryOf(entry.reason)];
                 return (
                   <li
                     key={i}
@@ -172,7 +214,12 @@ export function MyPointsPage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <div className="text-sm text-white font-medium">{entry.reason}</div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border ${meta.bgClass} ${meta.borderClass} ${meta.textClass}`}>
+                            {meta.label}
+                          </span>
+                          <span className="text-sm text-white font-medium">{entry.reason}</span>
+                        </div>
                         <div className={`font-bold text-base whitespace-nowrap ${
                           positive ? 'text-emerald-400' : 'text-red-400'
                         }`}>
