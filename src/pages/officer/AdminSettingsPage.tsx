@@ -18,7 +18,7 @@ import { supabase } from '../../lib/supabase';
 import { PageHeader } from '../../components/PageHeader';
 import type { SystemSettings } from '../../lib/types';
 import {
-  applyMissingReportPoints, applyWeeklyAbsencePoints,
+  applyMissingReportPoints, applyWeeklyAbsencePoints, applyPaidRecordsSweep,
   AUTO_POINTS_SUMMARY, AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 import { resolveScheduledOfficerIds } from '../../lib/dutySchedule';
@@ -92,7 +92,7 @@ export function AdminSettingsPage() {
       weekStartDate.setDate(weekStartDate.getDate() - 7);
       const weekStart7 = toIso(weekStartDate);
 
-      const [allOfficers, allLogs, allReports, leavesRes, schedRes, ovRes] = await Promise.all([
+      const [allOfficers, allLogs, allReports, leavesRes, schedRes, ovRes, paidRes, assignRes] = await Promise.all([
         supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active'),
         supabase.from('duty_logs').select('*').is('deleted_at', null),
         supabase.from('work_reports').select('*'),
@@ -101,6 +101,9 @@ export function AdminSettingsPage() {
         supabase
           .from('schedule_overrides').select('*')
           .gte('override_date', weekStart7).lte('override_date', todayIso),
+        // บิลที่ชำระแล้วทั้งหมด — เกณฑ์ PPS: +5 ให้เจ้าหน้าที่ที่ดูแลเคส
+        supabase.from('service_records').select('*').eq('status', 'paid'),
+        supabase.from('service_record_officers').select('service_record_id, officer_id'),
       ]);
 
       const officers = (allOfficers.data ?? []) as never[];
@@ -116,6 +119,14 @@ export function AdminSettingsPage() {
         toIso: todayIso,
       });
 
+      // แผนที่ service_record_id -> รายชื่อเจ้าหน้าที่ที่ดูแลเคส
+      const assignedMap = new Map<string, string[]>();
+      for (const row of (assignRes.data ?? []) as Array<{ service_record_id: string; officer_id: string }>) {
+        const list = assignedMap.get(row.service_record_id) ?? [];
+        list.push(row.officer_id);
+        assignedMap.set(row.service_record_id, list);
+      }
+
       const results = [
         ...(await applyMissingReportPoints(logs as never, new Set(
           reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
@@ -126,6 +137,12 @@ export function AdminSettingsPage() {
           scheduledOfficerIds: [...scheduledIds],
           approvedLeaveOfficerIds: onLeave,
         })),
+        // เกณฑ์ PPS: รับชำระครบ +5 ให้ทุกคนที่ดูแลเคสนั้น
+        // ครอบคลุมบิลที่ถูกตั้งเป็น "ชำระแล้ว" ทางอื่นที่ไม่ได้กดรับเงินในหน้าค่าบริการ
+        ...(await applyPaidRecordsSweep(
+          (paidRes.data ?? []) as never,
+          assignedMap,
+        )),
       ];
 
       const given = results.filter((r) => r.awarded);
