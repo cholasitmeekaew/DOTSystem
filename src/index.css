@@ -890,3 +890,83 @@
   border-top: 1px solid #2b2b33;
   background: rgba(23, 23, 29, 0.5);
 }
+
+/* =============================================================
+ * ฟอนต์ — host เอง ไม่พึ่ง Google Fonts CDN
+ * =============================================================
+ * ทำไมต้อง host เอง
+ * ──────────────────
+ * ถ้าโหลด CDN ไม่ได้ (เครือข่ายไทยบางเจ้าเข้า fonts.googleapis.com ไม่ได้)
+ * ภาษาไทยจะไปใช้ฟอนต์ระบบที่อาจไม่มี glyph ครบ
+ * สระและวรรณยุกต์จะซ้อนกันจนอ่านไม่ออก
+ *
+ * ทำไมไม่ใช้ unicode-range
+ * ─────────────────────────
+ * เขียนไว้ตอนแรก แต่ CSS minifier ของโปรเจกต์นี้ (lightningcss/esbuild)
+ * ทำลายค่านี้ เช่น U+0-FF กลายเป็น U+?? ซึ่งไม่ใช่ CSS ที่ถูกต้อง
+ * (เจอได้ตอน build จึงตัดออก)
+ *
+ * ไม่เป็นไร เพราะเบราว์เซอร์เลือกฟอนต์ "รายตัวอักษร" อยู่แล้ว:
+ * Inter ไม่มี glyph ไทย → อักขระไทยจะตกไปใช้ Noto Sans Thai ในลำดับถัดไป
+ * ส่วนอังกฤษ/ตัวเลขใช้ Inter ตามปกติ
+ */
+
+/* --- Inter (อังกฤษ + ตัวเลข) --- */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/inter-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/inter-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/inter-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/inter-700.woff2') format('woff2');
+}
+
+/* --- Noto Sans Thai (ภาษาไทย) --- */
+@font-face {
+  font-family: 'Noto Sans Thai';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/noto-sans-thai-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Noto Sans Thai';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/noto-sans-thai-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Noto Sans Thai';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/noto-sans-thai-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Noto Sans Thai';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/noto-sans-thai-700.woff2') format('woff2');
+}
