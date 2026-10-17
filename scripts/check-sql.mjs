@@ -48,6 +48,27 @@ for (const f of readdirSync('supabase/migrations').sort()) {
 
 if (problems === 0) {
   console.log('✓ ตรวจชนิดข้อมูลในไฟล์ SQL แล้ว ไม่พบข้อผิดพลาด');
+
+/**
+ * กับ PL/pgSQL เขียน now() AT TIME ZONE ซ้อนในวงเล็บของฟังก์ชันไม่ได้
+ * เช่น  if fn(to_char(now() at time zone 'X', 'YYYY-MM')) then
+ * เพราะ parser จะตีความผิดจนได้ "syntax error at or near to_char"
+ * ต้องเก็บลงตัวแปรก่อนแล้วค่อยเรียก
+ */
+const TZ_IN_CALL = /\bif\b[\s\S]{0,120}?\w+\([\s\S]{0,80}?\bat\s+time\s+zone\b[\s\S]{0,60}?\)\s*then/i;
+for (const name of readdirSync('supabase/migrations').sort()) {
+  if (!name.endsWith('.sql')) continue;
+  const f = `supabase/migrations/${name}`;
+  const src = readFileSync(f, 'utf8');
+  const m = src.match(TZ_IN_CALL);
+  if (m) {
+    problems++;
+    const lineNo = src.slice(0, m.index).split('\n').length;
+    console.log(`✘ ${f}:${lineNo}  AT TIME ZONE ซ้อนในเรียกฟังก์ชันในบล็อก IF — parser จะ error`);
+    console.log(`   ${m[0].replace(/\s+/g, ' ').trim().slice(0, 90)}`);
+    console.log(`   → แก้โดยเก็บลงตัวแปรก่อน เช่น v_x := to_char(now() at time zone 'X', 'YYYY-MM')`);
+  }
+}
 } else {
   console.log(`\nพบ ${problems} จุด — ห้ามรันจนกว่าจะแก้แล้ว`);
 }

@@ -225,13 +225,17 @@ grant execute on function public.preview_claim_share(uuid, text, text) to anon, 
 grant execute on function public.claim_service_share(uuid, text, text, uuid, text) to anon, authenticated;
 
 -- ---------- ตรวจสอบ ----------
+-- หมายเหตุ: ห้ามเขียน now() AT TIME ZONE ซ้อนในวงเล็บของฟังก์ชันในบล็อก IF
+-- เพราะ parser ของ PL/pgSQL จะตีความผิดจนได้ syntax error
+-- ต้องแยกเก็บลงตัวแปรก่อนเสมอ
 do $$
+declare
+  v_current_period text := to_char(now() at time zone 'Asia/Bangkok', 'YYYY-MM');
 begin
   if not public.claim_period_is_closed('2000-01') then
     raise exception '0038 ล้มเหลว: งวดเก่าควรถือว่าปิดแล้ว';
   end if;
-  if public.claim_period_is_closed(
-       to_char(now() at time zone 'Asia/Bangkok', 'YYYY-MM')) then
+  if public.claim_period_is_closed(v_current_period) then
     raise exception '0038 ล้มเหลว: เดือนปัจจุบันต้องยังถือว่าไม่ปิด';
   end if;
   raise notice '0038 สำเร็จ: รับส่วนแบ่งได้เฉพาะงวดที่ปิดเดือนแล้ว';
