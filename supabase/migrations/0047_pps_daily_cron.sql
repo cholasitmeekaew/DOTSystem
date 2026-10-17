@@ -27,9 +27,78 @@
 -- 4. ขาดเวร: ข้ามสัปดาห์ที่ไม่มีตารางเวรของคนนั้น และข้ามสัปดาห์ที่วางลา
 --    → ไม่หักย้อนไปถึงช่วงก่อนมีระบบจัดตารางเวร
 -- 5. ไม่ส่งรายงาน: ข้ามเวรที่ถูกบังคับออก (มีโทษของตัวเองแล้ว) และเวรวันนี้
--- 6. หักเฉพาะ 14 วันล่าสุด (p_lookback_days) — ไม่หักย้อนเก่าให้อัตโนมัติ
---    รายการเก่ากว่านั้นให้หัวหน้ากรมกดสแกนเองตามช่วงวันที่ที่เลือก
+-- 6. ไม่หักอะไรที่เกิดก่อน penalty_start_date (ค่าเริ่มต้น = วันที่ติดตั้ง)
+--    ตั้งค่าได้ที่ตาราง pps_penalty_config (แก้วันที่/จำนวนวันย้อนหลังได้)
 -- =============================================================
+
+
+-- ---------------------------------------------------------------
+-- ตั้งค่าเกณฑ์การหักอัตโนมัติ
+--
+-- penalty_start_date = วันที่เริ่มนับใหม่
+--   เวรที่ออกเวรก่อนวันนี้จะไม่ถูกหักไม่ว่าอย่างไร
+--   เพราะเป็นหนี้ที่เกิดก่อนมีระบบนี้ ห้ามไปล้างย้อนหลังทีเดียว
+--   หลักการคือ "หักตอนวันผ่านวัน" ไม่ใช่หักรวมของค้าง
+--
+-- lookback_days = จำกัดอีกชั้นว่าไม่หักย้อนเก่ากว่านี้
+--   ป้องกันกรณีเปิดใช้งานช้า หรือเผลอตั้งวันเริ่มเริ่มผิด
+-- ---------------------------------------------------------------
+create table if not exists public.pps_penalty_config (
+  id                  smallint primary key default 1,
+  penalty_start_date  date not null default current_date,
+  lookback_days       integer not null default 14,
+  updated_at          timestamptz not null default now(),
+  constraint pps_penalty_config_singleton check (id = 1),
+  constraint pps_penalty_config_lookback check (lookback_days between 1 and 365)
+);
+
+comment on table public.pps_penalty_config is
+  'เกณฑ์การหักคะแนนอัตโนมัติ — ไม่หักย้อนก่อน penalty_start_date เด็ดขาด';
+
+-- ค่าเริ่มต้น = วันที่ติดตั้ง cron (คือ "วันนี้" ตอนรัน migration)
+insert into public.pps_penalty_config (id, penalty_start_date, lookback_days)
+values (1, current_date, 14)
+on conflict (id) do nothing;
+
+alter table public.pps_penalty_config enable row level security;
+
+drop policy if exists "pps_penalty_config read" on public.pps_penalty_config;
+create policy "pps_penalty_config read" on public.pps_penalty_config
+  for select using (true);
+
+drop policy if exists "pps_penalty_config update" on public.pps_penalty_config;
+create policy "pps_penalty_config update" on public.pps_penalty_config
+  for update using (true) with check (id = 1);
+
+
+-- ---------------------------------------------------------------
+-- วันตัดหลังที่มีผลจริง = วันเริ่มนับใหม่ และ ไม่เก่ากว่า lookback
+-- เอาค่ามากสุดเสมอ เพื่อให้เคร่งที่สุด
+-- ---------------------------------------------------------------
+create or replace function pps_effective_cutoff()
+returns date
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_start    date;
+  v_lookback integer;
+begin
+  select penalty_start_date, lookback_days
+    into v_start, v_lookback
+  from public.pps_penalty_config
+  where id = 1;
+
+  -- ยังไม่ได้ตั้งค่า → เริ่มวันนี้ (ปลอดภัย ไม่หักย้อนหลัง)
+  if v_start is null then
+    return current_date;
+  end if;
+
+  return greatest(v_start, current_date - greatest(coalesce(v_lookback, 14), 1));
+end;
+$$;
 
 
 -- ---------------------------------------------------------------
@@ -112,7 +181,7 @@ $$;
 -- ---------------------------------------------------------------
 -- งานหลัก: หักคะแนนกฎที่ต้องรอเวลา
 -- ---------------------------------------------------------------
-create or replace function run_pps_daily_sweep(p_lookback_days integer default 14)
+create or replace function run_pps_daily_sweep()
 returns jsonb
 language plpgsql
 security definer
@@ -139,18 +208,16 @@ begin
   end if;
 
   -- =============================================================
-  -- ขอบเขตย้อนหลัง
+  -- วันตัดหลัง
   --
-  -- งานอัตโนมัติหักแค่ช่วงใกล้ ๆ เท่านั้น
+  -- อ่านจาก pps_penalty_config (ตั้งค่าครั้งแรก = วันที่ติดตั้ง cron)
   --
-  -- เหตุผล: ตอนติดตั้ง cron มีเวรเก่าที่ไม่มีรายงานค้างอยู่หลายสิบรายการ
-  -- บางรายการเกิดก่อนมีระบบรายงานเสร็จ ถ้าให้ cron หักย้อนหมด
-  -- เจ้าหน้าที่จะโดนหักรวมหลายร้อยคะแนนในครั้งเดียวโดยไม่ได้ตั้งใจ
-  --
-  -- รายการเก่ากว่านี้ให้หัวหน้ากรมกดสแกนเองตามช่วงวันที่ที่เลือก
+  -- หลักการ: หัก "ตอนวันผ่านวัน" เท่านั้น
+  -- ของที่ค้างอยู่ก่อนวันที่เริ่มนับ จะไม่ถูกหักโดย cron
+  -- ถ้าต้องการนับย้อนหลัง ให้หัวหน้ากรมกดสแกนเองตามช่วงวันที่
   -- เพราะเป็นการตัดสินใจอย่างตั้งใจ ไม่ใช่งานอัตโนมัติ
   -- =============================================================
-  v_cutoff := v_today - greatest(coalesce(p_lookback_days, 14), 1);
+  v_cutoff := pps_effective_cutoff();
 
   -- =============================================================
   -- กฎที่ 1: ออกเวรโดยไม่ส่งรายงาน (-5)
@@ -206,6 +273,11 @@ begin
       v_to   := v_today - (7 * (i - 1));
       v_from := v_today - (7 * i);
       v_week := pps_week_start(v_from);
+
+      -- สัปดาห์ที่เก่ากว่าวันเริ่มนับ → ไม่พิจารณา (ไม่หักของค้าง)
+      if v_from < v_cutoff then
+        continue;
+      end if;
 
       -- 2.1) มีตารางเวรของคนนี้ในสัปดาห์นั้นไหม
       --      ตารางเวรเป็นแบบทำซ้ำรายสัปดาห์ (เก็บเป็นวันในสัปดาห์)
@@ -279,8 +351,7 @@ begin
 
   return jsonb_build_object(
     'skipped', false,
-    'lookback_days', p_lookback_days,
-    'cutoff', v_cutoff,
+    'penalty_from', v_cutoff,
     'noreport_awarded', v_noreport,
     'absence_awarded', v_absent,
     'ran_at', now()
@@ -312,7 +383,7 @@ select cron.schedule(
 -- ---------------------------------------------------------------
 -- ข้อมูลสำหรับตรวจสอบว่างานทำงานจริง
 -- ---------------------------------------------------------------
-comment on function run_pps_daily_sweep(integer) is
+comment on function run_pps_daily_sweep() is
   'หักคะแนนกฎที่ต้องรอเวลา (ไม่ส่งรายงาน / ขาดเวรต่อสัปดาห์) — เรียกอัตโนมัติทุกวัน 05:10 UTC';
 
 comment on function pps_award(uuid, integer, text, text) is
