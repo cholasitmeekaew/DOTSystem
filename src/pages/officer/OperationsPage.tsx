@@ -34,6 +34,7 @@ import {
 } from '../../lib/api/autoPoints';
 import {
   deleteWorkReport as deleteWorkReportShared, loadReportCases, loadCaseCounts,
+  setReportCaseStatus,
 } from '../../lib/api/workReportsAdmin';
 
 type ReportCaseDraft = {
@@ -937,6 +938,41 @@ export function OperationsPage({
   const dutyEnabled = settings?.duty_system_enabled ?? true;
   const workReportsEnabled = settings?.work_reports_enabled ?? true;
 
+  /**
+   * เปลี่ยนสถานะเคสย่อยจากใน modal
+   *
+   * เกณฑ์ PPS: เคสที่เปลี่ยนเป็น "เสร็จสิ้น" ได้ +5 คะแนน
+   * และถ้าเปลี่ยนกลับออก ระบบคืนคะแนนให้อัตโนมัติ
+   */
+  async function handleCaseStatusChange(
+    report: WorkReport,
+    caseId: string,
+    next: 'completed' | 'in_progress' | 'transferred',
+  ) {
+    if (!officer) return;
+    try {
+      const res = await setReportCaseStatus({
+        caseId,
+        caseStatus: next,
+        officerId: report.officer_id ?? null,
+        officerName: report.officer_name,
+        actor: { id: officer.id, name: officer.name },
+      });
+
+      setViewReportCases((prev) => prev.map((c) => (
+        c.id === caseId ? { ...c, case_status: next } : c
+      )));
+
+      if (res?.awarded) {
+        flash('ok', `อัปเดตสถานะเคสแล้ว · ปรับคะแนนให้ ${report.officer_name}`);
+      } else {
+        flash('ok', `อัปเดตสถานะเคสแล้ว`);
+      }
+    } catch (e) {
+      flash('err', `เปลี่ยนสถานะเคสไม่สำเร็จ: ${(e as Error).message}`);
+    }
+  }
+
   return (
     <div className="min-w-0 overflow-x-hidden">
       <PageHeader
@@ -1466,6 +1502,7 @@ export function OperationsPage({
           cases={viewReportCases}
           onClose={() => { setViewReport(null); setViewReportCases([]); }}
           onOpenCitizen={openCitizenProfileFromCase}
+          onChangeCaseStatus={(caseId, next) => handleCaseStatusChange(viewReport, caseId, next)}
         />
       )}
 

@@ -29,7 +29,13 @@ export function translateClaimError(error: { code?: string; message?: string } |
   if (code === '42501' || /row[- ]level security|permission/i.test(msg)) {
     return 'คุณไม่มีสิทธิ์ดำเนินการนี้ (RLS block)';
   }
-  if (code === 'P0001') return msg || 'สถานะ claim ไม่ถูกต้อง';
+  if (code === 'P0001') {
+    // migration 0038: กันรับส่วนแบ่งของงวดที่ยังไม่ปิดเดือน
+    if (/CLAIM_PERIOD_NOT_CLOSED/i.test(msg)) {
+      return 'รับส่วนแบ่งได้เฉพาะงวดที่ปิดเดือนแล้วเท่านั้น (งวดเดือนปัจจุบันต้องรอสิ้นเดือน)';
+    }
+    return msg || 'สถานะ claim ไม่ถูกต้อง';
+  }
   if (code === 'P0002') return 'ไม่พบรายการ claim ที่ต้องการ';
   if (/function .* does not exist/i.test(msg)) {
     return 'RPC claim ยังไม่พร้อมใช้งาน (ต้อง apply migration 0009)';
@@ -121,11 +127,35 @@ export async function previewClaimShare(
       p_scope: scope,
     });
     if (error) throw error;
-    if (data) return data as ClaimPreview;
+    if (data) return normalisePreview(data as Record<string, unknown>);
   } catch (e) {
     console.warn('[previewClaimShare] RPC failed, using fallback:', e);
   }
   return previewClaimShareFallback(officerId, period, scope);
+}
+
+/**
+ * RPC คืนฟิลด์ชื่อ `gross` แต่ fallback ฝั่ง client ใช้ `amount`
+ * ทำให้รายการเคสพังเงียบ ๆ เมื่อสลับเส้นทาง (RPC ใช้ได้ / ใช้ไม่ได้)
+ * จึงต้องแปลงให้เป็นชื่อเดียวกันเสมอ
+ */
+function normalisePreview(raw: Record<string, unknown>): ClaimPreview {
+  const rows = Array.isArray(raw.records) ? (raw.records as Array<Record<string, unknown>>) : [];
+  return {
+    scope: (raw.scope as ClaimScope) ?? 'default',
+    period: String(raw.period ?? ''),
+    officer_share_percent: Number(raw.officer_share_percent ?? 10),
+    record_count: Number(raw.record_count ?? 0),
+    gross_amount: Number(raw.gross_amount ?? 0),
+    per_officer_total: Number(raw.per_officer_total ?? 0),
+    records: rows.map((r) => ({
+      id: String(r.id ?? ''),
+      service_name: String(r.service_name ?? '—'),
+      amount: Number(r.gross ?? r.amount ?? 0),
+      assigned_count: Number(r.assigned_count ?? 1),
+      per_officer_share: Number(r.share ?? r.per_officer_share ?? 0),
+    })),
+  };
 }
 
 /**
@@ -231,3 +261,40 @@ export async function fetchApprovedClaims(commissionerId: string): Promise<Claim
 }
 
 export { isJsonMode };
+
+/* =========================================================================
+ * งวดที่เปิดรับส่วนแบ่งได้
+ * ========================================================================= */
+
+/** เดือนปัจจุบันตามเวลาไทย (ระบบคิดงวดตาม Asia/Bangkok) */
+export function currentClaimPeriod(): string {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }).slice(0, 7);
+}
+
+/** งวดนี้ปิดแล้วหรือยัง — ใช้เงื่อนไขเดียวกับ claim_period_is_closed() ใน migration 0038 */
+export function isPeriodClosed(period: string): boolean {
+  return /^\d{4}-\d{2}$/.test(period) && period < currentClaimPeriod();
+}
+
+/**
+ * งวดที่เลือกรับส่วนแบ่งได้ = งวดที่ผ่านมาแล้วเท่านั้น
+ * คืนมาจากใหม่สุดไปเก่าสุด พร้อมเดือนที่ยังไม่ปิด (ถ้ามี ให้แสดงเป็นตัวเลือกที่ปิดการกดไว้)
+ */
+export function claimablePeriods(monthsBack = 12): Array<{
+  period: string;
+  closed: boolean;
+  label: string;
+}> {
+  const now = new Date();
+  return Array.from({ length: monthsBack + 1 }, (_, i) => {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const period = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const closed = isPeriodClosed(period);
+    const thai = period.slice(0, 4).toString().replace(/^20(\d{2})$/, '$1') + '/' + period.slice(5, 7);
+    return {
+      period,
+      closed,
+      label: closed ? `เดือน ${thai} (ปิดแล้ว)` : `เดือน ${thai} (ยังไม่ปิด — รอสิ้นเดือน)`,
+    };
+  });
+}

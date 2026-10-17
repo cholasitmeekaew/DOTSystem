@@ -1,6 +1,6 @@
 import { ReactNode, useState } from 'react';
 import {
-  Truck, LayoutDashboard, Shield, DollarSign, Megaphone,
+  Truck, LayoutDashboard, Shield, DollarSign, Megaphone, HandCoins,
   Users, LogOut, Menu, X, ChevronRight, Tag, MessageSquare, Siren, Car, UserCog, CalendarDays, BookOpen, Award, Newspaper, UserCircle, ShieldAlert,
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
@@ -21,6 +21,7 @@ export type OfficerPage =
   | 'work-reports-admin'
   | 'operations'
   | 'service-fees'
+  | 'claim-share'
   | 'complaints'
   | 'announcements'
   | 'service-rates'
@@ -81,6 +82,7 @@ const navItems: NavItem[] = [
   { id: 'profile', label: 'ข้อมูลส่วนตัว', icon: <UserCircle size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'operations', label: 'ปฏิบัติการ', icon: <Shield size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'service-fees', label: 'แจ้งค่าบริการ', icon: <DollarSign size={18} />, commissionerOnly: false, section: 'ops' },
+  { id: 'claim-share', label: 'รับส่วนแบ่งเคส', icon: <HandCoins size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'leave', label: 'จัดการการลา', icon: <CalendarDays size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'emergency', label: 'แจ้งเหตุฉุกเฉิน', icon: <Siren size={18} />, commissionerOnly: false, section: 'ops' },
   { id: 'manual', label: 'คู่มือการใช้งาน', icon: <BookOpen size={18} />, commissionerOnly: false, section: 'general' },

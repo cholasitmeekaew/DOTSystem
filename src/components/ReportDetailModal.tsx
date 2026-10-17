@@ -133,7 +133,7 @@ export function ReportStatusBanner({ report }: { report: WorkReport }) {
 /* ---------- Modal ---------- */
 
 export function ReportDetailModal({
-  report, cases, onClose, onDelete, deleting, onOpenCitizen,
+  report, cases, onClose, onDelete, deleting, onOpenCitizen, onChangeCaseStatus,
 }: {
   report: WorkReport;
   cases: WorkReportCase[];
@@ -142,6 +142,8 @@ export function ReportDetailModal({
   onDelete?: () => void;
   deleting?: boolean;
   onOpenCitizen?: (caseItem: WorkReportCase) => void;
+  /** เปลี่ยนสถานะเคสย่อย — ถ้าไม่ส่ง = ดูอย่างเดียว (ใครก็ตามที่ส่งจะเป็นผู้แก้) */
+  onChangeCaseStatus?: (caseId: string, next: 'completed' | 'in_progress' | 'transferred') => void;
 }) {
   const [evidence, setEvidence] = useState<string | null>(null);
 
@@ -201,6 +203,28 @@ export function ReportDetailModal({
                     {caseStatusLabel(item.case_status)}
                   </Badge>
                 </div>
+
+                {/* เปลี่ยนสถานะเคส — เกณฑ์ PPS ผูก +5 คะแนนกับการเปลี่ยนเป็น "เสร็จสิ้น" */}
+                {onChangeCaseStatus && (
+                  <div className="flex flex-wrap gap-1.5 mt-2.5 pt-2.5 border-t border-blue-900/30">
+                    {(['completed', 'in_progress', 'transferred'] as const).map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => onChangeCaseStatus(item.id, st)}
+                        disabled={item.case_status === st}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-medium border transition-colors disabled:opacity-50 disabled:cursor-default ${
+                          item.case_status === st
+                            ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+                            : 'border-blue-900/50 text-gray-400 hover:border-amber-500/30 hover:text-white'
+                        }`}
+                        title={st === 'completed' ? 'ปิดเคสสำเร็จ → ได้ +5 คะแนน' : undefined}
+                      >
+                        {caseStatusLabel(st)}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 {item.citizen_username && (
                   <button

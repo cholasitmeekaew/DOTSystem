@@ -1,3 +1,4 @@
+import { ClaimSharePage } from './pages/officer/ClaimSharePage';
 import { useState, lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import { QueryProvider } from './hooks/useQueryProvider';
@@ -133,6 +134,7 @@ function OfficerApp() {
               <OperationsPage key={opsTab} initialTab={opsTab} />
             )}
             {currentPage === 'service-fees' && <ServiceFeesPage />}
+            {currentPage === 'claim-share' && <ClaimSharePage />}
             {currentPage === 'complaints' && isCommissioner && <ComplaintsManagementPage />}
             {currentPage === 'announcements' && isCommissioner && <AnnouncementsPage />}
             {currentPage === 'service-rates' && isCommissioner && <ServiceRatesPage />}

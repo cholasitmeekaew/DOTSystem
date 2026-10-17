@@ -191,6 +191,57 @@ export async function applyCompletedCasePoints(
 }
 
 /**
+ * +5 / -5 เมื่อสถานะเคสย่อยเปลี่ยนเป็น "เสร็จสิ้น" หรือออกจาก "เสร็จสิ้น"
+ *
+ * เกณฑ์ PPS: ปิดเคสสำเร็จ 1 เคส = +5 คะแนน
+ * ต้องผูกกับ "การเปลี่ยนสถานะเคสย่อย" ไม่ใช่แค่ตอนอนุมัติรายงาน
+ * เพราะเคสที่ยังไม่เสร็จ ณ วันอนุมัติ อาจถูกปิดให้เสร็จในภายหลัง
+ *
+ * markKey ต่อเคส → กันให้ซ้ำ และใช้ตัด mark เมื่อเคสถูกเปิดใหม่
+ */
+export async function applyCaseStatusPoints(params: {
+  caseId: string;
+  caseStatus: string | null | undefined;
+  officerId: string | null | undefined;
+  officerName?: string;
+}): Promise<AutoAwardResult | null> {
+  const { caseId, caseStatus, officerId } = params;
+  if (!caseId || !officerId) return null;
+
+  const markKey = `case:${caseId}`;
+  const done = caseStatus === 'completed';
+
+  const { data: mark } = await supabase
+    .from('points_award_marks').select('id, delta').eq('mark_key', markKey).maybeSingle();
+
+  // ยังไม่เสร็จ และยังไม่เคยให้คะแนน → ไม่ต้องทำอะไร
+  if (!done && !mark) return null;
+
+  // เคยได้คะแนนแล้วแต่ถูกเปลี่ยนกลับไปไม่เสร็จ → ต้องคืน
+  if (!done) {
+    // การคืนของที่เคยให้ไปแล้ว ต้องทำแม้สวิตช์ PPS ปิดอยู่
+    // ไม่งั้นคะแนนจะค้างผิดถาวรจนกว่าจะเปิดสวิตช์มากดให้คะแนนอีกรอบ
+    await addOfficerPoints(
+      officerId,
+      -AUTO_POINTS_RULES.caseCompleted,
+      'เปิดเคสที่เคยปิดสำเร็จกลับเป็นยังไม่เสร็จ',
+      AUTO_POINTS_ACTOR.id,
+      AUTO_POINTS_ACTOR.name,
+    );
+    await supabase.from('points_award_marks').delete().eq('mark_key', markKey);
+    return { awarded: true, delta: -AUTO_POINTS_RULES.caseCompleted };
+  }
+
+  // เสร็จแล้วและเคยได้คะแนน → ซ้ำ ให้ awardAutoPoints จัดการเอง
+  return awardAutoPoints({
+    officerId,
+    delta: AUTO_POINTS_RULES.caseCompleted,
+    reason: 'ปิดเคสปฏิบัติงานสำเร็จ 1 เคส',
+    markKey,
+  });
+}
+
+/**
  * คืนคะแนน +10 เมื่อยกเลิกการอนุมัติรายงาน (approved -> rejected)
  *
  * ใช้ addOfficerPoints ตรง ไม่ผ่าน awardAutoPoints เพราะการคืนของที่
@@ -216,7 +267,11 @@ export async function revertReportApprovalPoints(
 
   const total = existing.reduce((sum, m) => sum + Number(m.delta ?? 0), 0);
 
-  await addOfficerPoints(
+  // สวิตช์ปิดอยู่ → คืนไม่ได้ ตามเกณฑ์ "ระงับทุกกรณี"
+  // คง mark ไว้ เพื่อให้เปิดสวิตช์แล้วเรียกซ้ำแล้วคืนได้
+  if (!(await isAutoPointsEnabled())) return 0;
+
+  await addAutomaticPoints(
     report.officer_id,
     -total,
     existing.length > 1
@@ -262,6 +317,48 @@ export async function applyServiceClosedPoints(
       markKey: `feeclose:${record.id}:${officerId}`,
     }));
   }
+  return results;
+}
+
+/**
+ * สแกนบิลที่ "ชำระครบแล้ว" แต่ยังไม่เคยได้คะแนน แล้วให้ +5 ให้ทุกคนที่ดูแล
+ *
+ * เกณฑ์ PPS: รับชำระครบ = +5 คะแนน
+ *
+ * ทำไมต้องมีฟังก์ชันนี้
+ * ─────────────────────
+ * เดิมให้คะแนนเฉพาะตอนกด "รับเงิน" ในหน้าค่าบริการเท่านั้น
+ * ถ้าบิลถูกเปลี่ยนสถานะเป็น paid ที่อื่น (เช่น นำเข้าข้อมูลย้อนหลัง
+ * หรือแก้ไขโดยหัวหน้ากรม) เจ้าหน้าที่จะได้คะแนนค้าง ๆ ไม่มีวันได้
+ *
+ * markKey รายบิลรายคน ทำให้เรียกซ้ำได้โดยไม่ให้คะแนนซ้ำ
+ */
+export async function applyPaidRecordsSweep(
+  records: ServiceRecord[],
+  assignedMap: Map<string, string[]>,
+): Promise<AutoAwardResult[]> {
+  const results: AutoAwardResult[] = [];
+
+  for (const record of records) {
+    if (record?.id || record?.status !== 'paid') continue;
+    if (!record.id || record.status !== 'paid') continue;
+
+    const targets = new Set<string>();
+    if (record.officer_id) targets.add(record.officer_id);
+    for (const id of assignedMap.get(record.id) ?? []) {
+      if (id) targets.add(id);
+    }
+
+    for (const officerId of targets) {
+      results.push(await awardAutoPoints({
+        officerId,
+        delta: AUTO_POINTS_RULES.serviceClosed,
+        reason: `ปิดเคสค่าบริการสำเร็จ: ${record.service_name}`,
+        markKey: `feeclose:${record.id}:${officerId}`,
+      }));
+    }
+  }
+
   return results;
 }
 

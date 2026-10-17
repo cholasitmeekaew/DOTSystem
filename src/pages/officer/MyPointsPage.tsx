@@ -34,6 +34,31 @@ export function MyPointsPage() {
     fetch();
   }, [officer]);
 
+  /**
+   * Real-time: คะแนนเปลี่ยนจากที่อื่น (ระบบอัตโนมัติ, หัวหน้ากรมให้/หัก)
+   * ต้องเห็นทันทีโดยไม่ต้องกด F5 — เกณฑ์ PPS ข้อ 4
+   */
+  useEffect(() => {
+    if (!officer) return;
+    const ch = supabase
+      .channel(`my_points_rt_${officer.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'officers' }, (payload: { new: Record<string, unknown> }) => {
+        const row = payload.new as { id?: string };
+        // กรองเฉพาะแถวของตัวเอง ไม่ให้ถูก event ของคนอื่นรบกวน
+        if (row?.id && row.id !== officer.id) return;
+        void (async () => {
+          const { data } = await supabase
+            .from('officers')
+            .select('*')
+            .eq('id', officer.id)
+            .single();
+          setOfficerData((data as unknown as Officer) ?? null);
+        })();
+      })
+      .subscribe();
+    return () => { void supabase.removeChannel(ch); };
+  }, [officer]);
+
   if (!officer) return null;
   if (loading) {
     return <div className="text-center text-gray-400 py-12">กำลังโหลด...</div>;

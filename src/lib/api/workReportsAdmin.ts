@@ -5,7 +5,8 @@
  * ============================================================= */
 
 import { supabase } from '../supabase';
-import { addOfficerPoints } from './points';
+import { addAutomaticPoints, isAutoPointsEnabled } from './points';
+import { applyCaseStatusPoints } from './autoPoints';
 import type { WorkReport, WorkReportCase } from '../types';
 
 /** ป้ายประเภทงานของรายงาน */
@@ -34,8 +35,10 @@ export interface DeleteReportResult {
  * ledger ที่บันทึก balance_after ไว้แล้ว ถ้าลบรายงานทิ้งอย่างเดียว
  * คะแนนจะค้างโดยไม่มีรายงานรองรับ และ mark จะยังกันไม่ให้ให้คะแนนซ้ำ
  *
- * ใช้ addOfficerPoints ตรง ๆ (ไม่ผ่าน addAutomaticPoints) เพราะการคืน
- * ของที่ "เคยให้ไปแล้ว" ไม่ควรขึ้นกับสวิตช์ PPS ที่เปิด/ปิดอยู่ตอนนี้
+ * ผ่าน addAutomaticPoints เพื่อให้สวิตช์ PPS คุมได้ "ทุกกรณี"
+ * ตามเกณฑ์: ปิดสวิตช์ = ระงับการบวก/หักคะแนนทั้งระบบ
+ * หมายเหตุ: ถ้าปิดสวิตช์อยู่ตอนลบ คะแนนเดิมจะยังไม่ถูกคืน
+ * ต้องเปิดสวิตช์แล้วลบซ้ำจึงจะคืนได้ (ระบบแจ้งเตือนผู้ใช้ทุกครั้ง)
  *
  * work_report_cases ถูกลบตาม (on delete cascade)
  */
@@ -51,7 +54,7 @@ export async function deleteWorkReport(
 
   let pointsReverted = 0;
   if (mark && awarded > 0 && target.officer_id) {
-    await addOfficerPoints(
+    await addAutomaticPoints(
       target.officer_id,
       -awarded,
       'ยกเลิกรายงานปฏิบัติงานที่เคยอนุมัติ (ลบรายงาน)',
@@ -161,4 +164,50 @@ export async function loadCaseCounts(
   }));
 
   return { counts, unavailable: false };
+}
+
+/**
+ * เปลี่ยนสถานะเคสย่อย แล้วปรับคะแนนให้ตรงกับสถานะใหม่ทันที
+ *
+ * เกณฑ์ PPS: เคสที่สถานะเป็น 'completed' ได้ +5 คะแนน
+ * และถ้าถูกเปลี่ยนกลับออกจาก 'completed' ต้องคืนคะแนนนั้น
+ *
+ * เดิมระบบให้คะแนนเฉพาะตอนอนุมัติรายงาน ทำให้เคสที่ปิดทีหลังไม่ได้คะแนนเลย
+ */
+export async function setReportCaseStatus(params: {
+  caseId: string;
+  caseStatus: 'completed' | 'in_progress' | 'transferred';
+  officerId: string | null;
+  officerName?: string;
+  actor: { id: string; name: string };
+}): Promise<{ case_status: string; awarded: boolean } | null> {
+  const { caseId, caseStatus, officerId, actor } = params;
+
+  const { error } = await supabase
+    .from('work_report_cases')
+    .update({ case_status: caseStatus })
+    .eq('id', caseId);
+  if (error) throw error;
+
+  const result = await applyCaseStatusPoints({
+    caseId,
+    caseStatus,
+    officerId,
+    officerName: params.officerName,
+  });
+
+  await supabase.from('audit_logs').insert({
+    action: 'UPDATE_REPORT_CASE_STATUS',
+    target_type: 'work_report_case',
+    target_id: caseId,
+    performed_by: actor.id,
+    performed_by_name: actor.name,
+    details: {
+      case_status: caseStatus,
+      points_awarded: result?.awarded ?? false,
+      points_delta: result?.delta ?? 0,
+    },
+  });
+
+  return { case_status: caseStatus, awarded: result?.awarded ?? false };
 }
