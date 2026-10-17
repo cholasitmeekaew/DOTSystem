@@ -11,6 +11,7 @@ import { HandCoins, Loader2, AlertTriangle, ChevronDown, ChevronUp, CheckCircle2
 import { ConfirmDialog } from './Modal';
 import {
   fetchPendingClaimSummary, submitClaim, translateClaimError,
+  claimAllPending, clearPendingClaims, fetchPendingClaims,
 } from '../lib/api/claimShare';
 import type { PendingClaimSummary } from '../lib/types';
 
@@ -38,18 +39,25 @@ export function PendingClaimManager({
   const [confirming, setConfirming] = useState<PendingClaimSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [progress, setProgress] = useState('');
+  const [pendingCount, setPendingCount] = useState(0);
+  const [confirmAll, setConfirmAll] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       setRows(await fetchPendingClaimSummary());
+      // นับคำขอที่รออนุมัติ เพื่อให้ปุ่มล้างรู้ว่าจะมีอะไรให้ล้าง
+      const pending = await fetchPendingClaims(actorId);
+      setPendingCount(pending.length);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [actorId]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -69,6 +77,62 @@ export function PendingClaimManager({
   }, {});
 
   const entries = Object.entries(byOfficer).sort((a, b) => b[1].total - a[1].total);
+
+  /** กดรับส่วนแบ่งให้ทุกคนที่มีค้าง ในครั้งเดียว */
+  async function doClaimAll() {
+    setBusy(true);
+    setError(null);
+    setProgress('กำลังเริ่ม...');
+    try {
+      const res = await claimAllPending(actorId, (done, total, name) => {
+        setProgress(`กดรับให้ ${name}… (${done + 1}/${total})`);
+      });
+      setConfirmAll(false);
+      setProgress('');
+      if (res.officers === 0) {
+        setNotice({ kind: 'ok', text: 'ไม่มีส่วนแบ่งค้างสำหรับใคร' });
+      } else {
+        setNotice({
+          kind: res.errors.length ? 'err' : 'ok',
+          text: `กดรับให้ ${res.officers} คน · ${res.claims} รายการ · `
+            + `รวม ${res.total.toLocaleString('th-TH', { minimumFractionDigits: 2 })} BC`
+            + (res.errors.length ? ` · ล้มเหลว ${res.errors.length} คน` : ''),
+        });
+      }
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(translateClaimError(e as { code?: string; message?: string }));
+      setConfirmAll(false);
+      setProgress('');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** ล้างคำขอรออนุมัติทั้งหมด (เจ้าหน้าที่จะกดรับใหม่ได้) */
+  async function doClear() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await clearPendingClaims(actorId);
+      setConfirmClear(false);
+      setNotice({
+        kind: 'ok',
+        text: res.deleted > 0
+          ? `ล้างคำขอรออนุมัติ ${res.deleted} รายการแล้ว — `
+            + 'เจ้าหน้าที่ต้องกดรับส่วนแบ่งใหม่อีกครั้ง'
+          : 'ไม่มีคำขอรออนุมัติให้ล้าง',
+      });
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError((e as Error).message);
+      setConfirmClear(false);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function doClaim(target: PendingClaimSummary) {
     if (!target) return;
@@ -120,10 +184,15 @@ export function PendingClaimManager({
         <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 mb-3">
           <CheckCircle2 size={22} className="text-emerald-400" />
         </div>
-        <p className="text-sm font-semibold text-gray-300">ไม่มีส่วนแบ่งค้าง</p>
-        <p className="text-xs text-gray-500 mt-1">
-          ทุกเคสที่ชำระแล้วได้รับส่วนแบ่งครบแล้วทุกเดือน
+        <p className="text-sm font-semibold text-emerald-300">ไม่มีส่วนแบ่งค้าง</p>
+        <p className="text-xs text-gray-400 mt-1 max-w-sm mx-auto leading-relaxed">
+          ทุกเคสที่ชำระเงินแล้วได้รับส่วนแบ่งครบแล้วทุกเดือน
         </p>
+        {pendingCount > 0 && (
+          <p className="text-[11px] text-amber-400 mt-3">
+            (ยังมีคำขอรออนุมัติ {pendingCount} รายการ ดูได้ในตารางอนุมัติด้านล่าง)
+          </p>
+        )}
       </div>
     );
   }
@@ -141,7 +210,33 @@ export function PendingClaimManager({
             กดปุ่มของคนนั้นได้เลย ระบบจะรวมทุกเดือนที่ค้างให้ในครั้งเดียว
           </p>
         </div>
+        <div className="flex flex-col sm:flex-row gap-1.5 mt-1">
+          <button
+            onClick={() => setConfirmAll(true)}
+            disabled={busy || entries.length === 0}
+            className="btn-primary text-[11px] py-1.5 px-3 flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="กดรับให้ทุกคนที่ยังมีส่วนแบ่งค้าง ในครั้งเดียว"
+          >
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <HandCoins size={12} />}
+            กดรับทั้งหมด ({entries.length} คน)
+          </button>
+          <button
+            onClick={() => setConfirmClear(true)}
+            disabled={busy || pendingCount === 0}
+            className="btn-secondary text-[11px] py-1.5 px-3 flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="ล้างคำขอรออนุมัติทั้งหมด (เจ้าหน้าที่ต้องกดรับใหม่)"
+          >
+            <AlertTriangle size={12} className="text-amber-400" />
+            ล้างรออนุมัติ ({pendingCount})
+          </button>
+        </div>
       </div>
+
+      {progress && (
+        <div className="mx-4 mt-3 px-3 py-2 rounded-lg text-xs bg-navy-800 border border-amber-500/25 text-amber-200 flex items-center gap-2">
+          <Loader2 size={12} className="animate-spin" /> {progress}
+        </div>
+      )}
 
       {notice && (
         <div className={`mx-4 mt-3 px-3 py-2 rounded-lg text-xs ${
@@ -220,6 +315,35 @@ export function PendingClaimManager({
           );
         })}
       </div>
+
+      {confirmAll && (
+        <ConfirmDialog
+          title="ยืนยันกดรับส่วนแบ่งทั้งหมด"
+          message={
+            `จะกดรับส่วนแบ่งให้ทุกคนที่ยังมีส่วนแบ่งค้าง ${entries.length} คน `
+            + `(รวมทุกเดือนที่ค้างของแต่ละคน)\n\n`
+            + 'ทุกรายการจะเข้าคิวรอการอนุมัติของคุณ'
+          }
+          confirmLabel="กดรับทั้งหมด"
+          onConfirm={doClaimAll}
+          onCancel={() => { setConfirmAll(false); setProgress(''); }}
+        />
+      )}
+
+      {confirmClear && (
+        <ConfirmDialog
+          title="ล้างคำขอรออนุมัติทั้งหมด"
+          danger
+          message={
+            `จะลบคำขอรออนุมัติ ${pendingCount} รายการออกทั้งหมด\n\n`
+            + 'เจ้าหน้าที่จะต้องกดรับส่วนแบ่งใหม่อีกครั้ง\n'
+            + 'รายการที่อนุมัติ/จ่ายแล้ว/ไม่อนุมัติ จะไม่ถูกแตะ'
+          }
+          confirmLabel="ล้างทั้งหมด"
+          onConfirm={doClear}
+          onCancel={() => setConfirmClear(false)}
+        />
+      )}
 
       {confirming && (
         <ConfirmDialog

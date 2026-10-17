@@ -442,10 +442,19 @@ export function calculateActivePeriodPayroll(
     const duty_rate = Number(off.duty_rate) || 0;
     const duty_income = Math.round(duty_hours * duty_rate * 100) / 100;
 
-    // 2) Service share income comes only from approved, unpaid claims.
-    // Claims remain eligible across months until payroll marks them as paid.
+    // 2) ส่วนแบ่งที่ได้รับในงวดนี้
+    //
+    // เงื่อนไข: งวดของส่วนแบ่งต้อง "ไม่เกิน" เดือนที่กำลังจ่ายเงินเดือน
+    //   → อนุมัติส่วนแบ่งงวด ก.ค. แล้ว จะโผล่ในตารางงวด ก.ค. เป็นต้นไป
+    //   → งวดก่อนหน้าจะไม่แสดงส่วนแบ่งที่ยังไม่ถึงเวลา
+    //   → หลังจ่ายแล้ว status เป็น 'paid' จึงไม่ถูกนับซ้ำ
+    //
+    // เดิมนับ claim ที่อนุมัติแล้วทั้งหมดทุกงวด ทำให้เดือนก่อนหน้า
+    // แสดงยอดเกินจริง (และเสี่ยงจ่ายซ้ำถ้าเปิดดูหลายงวดพร้อมกัน)
     const officerApprovedClaims = approvedClaims.filter((claim) => (
-      claim.officer_id === off.id && claim.status === 'approved'
+      claim.officer_id === off.id
+      && claim.status === 'approved'
+      && (claim.claim_period ?? '') <= selectedMonth
     ));
     let service_income = officerApprovedClaims.reduce((sum, claim) => sum + (Number(claim.amount) || 0), 0);
     service_income = Math.round(service_income * 100) / 100;

@@ -323,3 +323,78 @@ export function claimablePeriods(monthsBack = 12): Array<{
     };
   });
 }
+
+/* =========================================================================
+ * จัดการคำขอรออนุมัติ (หัวหน้ากรม)
+ * ========================================================================= */
+
+/**
+ * ล้างคำขอรออนุมัติทั้งหมด
+ *
+ * claim_records ถูก RLS บัง → client query ตรงได้ 0 แถวเสมอ
+ * จึงต้องผ่าน RPC (migration 0041) ไม่งั้นหัวหน้ากรมจะล้างไม่ได้
+ * ลบเฉพาะสถานะ pending — ที่อนุมัติ/จ่ายแล้ว/ไม่อนุมัติ ไม่แตะ
+ */
+export async function clearPendingClaims(
+  actorId: string,
+  period?: string,
+): Promise<{ deleted: number }> {
+  const fn = period ? 'clear_pending_claims_by_period' : 'clear_pending_claims';
+  const args = period
+    ? { p_actor_id: actorId, p_period: period }
+    : { p_actor_id: actorId };
+
+  const { data, error } = await supabase.rpc(fn, args);
+  if (error) throw error;
+  return { deleted: Number((data as { deleted?: number })?.deleted ?? 0) };
+}
+
+/**
+ * กดรับส่วนแบ่งให้ทุกคนที่ยังมีส่วนแบ่งค้าง ในครั้งเดียว
+ *
+ * วนทีละคนโดยเรียก claim_service_share ของแต่ละคน
+ * (ฟังก์ชันนี้รวมทุกเดือนที่ค้างของคนนั้นให้อัตโนมัติอยู่แล้ว)
+ */
+export async function claimAllPending(
+  actorId: string,
+  onProgress?: (done: number, total: number, name: string) => void,
+): Promise<{ officers: number; claims: number; total: number; errors: string[] }> {
+  const pending = await fetchPendingClaimSummary();
+  if (pending.length === 0) {
+    return { officers: 0, claims: 0, total: 0, errors: [] };
+  }
+
+  // จัดกลุ่มตามคน → ใช้เดือนล่าสุดของคนนั้น (ซึ่งจะดึงทุกเดือนก่อนหน้ามาให้)
+  const byOfficer = new Map<string, PendingClaimSummary>();
+  for (const row of pending) {
+    const prev = byOfficer.get(row.officer_id);
+    if (!prev || row.month > prev.month) byOfficer.set(row.officer_id, row);
+  }
+
+  const errors: string[] = [];
+  let claims = 0;
+  let total = 0;
+  const entries = [...byOfficer.entries()];
+
+  for (let i = 0; i < entries.length; i++) {
+    const [officerId, row] = entries[i];
+    onProgress?.(i, entries.length, row.officer_name);
+    try {
+      const res = await submitClaim(
+        officerId,
+        row.month,
+        row.scope as ClaimScope,
+        actorId,
+        'หัวหน้ากรมกดรับทั้งหมด (รวมเดือนค้าง)',
+      );
+      const inserted = Number((res as { inserted?: number }).inserted ?? 0);
+      claims += inserted;
+      total += Number((res as { total?: number }).total ?? 0);
+    } catch (e) {
+      errors.push(`${row.officer_name}: ${(e as Error).message}`);
+    }
+  }
+
+  onProgress?.(entries.length, entries.length, '');
+  return { officers: entries.length, claims, total, errors };
+}

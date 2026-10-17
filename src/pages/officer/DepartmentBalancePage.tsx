@@ -24,7 +24,7 @@ import { PageHeader } from '../../components/PageHeader';
 import { FadeIn } from '../../components/animations';
 import { ClaimApprovalTable } from '../../components/ClaimApprovalTable';
 import { PendingClaimManager } from '../../components/PendingClaimManager';
-import { fetchApprovedClaims, markClaimPaid } from '../../lib/api/claimShare';
+import { fetchApprovedClaims, fetchPendingClaims, markClaimPaid } from '../../lib/api/claimShare';
 import { Switch } from '../../components/ui/switch';
 import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
 
@@ -39,6 +39,7 @@ export function DepartmentBalancePage() {
   const [paidRecords, setPaidRecords] = useState<ServiceRecord[]>([]);
   const [dutyLogs, setDutyLogs] = useState<DutyLog[]>([]);
   const [approvedClaims, setApprovedClaims] = useState<ClaimRecord[]>([]);
+  const [pendingClaims, setPendingClaims] = useState<ClaimRecord[]>([]);
   const [manualInjections, setManualInjections] = useState<ManualBudgetInjection[]>([]);
   const [snapshots, setSnapshots] = useState<PayrollSnapshot[]>([]);
   const [staffSharePercent, setStaffSharePercent] = useState<number>(10);
@@ -79,6 +80,7 @@ export function DepartmentBalancePage() {
       setPaidRecords((r ?? []) as ServiceRecord[]);
       setDutyLogs((dl ?? []) as DutyLog[]);
       setApprovedClaims(claims);
+      setPendingClaims(await fetchPendingClaims(currentOfficer?.id ?? ''));
 
       const cfgDefault = configs.find((c) => c.scope === 'default');
       if (cfgDefault) {
@@ -252,6 +254,35 @@ export function DepartmentBalancePage() {
           </div>
         }
       />
+
+      {/* สถานะคำขอส่วนแบ่ง: รออนุมัติ → เข้าตารางเงินเดือนงวดที่อนุมัติ */}
+      {currentOfficer && (pendingClaims.length > 0 || approvedClaims.length > 0) && (
+        <div className="card p-3.5 mb-4 border-amber-500/25 flex flex-wrap items-center gap-x-5 gap-y-2">
+          {pendingClaims.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              <span className="text-xs text-gray-400">รออนุมัติ</span>
+              <span className="text-sm font-black text-amber-300">{pendingClaims.length}</span>
+              <span className="text-[10px] text-gray-500">รายการ</span>
+            </div>
+          )}
+          {approvedClaims.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="text-xs text-gray-400">อนุมัติแล้ว</span>
+              <span className="text-sm font-black text-emerald-300">{approvedClaims.length}</span>
+              <span className="text-[10px] text-gray-500">
+                รายการ · รวม{' '}
+                {approvedClaims.reduce((s, c) => s + Number(c.amount ?? 0), 0)
+                  .toLocaleString('th-TH', { minimumFractionDigits: 2 })} BC
+              </span>
+            </div>
+          )}
+          <span className="text-[10px] text-gray-500 ml-auto">
+            ส่วนแบ่งจะขึ้นในตารางเงินเดือนของงวดที่อนุมัติ และถูกจ่ายครั้งเดียว
+          </span>
+        </div>
+      )}
 
       {/* =========================================================================
        * 1. Financial Overview Cards (Hybrid Model: Auto + Manual - PaidOut = Net)
