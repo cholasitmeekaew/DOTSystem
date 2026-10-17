@@ -21,6 +21,7 @@ import { PageHeader } from '../../components/PageHeader';
 import { FadeIn } from '../../components/animations/MotionWrappers';
 import { Modal, ConfirmDialog } from '../../components/Modal';
 import { useAuth } from '../../lib/AuthContext';
+import { PendingClaimManager } from '../../components/PendingClaimManager';
 import { supabase } from '../../lib/supabase';
 import {
   previewClaimShare, submitClaim, fetchOfficerClaims,
@@ -29,7 +30,8 @@ import {
 } from '../../lib/api/claimShare';
 import type { ClaimPreview, ClaimRecord, ClaimStatus } from '../../lib/types';
 
-const SCOPE_META: Record<ClaimScope, { label: string; icon: typeof HandCoins; hint: string }> = {
+const SCOPE_META: Record<ClaimScope | 'all', { label: string; icon: typeof HandCoins; hint: string }> = {
+  all: { label: 'ทั้งหมด', icon: HandCoins, hint: 'เคสทั่วไป + กู้ภัย/ยกรถ' },
   default: { label: 'เคสทั่วไป', icon: Wrench, hint: 'งานซ่อมบำรุง งานธุรการทั่วไป' },
   vehicle_rescue: { label: 'กู้ภัย / ยกรถ', icon: Truck, hint: 'ลากรถ กู้รถ ช่วยเหลือฉุกเฉิน' },
 };
@@ -41,19 +43,45 @@ const STATUS: Record<ClaimStatus, { label: string; cls: string }> = {
   paid: { label: 'จ่ายแล้ว', cls: 'bg-blue-500/10 text-blue-300 border-blue-500/30' },
 };
 
+/** รวมผล preview ของสองหมวดเป็นชุดเดียว เพื่อให้ผู้ใช้เห็นยอดรวมทั้งหมด */
+function mergePreviews(list: ClaimPreview[], period: string): ClaimPreview {
+  const valid = list.filter(Boolean);
+  if (valid.length === 0) return valid[0];
+  const months = new Map<string, { month: string; record_count: number; total: number }>();
+  for (const p of valid) {
+    for (const m of p.months ?? []) {
+      const cur = months.get(m.month) ?? { month: m.month, record_count: 0, total: 0 };
+      cur.record_count += m.record_count;
+      cur.total = Math.round((cur.total + m.total) * 100) / 100;
+      months.set(m.month, cur);
+    }
+  }
+  return {
+    scope: 'default',
+    period,
+    closed: valid.every((p) => p.closed !== false),
+    officer_share_percent: valid[0].officer_share_percent,
+    record_count: valid.reduce((s, p) => s + p.record_count, 0),
+    gross_amount: Math.round(valid.reduce((s, p) => s + p.gross_amount, 0) * 100) / 100,
+    per_officer_total: Math.round(valid.reduce((s, p) => s + p.per_officer_total, 0) * 100) / 100,
+    records: valid.flatMap((p) => p.records),
+    months: [...months.values()].sort((a, b) => a.month.localeCompare(b.month)),
+  };
+}
+
 function money(n: number): string {
   return Number(n ?? 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function ClaimSharePage() {
-  const { officer } = useAuth();
+  const { officer, isCommissioner } = useAuth();
   const [periods] = useState(() => claimablePeriods(12));
 
   // เริ่มที่งวดล่าสุดที่ปิดแล้ว (ไม่ใช่เดือนปัจจุบัน)
   const [period, setPeriod] = useState<string>(
     () => periods.find((p) => p.closed)?.period ?? currentClaimPeriod(),
   );
-  const [scope, setScope] = useState<ClaimScope>('default');
+  const [scope, setScope] = useState<ClaimScope | 'all'>('all');
 
   const [preview, setPreview] = useState<ClaimPreview | null>(null);
   const [claims, setClaims] = useState<ClaimRecord[]>([]);
@@ -82,7 +110,16 @@ export function ClaimSharePage() {
     }
     setLoading(true);
     try {
-      setPreview(await previewClaimShare(officer.id, period, scope));
+      if (scope === 'all') {
+        // รวมทั้งเคสทั่วไปและกู้ภัย-ยกรถ
+        const [a, b] = await Promise.all([
+          previewClaimShare(officer.id, period, 'default'),
+          previewClaimShare(officer.id, period, 'vehicle_rescue'),
+        ]);
+        setPreview(mergePreviews([a, b], period));
+      } else {
+        setPreview(await previewClaimShare(officer.id, period, scope));
+      }
     } catch (e) {
       setError(translateClaimError(e as { code?: string; message?: string }));
       setPreview(null);
@@ -121,7 +158,11 @@ export function ClaimSharePage() {
     setSubmitting(true);
     setError(null);
     try {
-      await submitClaim(officer.id, period, scope, officer.id);
+      // เลือก "ทั้งหมด" → รับทั้งเคสทั่วไปและกู้ภัย-ยกรถ ในครั้งเดียว
+      const scopes: ClaimScope[] = scope === 'all' ? ['default', 'vehicle_rescue'] : [scope];
+      for (const sc of scopes) {
+        await submitClaim(officer.id, period, sc, officer.id);
+      }
       setConfirming(false);
       setPreview(null);
       await loadClaims();
@@ -150,7 +191,7 @@ export function ClaimSharePage() {
             <Lock size={16} className="text-amber-400" />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-white">เดือนที่ลืมกดรับ สะสมไว้ให้อัตโนมัติ</p>
+            <p className="text-sm font-semibold text-white">กดครั้งเดียว ได้ทุกเคสที่ยังไม่ได้รับ</p>
             <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">
               ระบบรวมทุกเดือนที่ยังไม่ได้รับ เข้ามาในงวดที่กด
               ดังนั้นไม่ต้องกดทีละเดือน — ปล่อยไว้กี่เดือน กดครั้งเดียวก็ได้เงินครบทุกเดือน
@@ -206,7 +247,7 @@ export function ClaimSharePage() {
                 <HandCoins size={13} /> หมวดเคส
               </label>
               <div className="grid grid-cols-2 gap-2">
-                {(Object.keys(SCOPE_META) as ClaimScope[]).map((s) => {
+                {(['all', 'default', 'vehicle_rescue'] as const).map((s) => {
                   const M = SCOPE_META[s];
                   const Icon = M.icon;
                   const active = scope === s;
@@ -252,7 +293,7 @@ export function ClaimSharePage() {
             <Empty
               icon={<Inbox size={22} />}
               title="ไม่มีเคสที่รับได้"
-              text={`ไม่พบเคสที่ชำระเงินแล้วในงวด ${period} หมวด${SCOPE_META[scope].label} หรือเคสทั้งหมดถูกรับไปแล้ว`}
+              text={`ไม่พบเคสที่ชำระเงินแล้วที่ยังไม่ได้กดรับ หมวด${SCOPE_META[scope].label} — ทุกเดือนรับครบแล้ว`}
             />
           ) : (
             <>
@@ -298,13 +339,23 @@ export function ClaimSharePage() {
                   onClick={() => setConfirming(true)}
                   className="btn-primary text-xs py-2 px-4 font-semibold flex items-center gap-1.5"
                 >
-                  <CheckCircle2 size={14} /> ยืนยันรับส่วนแบ่งงวดนี้
+                  <CheckCircle2 size={14} />
+                  ยืนยันรับเคสส่วนแบ่งทั้งหมด ({preview.record_count} เคส)
                 </button>
               </div>
             </>
           )}
         </div>
       </FadeIn>
+
+      {/* ── หัวหน้ากรม: กดรับส่วนแบ่งให้แต่ละคน ── */}
+      {isCommissioner && (
+        <FadeIn delay={0.18}>
+          <div className="card overflow-hidden mb-4">
+            <PendingClaimManager actorId={officer.id} onChanged={loadClaims} />
+          </div>
+        </FadeIn>
+      )}
 
       {/* ── ประวัติ ── */}
       <FadeIn delay={0.2}>
@@ -354,16 +405,20 @@ export function ClaimSharePage() {
       {/* ── Modal ยืนยัน ── */}
       {confirming && (
       <ConfirmDialog
-        title="ยืนยันรับส่วนแบ่ง"
+        title="ยืนยันรับเคสส่วนแบ่งทั้งหมดที่ยังไม่กดรับ"
         message={
-          `รับส่วนแบ่งงวด ${period} หมวด${SCOPE_META[scope].label} ` +
-          `จำนวน ${preview?.record_count ?? 0} เคส เป็นเงิน ${money(preview?.per_officer_total ?? 0)} BC\n\n` +
-          (preview && (preview.months?.length ?? 0) > 1
-            ? `รวมเดือนที่ลืมกดไว้: ${preview.months!.map((m) => m.month).join(', ')}\n`
-            : '') +
-          'เมื่อกดยืนยันแล้วจะเข้าคิวรอหัวหน้ากรมอนุมัติ และไม่สามารถกดซ้ำได้อีก'
+          `จะรับส่วนแบ่งหมวด${SCOPE_META[scope].label} ทุกเคสที่ชำระเงินแล้ว `
+          + `แต่ยังไม่ได้กดรับ รวมทุกเดือนที่ค้าง\n\n`
+          + `จำนวน ${preview?.record_count ?? 0} เคส`
+          + (preview && (preview.months?.length ?? 0) > 0
+            ? ` · ครอบคลุม ${preview.months!.length} เดือน `
+              + `(${preview.months!.map((m) => m.month).join(', ')})`
+            : '')
+          + `\nเป็นเงินรวม ${money(preview?.per_officer_total ?? 0)} BC\n\n`
+          + 'เมื่อกดยืนยันแล้วทุกเคสจะเข้าคิวรอหัวหน้ากรมอนุมัติ '
+          + 'และไม่สามารถกดซ้ำได้อีก'
         }
-        confirmLabel="ยืนยันรับ"
+        confirmLabel="ยืนยันรับทั้งหมด"
         onConfirm={doSubmit}
         onCancel={() => setConfirming(false)}
       />
