@@ -40,6 +40,7 @@ const DutyLogsAdminPage = lazy(() => import('./pages/officer/DutyLogsAdminPage')
 const AdminSettingsPage = lazy(() => import('./pages/officer/AdminSettingsPage').then((m) => ({ default: m.AdminSettingsPage })));
 const PointsManagementPage = lazy(() => import('./pages/officer/PointsManagementPage').then((m) => ({ default: m.PointsManagementPage })));
 const DepartmentBalancePage = lazy(() => import('./pages/officer/DepartmentBalancePage').then((m) => ({ default: m.DepartmentBalancePage })));
+const CaseOfficersPage = lazy(() => import('./pages/officer/CaseOfficersPage').then((m) => ({ default: m.CaseOfficersPage })));
 
 // Access Denied
 import { ShieldOff } from 'lucide-react';
@@ -80,7 +81,7 @@ function OfficerApp() {
   const commissionerOnlyPages: OfficerPage[] = [
     'admin-menu',
     'officer-management', 'citizen-management',
-    'points-management', 'department-balance', 'service-rates',
+    'points-management', 'department-balance', 'service-rates', 'case-officers',
     'complaints', 'announcements', 'vehicles',
     'admin-settings', 'report-approvals', 'leave-approvals', 'roster-admin',
     'manual-edit', 'duty-logs-admin', 'work-reports-admin',
@@ -147,6 +148,7 @@ function OfficerApp() {
             {currentPage === 'my-points' && <MyPointsPage />}
             {currentPage === 'points-management' && isCommissioner && <PointsManagementPage />}
             {currentPage === 'department-balance' && isCommissioner && <DepartmentBalancePage />}
+            {currentPage === 'case-officers' && <CaseOfficersPage />}
           </>
         )}
       </Suspense>

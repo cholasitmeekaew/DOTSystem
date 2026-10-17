@@ -8,7 +8,7 @@
 import {
   MessageSquare, Megaphone, Tag, Users, UserCog, Award, Wallet,
   Siren, Car, ShieldAlert, Settings, FileCheck2, CalendarCheck, CalendarRange,
-  BookOpen, Clock, FileText,
+  BookOpen, Clock, FileText, UserCheck,
 } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { DepartmentStatsPanel } from '../../components/DepartmentStatsPanel';
@@ -53,6 +53,9 @@ const GROUPS: Array<{ title: string; note: string; items: AdminCard[] }> = [
       { id: 'service-rates', label: 'อัตราค่าบริการ',
         desc: 'กำหนดราคาค่าบริการและค่าปรับตามประเภทงาน',
         icon: Tag, tint: 'bg-purple-500/15 text-purple-300', ring: 'hover:border-purple-500/50' },
+      { id: 'case-officers', label: 'เจ้าหน้าที่ที่ดูแลเคส',
+        desc: 'กำหนดว่าเคสไหนใครดูแล — คิดส่วนแบ่งและให้คะแนนผู้ร่วมงานรายบิล',
+        icon: UserCheck, tint: 'bg-sky-500/15 text-sky-300', ring: 'hover:border-sky-500/50' },
     ],
   },
   {

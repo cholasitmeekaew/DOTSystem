@@ -22,7 +22,7 @@ import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
 import { SERVICE_CATEGORIES } from './ServiceRatesPage';
 import { fetchCitizenNote, saveCitizenNote } from '../../lib/api/citizenNotes';
-import { applyServiceClosedPoints } from '../../lib/api/autoPoints';
+import { applyServiceClosedPoints, revertServiceClosedPoints } from '../../lib/api/autoPoints';
 import { useToast } from '../../hooks/use-toast';
 import { toLocalDateTimeInputValue } from '../../lib/utils';
 import {
@@ -600,13 +600,19 @@ export function CitizenManagementPage() {
         console.warn('[CitizenManagementPage] revenue sharing skipped:', e);
       }
     }
-    // เพิ่งเปลี่ยนเป็น "ชำระแล้ว" (เคยค้างชำระ) → ให้คะแนนผู้ดูแลเคส
-    // ต้องเช็คสถานะเดิม ไม่ใช่สถานะใหม่ ไม่งั้นการแก้บิลที่จ่ายแล้วซ้ำจะให้คะแนนเพิ่ม
-    if (finalStatus === 'paid' && editingFee && editingFee.status !== 'paid') {
-      await awardCaseOfficerPoints(
-        { ...editingFee, ...payload, status: 'paid' } as ServiceRecord,
-        feeAssignedByRecord[editingFee.id] ?? feeAssignedIds,
-      );
+    // เปลี่ยนสถานะผ่าน modal → ให้/คืนคะแนนผู้ดูแลเคส
+    // ต้องเทียบสถานะเดิม ไม่ใช่สถานะใหม่
+    // ไม่งั้นการแก้บิลที่จ่ายแล้วซ้ำจะได้คะแนนเพิ่ม หรือคืนคะแนนบิลที่ยังไม่เคยได้
+    if (editingFee && finalStatus !== editingFee.status) {
+      const team = feeAssignedByRecord[editingFee.id] ?? feeAssignedIds;
+      if (finalStatus === 'paid') {
+        await awardCaseOfficerPoints(
+          { ...editingFee, ...payload, status: 'paid' } as ServiceRecord,
+          team,
+        );
+      } else {
+        await revertCaseOfficerPoints(editingFee, team);
+      }
     }
 
     setUploading(false);
@@ -668,6 +674,47 @@ export function CitizenManagementPage() {
     }
   }
 
+  /**
+   * คืนคะแนนผู้ดูแลเคสเมื่อบิลถูกย้อนกลับเป็น "ค้างชำระ" (−5 ต่อคน)
+   *
+   * เดิมย้อนกลับได้แต่คะแนนยังค้างอยู่ ทำให้ได้คะแนนจากบิลที่ยังไม่ได้เงิน
+   */
+  async function revertCaseOfficerPoints(
+    record: ServiceRecord,
+    assignedIds: string[],
+  ): Promise<void> {
+    try {
+      const { refunded, officers } = await revertServiceClosedPoints(record, assignedIds);
+      const names = officers
+        .map((id) => officers.length ? findOfficerName(id) : '')
+        .filter(Boolean)
+        .join(', ');
+
+      if (refunded > 0) {
+        toast({
+          title: `ย้อนกลับเป็นค้างชำระ · คืนคะแนน ${refunded}`,
+          description: `หัก −5 คะแนนต่อคนออกจากผู้ดูแลเคส ${officers.length} คน${names ? ` · ${names}` : ''}`,
+        });
+      } else {
+        toast({
+          title: 'ย้อนกลับเป็นค้างชำระแล้ว',
+          description: 'บิลนี้ไม่มีคะแนนที่ต้องคืน',
+        });
+      }
+    } catch (err) {
+      toast({
+        title: 'ย้อนกลับสถานะสำเร็จ แต่คืนคะแนนไม่สำเร็จ',
+        description: 'กด "ตรวจคะแนนทั้งหมด" ในหน้าตั้งค่าระบบเพื่อปรับให้ตรงกัน',
+        variant: 'destructive',
+      });
+      console.error('คืนคะแนนผู้ดูแลเคสไม่สำเร็จ:', err);
+    }
+  }
+
+  function findOfficerName(id: string): string {
+    return officers.find((o) => o.id === id)?.name ?? '';
+  }
+
   async function toggleFeeStatus(f: ServiceRecord) {
     if (!canManageCitizen) return;
     const newStatus = f.status === 'paid' ? 'unpaid' : 'paid';
@@ -685,11 +732,13 @@ export function CitizenManagementPage() {
 
     setFeeRecords((prev) => prev.map((r) => r.id === f.id ? { ...r, status: newStatus, paid_amount: newPaidAmount } : r));
 
-    // ค้างชำระ → ชำระแล้ว = ให้คะแนนผู้ดูแลเคส
-    // ส่วนกรณีย้อนกลับเป็นค้างชำระ ยังไม่คืนคะแนน (ต้องกดสแกน/แก้ทีหลังถ้าจะคืน)
+    // ค้างชำระ ⇄ ชำระแล้ว = ให้/คืนคะแนนผู้ดูแลเคส พร้อมแจ้งผล
+    const assigned = feeAssignedByRecord[f.id] ?? (f.officer_id ? [f.officer_id] : []);
+
     if (newStatus === 'paid') {
-      const assigned = feeAssignedByRecord[f.id] ?? (f.officer_id ? [f.officer_id] : []);
       await awardCaseOfficerPoints({ ...f, status: 'paid' }, assigned);
+    } else {
+      await revertCaseOfficerPoints(f, assigned);
     }
 
     await fetchRecords();

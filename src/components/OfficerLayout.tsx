@@ -22,6 +22,7 @@ export type OfficerPage =
   | 'operations'
   | 'service-fees'
   | 'claim-share'
+  | 'case-officers'
   | 'complaints'
   | 'announcements'
   | 'service-rates'

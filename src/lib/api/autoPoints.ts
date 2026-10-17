@@ -300,6 +300,62 @@ export async function applyReportApprovalPoints(report: WorkReport): Promise<Aut
 }
 
 /** +5 เมื่อปิดเคสค่าบริการสำเร็จ (จ่ายให้ทุกคนที่รับเคส) */
+/**
+ * ยกเลิกคะแนน "รับชำระครบ" เมื่อบิลถูกย้อนกลับเป็นค้างชำระ
+ *
+ * เดิมให้ +5 แล้วถอยกลับไม่ได้ ถ้าผู้ดูแลกดสลับสถานะผิด
+ * เจ้าหน้าที่จะได้คะแนนจากบิลที่ยังไม่ได้รับเงินจริง
+ *
+ * คืนเฉพาะ mark ที่ให้จริง (รายบิลรายคน) แล้วปลดล็อกทิ้ง
+ * เพื่อให้จ่ายเงินจริงอีกครั้งแล้วได้คะแนนใหม่
+ *
+ * ถ้าสวิตช์ PPS ปิดอยู่ → คง mark ไว้ เพื่อให้เปิดสวิตช์แล้วเรียกซ้ำแล้วคืนได้
+ */
+export async function revertServiceClosedPoints(
+  record: ServiceRecord,
+  assignedOfficerIds: string[] = [],
+): Promise<{ refunded: number; officers: string[] }> {
+  if (!record?.id) return { refunded: 0, officers: [] };
+
+  const targets = new Set<string>();
+  if (record.officer_id) targets.add(record.officer_id);
+  for (const id of assignedOfficerIds) if (id) targets.add(id);
+  if (targets.size === 0) return { refunded: 0, officers: [] };
+
+  // ดูว่าบิลนี้เคยให้คะแนนใครบ้าง จาก mark ที่บันทึกไว้
+  const markKeys = [...targets].map((id) => `feeclose:${record.id}:${id}`);
+  const { data: marks } = await supabase
+    .from('points_award_marks').select('mark_key, delta, officer_id').in('mark_key', markKeys);
+  const existing = (marks ?? []) as Array<{ mark_key: string; delta: number; officer_id: string }>;
+  if (existing.length === 0) return { refunded: 0, officers: [] };
+
+  const total = existing.reduce((sum, m) => sum + Number(m.delta ?? 0), 0);
+  if (!(await isAutoPointsEnabled())) return { refunded: 0, officers: [] };
+
+  // คืนทีละคน เพราะ points_log ของแต่ละคนแยกกัน
+  let refunded = 0;
+  const officers: string[] = [];
+  for (const m of existing) {
+    if (!m.officer_id) continue;
+    const res = await addAutomaticPoints(
+      m.officer_id,
+      -Number(m.delta ?? 0),
+      `ยกเลิกคะแนนรับชำระครบ: ${record.service_name}`,
+      AUTO_POINTS_ACTOR.id,
+      AUTO_POINTS_ACTOR.name,
+    );
+    if (res) {
+      refunded += Math.abs(Number(m.delta ?? 0));
+      officers.push(m.officer_id);
+    }
+  }
+
+  if (refunded > 0) {
+    await supabase.from('points_award_marks').delete().in('mark_key', markKeys);
+  }
+  return { refunded, officers };
+}
+
 export async function applyServiceClosedPoints(
   record: ServiceRecord,
   assignedOfficerIds: string[] = [],
