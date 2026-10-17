@@ -23,6 +23,7 @@ import { Modal } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
 import { FadeIn } from '../../components/animations';
 import { ClaimApprovalTable } from '../../components/ClaimApprovalTable';
+import { PendingClaimManager } from '../../components/PendingClaimManager';
 import { fetchApprovedClaims, markClaimPaid } from '../../lib/api/claimShare';
 import { Switch } from '../../components/ui/switch';
 import { BatchDutyRateModal } from '../../components/BatchDutyRateModal';
@@ -875,7 +876,17 @@ export function DepartmentBalancePage() {
         /* =========================================================================
          * TAB 4: อนุมัติส่วนแบ่งเคส (Claim Approval)
          * ========================================================================= */
-        <ClaimApprovalTable approverId={currentOfficer.id} officers={officers} onChanged={fetchAll} />
+        <div className="space-y-4">
+          {/* กดรับส่วนแบ่งแทน — สำหรับเดือนที่เจ้าหน้าที่ลืมกด */}
+          <div className="card overflow-hidden">
+            <PendingClaimManager actorId={currentOfficer.id} onChanged={fetchAll} />
+          </div>
+
+          {/* อนุมัติ/จ่ายคำขอรับส่วนแบ่ง */}
+          <div className="card overflow-hidden">
+            <ClaimApprovalTable approverId={currentOfficer.id} officers={officers} onChanged={fetchAll} />
+          </div>
+        </div>
       ) : (
         /* =========================================================================
          * TAB 3: งบประมาณ 5 แผนก & รายรับ (Departments & Auto Revenue)

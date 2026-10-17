@@ -150,10 +150,11 @@ export function ClaimSharePage() {
             <Lock size={16} className="text-amber-400" />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-white">รับได้เฉพาะงวดที่ปิดเดือนแล้ว</p>
+            <p className="text-sm font-semibold text-white">เดือนที่ลืมกดรับ สะสมไว้ให้อัตโนมัติ</p>
             <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">
-              เดือนปัจจุบัน ({currentPeriod}) ยังไม่ปิด — รอสิ้นเดือนก่อนจึงจะรับได้
-              เพราะยังมีบิลที่จะเข้ามา หากรับก่อนจะต้องกดซ้ำปลายเดือน
+              ระบบรวมทุกเดือนที่ยังไม่ได้รับ เข้ามาในงวดที่กด
+              ดังนั้นไม่ต้องกดทีละเดือน — ปล่อยไว้กี่เดือน กดครั้งเดียวก็ได้เงินครบทุกเดือน
+              แต่ต้องรอให้เดือนนั้นปิดก่อน (เดือนปัจจุบัน {currentPeriod} ยังไม่ปิด)
             </p>
           </div>
         </div>
@@ -193,8 +194,10 @@ export function ClaimSharePage() {
                   </option>
                 ))}
               </select>
-              <p className="text-[11px] text-gray-500 mt-1.5">
+              <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">
                 เลือกได้ {openMonths.length} งวด · เดือนปัจจุบันถูกปิดการกดไว้
+                <br />
+                เลือกงวดไหนก็ได้ ระบบจะรวมทุกเดือนที่ยังไม่ได้รับมาให้ด้วย
               </p>
             </div>
 
@@ -253,6 +256,30 @@ export function ClaimSharePage() {
             />
           ) : (
             <>
+              {/* เดือนที่ถูกรวมมา — ชัดว่ากดครั้งเดียวได้กี่เดือน */}
+              {(preview.months?.length ?? 0) > 0 && (
+                <div className="mb-4 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                  <div className="text-[11px] text-amber-300 font-semibold mb-2">
+                    รวม {preview.months!.length} เดือนที่ยังไม่ได้รับ
+                    {(preview.months!.length > 1) && (
+                      <span className="text-gray-400 font-normal">
+                        {' '}(รวมเดือนที่ลืมกดไว้ด้วย ไม่ต้องกดย้อนหลัง)
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {preview.months!.map((m) => (
+                      <span
+                        key={m.month}
+                        className="px-2 py-0.5 rounded bg-navy-800 border border-amber-500/25 text-[10px] text-gray-300"
+                      >
+                        {m.month} · {m.record_count} เคส · {money(m.total)} BC
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
                 <Stat label="เคสที่ชำระแล้ว" value={`${preview.record_count} เคส`} />
                 <Stat label="ยอดรวมบิล" value={money(preview.gross_amount)} />
@@ -331,6 +358,9 @@ export function ClaimSharePage() {
         message={
           `รับส่วนแบ่งงวด ${period} หมวด${SCOPE_META[scope].label} ` +
           `จำนวน ${preview?.record_count ?? 0} เคส เป็นเงิน ${money(preview?.per_officer_total ?? 0)} BC\n\n` +
+          (preview && (preview.months?.length ?? 0) > 1
+            ? `รวมเดือนที่ลืมกดไว้: ${preview.months!.map((m) => m.month).join(', ')}\n`
+            : '') +
           'เมื่อกดยืนยันแล้วจะเข้าคิวรอหัวหน้ากรมอนุมัติ และไม่สามารถกดซ้ำได้อีก'
         }
         confirmLabel="ยืนยันรับ"

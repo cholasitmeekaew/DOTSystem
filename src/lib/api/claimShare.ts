@@ -1,6 +1,7 @@
 import { supabase, isJsonMode } from '../supabase';
 import {
   ClaimRecord, ClaimPreview, ServiceRecord, ServiceRecordOfficer, RevenueConfig,
+  PendingClaimSummary,
 } from '../types';
 import { getScopeForCategory } from './revenueSharing';
 
@@ -148,6 +149,7 @@ function normalisePreview(raw: Record<string, unknown>): ClaimPreview {
     record_count: Number(raw.record_count ?? 0),
     gross_amount: Number(raw.gross_amount ?? 0),
     per_officer_total: Number(raw.per_officer_total ?? 0),
+    closed: raw.closed !== false,
     records: rows.map((r) => ({
       id: String(r.id ?? ''),
       service_name: String(r.service_name ?? '—'),
@@ -155,7 +157,30 @@ function normalisePreview(raw: Record<string, unknown>): ClaimPreview {
       assigned_count: Number(r.assigned_count ?? 1),
       per_officer_share: Number(r.share ?? r.per_officer_share ?? 0),
     })),
+    months: (Array.isArray(raw.months) ? raw.months : []).map((m) => {
+      const row = m as Record<string, unknown>;
+      return {
+        month: String(row.month ?? ''),
+        record_count: Number(row.record_count ?? 0),
+        total: Number(row.total ?? 0),
+      };
+    }),
   };
+}
+
+/**
+ * ส่วนแบ่งที่ยังไม่ได้รับ รายคน-รายเดือน (สำหรับหัวหน้ากรม)
+ *
+ * คืนเฉพาะเดือนที่ปิดแล้วและยังไม่เคยถูก claim
+ * ใช้ในหน้าการเงินเพื่อกดรับส่วนแบ่งแทนเจ้าหน้าที่ได้
+ */
+export async function fetchPendingClaimSummary(): Promise<PendingClaimSummary[]> {
+  const { data, error } = await supabase.rpc('list_pending_claims_by_officer');
+  if (error) {
+    console.warn('[fetchPendingClaimSummary] error:', error);
+    return [];
+  }
+  return (data ?? []) as unknown as PendingClaimSummary[];
 }
 
 /**

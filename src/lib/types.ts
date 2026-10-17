@@ -208,14 +208,35 @@ export interface ClaimPreviewRecord {
   per_officer_share: number;
 }
 
+export interface ClaimPreviewMonth {
+  month: string;
+  record_count: number;
+  total: number;
+}
+
 export interface ClaimPreview {
   scope: 'default' | 'vehicle_rescue';
   period: string;
+  /** false = งวดนี้ยังไม่ปิดเดือน รับไม่ได้ */
+  closed?: boolean;
   officer_share_percent: number;
   record_count: number;
   gross_amount: number;
   per_officer_total: number;
   records: ClaimPreviewRecord[];
+  /** เดือนที่ถูกรวมมาด้วย (อาจมากกว่า 1 เดือน เพราะเดือนที่ลืมกดจะสะสมไว้) */
+  months?: ClaimPreviewMonth[];
+}
+
+/** สรุปส่วนแบ่งที่ยังไม่ได้รับ รายคน-รายเดือน สำหรับหัวหน้ากรม */
+export interface PendingClaimSummary {
+  officer_id: string;
+  officer_name: string;
+  month: string;
+  record_count: number;
+  gross_amount: number;
+  officer_total: number;
+  scope: 'default' | 'vehicle_rescue';
 }
 
 export interface DutyLog {
