@@ -94,10 +94,18 @@ let atomicRpcAvailable: boolean | null = null;
 async function hasAtomicPointsRpc(): Promise<boolean> {
   if (atomicRpcAvailable !== null) return atomicRpcAvailable;
   try {
-    const { error } = await supabase.rpc(
-      'add_officer_points',
-      { p_officer_id: '00000000-0000-0000-0000-000000000000', p_delta: 0, p_reason: '', p_actor_id: '', p_actor_name: '' },
-    );
+    // ต้องส่งพารามิเตอร์ครบทุกตัว (รวม p_points_max)
+    // PostgREST จับคู่ฟังก์ชันจากชุดพารามิเตอร์ที่ส่งมา
+    // ถ้าส่งไม่ครบอาจได้ PGRST202 แล้วเข้าใจผิดว่า "ยังไม่มีฟังก์ชัน"
+    // → ใช้โค้ดเดิมที่ไม่ atomic ไปตลอดโดยไม่มีใครรู้
+    const { error } = await supabase.rpc('add_officer_points', {
+      p_officer_id: '00000000-0000-0000-0000-000000000000',
+      p_delta: 0,
+      p_reason: '',
+      p_actor_id: '',
+      p_actor_name: '',
+      p_points_max: POINTS_MAX,
+    });
     // ไม่มีฟังก์ชัน -> PGRST202 / 404 / 42883
     const missing = !error
       || error.code === 'PGRST202'
