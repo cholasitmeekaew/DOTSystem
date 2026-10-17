@@ -206,6 +206,10 @@ export interface ClaimPreviewRecord {
   amount: number;
   assigned_count: number;
   per_officer_share: number;
+  /** เดือนของบิลนี้ (YYYY-MM) — มีเมื่อรวมหลายเดือนเข้าด้วยกัน */
+  month?: string;
+  /** หมวดของบิลนี้ — มีเมื่อรวมทั้งสองหมวดเข้าด้วยกัน */
+  scope?: 'default' | 'vehicle_rescue';
 }
 
 export interface ClaimPreviewMonth {

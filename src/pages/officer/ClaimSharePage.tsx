@@ -31,7 +31,7 @@ import {
 import type { ClaimPreview, ClaimRecord, ClaimStatus } from '../../lib/types';
 
 const SCOPE_META: Record<ClaimScope | 'all', { label: string; icon: typeof HandCoins; hint: string }> = {
-  all: { label: 'ทั้งหมด', icon: HandCoins, hint: 'เคสทั่วไป + กู้ภัย/ยกรถ' },
+  all: { label: 'ทั้งหมด', icon: HandCoins, hint: 'ทุกหมวด + ทุกเดือนที่ค้าง รวมกัน' },
   default: { label: 'เคสทั่วไป', icon: Wrench, hint: 'งานซ่อมบำรุง งานธุรการทั่วไป' },
   vehicle_rescue: { label: 'กู้ภัย / ยกรถ', icon: Truck, hint: 'ลากรถ กู้รถ ช่วยเหลือฉุกเฉิน' },
 };
@@ -64,7 +64,14 @@ function mergePreviews(list: ClaimPreview[], period: string): ClaimPreview {
     record_count: valid.reduce((s, p) => s + p.record_count, 0),
     gross_amount: Math.round(valid.reduce((s, p) => s + p.gross_amount, 0) * 100) / 100,
     per_officer_total: Math.round(valid.reduce((s, p) => s + p.per_officer_total, 0) * 100) / 100,
-    records: valid.flatMap((p) => p.records),
+    // เก็บหมวดและเดือนของแต่ละเคสไว้ เพื่อให้หน้ารายละเอียดบอกได้ว่าเคสนี้มาจากไหน
+    records: valid
+      .flatMap((p) => p.records.map((r) => ({
+        ...r,
+        scope: p.scope,
+        month: p.months?.find((m) => p.records.includes(r))?.month ?? p.period,
+      })))
+      .sort((a, b) => (b.month ?? '').localeCompare(a.month ?? '')),
     months: [...months.values()].sort((a, b) => a.month.localeCompare(b.month)),
   };
 }
@@ -91,7 +98,12 @@ export function ClaimSharePage() {
   const [confirming, setConfirming] = useState(false);
   const [detail, setDetail] = useState<ClaimPreview | null>(null);
 
-  const closed = isPeriodClosed(period);
+  // หมวด "ทั้งหมด" ต้องการทุกเดือนรวมกัน → ใช้งวดปิดล่าสุดเสมอ
+  // (migration 0040 ดึงทุกเดือนที่ <= งวดนี้) จึงได้ครบทุกเดือนที่ค้าง
+  const latestClosed = periods.find((p) => p.closed)?.period ?? currentClaimPeriod();
+  const effectivePeriod = scope === 'all' ? latestClosed : period;
+
+  const closed = isPeriodClosed(effectivePeriod);
   const currentPeriod = currentClaimPeriod();
 
   const loadClaims = useCallback(async () => {
@@ -111,14 +123,14 @@ export function ClaimSharePage() {
     setLoading(true);
     try {
       if (scope === 'all') {
-        // รวมทั้งเคสทั่วไปและกู้ภัย-ยกรถ
+        // รวมทุกหมวด และทุกเดือนที่ <= งวดปิดล่าสุด
         const [a, b] = await Promise.all([
-          previewClaimShare(officer.id, period, 'default'),
-          previewClaimShare(officer.id, period, 'vehicle_rescue'),
+          previewClaimShare(officer.id, effectivePeriod, 'default'),
+          previewClaimShare(officer.id, effectivePeriod, 'vehicle_rescue'),
         ]);
-        setPreview(mergePreviews([a, b], period));
+        setPreview(mergePreviews([a, b], effectivePeriod));
       } else {
-        setPreview(await previewClaimShare(officer.id, period, scope));
+        setPreview(await previewClaimShare(officer.id, effectivePeriod, scope));
       }
     } catch (e) {
       setError(translateClaimError(e as { code?: string; message?: string }));
@@ -126,7 +138,7 @@ export function ClaimSharePage() {
     } finally {
       setLoading(false);
     }
-  }, [officer, period, scope, closed]);
+  }, [officer, period, scope, closed, effectivePeriod]);
 
   useEffect(() => { loadPreview(); }, [loadPreview]);
   useEffect(() => { loadClaims(); }, [loadClaims]);
@@ -161,7 +173,7 @@ export function ClaimSharePage() {
       // เลือก "ทั้งหมด" → รับทั้งเคสทั่วไปและกู้ภัย-ยกรถ ในครั้งเดียว
       const scopes: ClaimScope[] = scope === 'all' ? ['default', 'vehicle_rescue'] : [scope];
       for (const sc of scopes) {
-        await submitClaim(officer.id, period, sc, officer.id);
+        await submitClaim(officer.id, effectivePeriod, sc, officer.id);
       }
       setConfirming(false);
       setPreview(null);
@@ -215,9 +227,14 @@ export function ClaimSharePage() {
       <FadeIn delay={0.1}>
         <div className="card p-4 sm:p-5 mb-4">
           <div className="grid sm:grid-cols-2 gap-4">
-            <div>
+            <div className={scope === 'all' ? 'opacity-60 pointer-events-none select-none' : ''}>
               <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-300 mb-2">
                 <Calendar size={13} /> งวดที่รับส่วนแบ่ง
+                {scope === 'all' && (
+                  <span className="text-[10px] font-normal text-amber-400">
+                    (ใช้อัตโนมัติ — รวมทุกเดือน)
+                  </span>
+                )}
               </label>
               <select
                 value={period}
@@ -438,8 +455,20 @@ export function ClaimSharePage() {
                 className="flex items-center justify-between gap-3 p-2.5 rounded-lg bg-navy-900/40 border border-blue-900/30"
               >
                 <div className="min-w-0">
-                  <div className="text-sm text-white font-medium truncate">{r.service_name}</div>
-                  <div className="text-[11px] text-gray-500">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-sm text-white font-medium truncate">{r.service_name}</span>
+                    {r.month && (
+                      <span className="px-1.5 py-0.5 rounded bg-navy-800 border border-blue-900/40 text-[10px] text-gray-400">
+                        {r.month}
+                      </span>
+                    )}
+                    {r.scope && (
+                      <span className="px-1.5 py-0.5 rounded bg-navy-800 border border-blue-900/40 text-[10px] text-gray-400">
+                        {SCOPE_META[r.scope].label}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">
                     ยอดบิล {money(r.amount)} BC · ผู้ร่วมงาน {r.assigned_count} คน
                   </div>
                 </div>
