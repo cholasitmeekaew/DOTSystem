@@ -21,7 +21,7 @@ import type { SystemSettings } from '../../lib/types';
 import {
   applyMissingReportPoints, applyWeeklyAbsencePoints, applyPaidRecordsSweep,
   applyCheckoutPointsSweep, applyForceCheckoutSweep,
-  applyReportApprovalSweep, applyCompletedCaseSweep,
+  applyReportApprovalSweep, applyCompletedCaseSweep, applyVerifiedComplaintSweep,
   type AutoAwardResult,
   AUTO_POINTS_SUMMARY, AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
@@ -89,7 +89,8 @@ export function AdminSettingsPage() {
 
   /** กฎคะแนนที่ตรวจย้อนหลังได้ */
 type PointsSweepKey =
-  | 'checkout' | 'force' | 'report' | 'case' | 'paid' | 'noreport' | 'absent';
+  | 'checkout' | 'force' | 'report' | 'case' | 'paid'
+  | 'noreport' | 'absent' | 'complaint';
 
 /** ปุ่มตรวจคะแนนค้าง แยกทีละกฎ */
 const SWEEP_BUTTONS: Array<{
@@ -105,6 +106,7 @@ const SWEEP_BUTTONS: Array<{
   { key: 'absent', label: 'ขาดเวรต่อสัปดาห์', hint: '-5 ต่อคนที่ไม่เข้าเวรครบ 7 วัน', tone: 'text-red-300' },
   { key: 'noreport', label: 'ไม่ส่งรายงาน', hint: '-5 ต่อเวรที่ออกแล้วไม่ส่งรายงาน', tone: 'text-red-300' },
   { key: 'force', label: 'ถูกบังคับออกเวร', hint: '-15 ต่อเวรที่ถูกบังคับออก', tone: 'text-red-300' },
+  { key: 'complaint', label: 'ร้องเรียนผลเป็นจริง', hint: '-30 ต่อเรื่องร้องเรียนที่ยืนยันแล้ว', tone: 'text-red-300' },
 ];
 
 /** โหลดข้อมูลที่ทุกกฎต้องใช้ร่วมกัน */
@@ -113,13 +115,16 @@ const SWEEP_BUTTONS: Array<{
     const weekStartDate = new Date();
     weekStartDate.setDate(weekStartDate.getDate() - 7);
     const weekStart7 = toIso(weekStartDate);
+    const backfillDate = new Date();
+    backfillDate.setDate(backfillDate.getDate() - 7 * 52);
+    const backfillIso = toIso(backfillDate);
 
     const [officersRes, logsRes, reportsRes, leavesRes, schedRes, ovRes,
       paidRes, assignRes, casesRes] = await Promise.all([
       supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active'),
       supabase.from('duty_logs').select('*').is('deleted_at', null),
       supabase.from('work_reports').select('*'),
-      supabase.from('officer_leaves').select('officer_id').eq('status', 'approved'),
+      supabase.from('officer_leaves').select('officer_id, start_date, end_date').eq('status', 'approved'),
       supabase.from('duty_schedules').select('*').eq('is_active', true),
       supabase
         .from('schedule_overrides').select('*')
@@ -138,6 +143,64 @@ const SWEEP_BUTTONS: Array<{
       assignedMap.set(row.service_record_id, list);
     }
 
+    /**
+     * ตารางเวรรายสัปดาห์ — เงื่อนไขหลักของกฎ "ขาดเวรต่อสัปดาห์"
+     * สัปดาห์ที่ไม่มีตารางเวร = ยังไม่มีระบบจัดเวร จึงห้ามหักคะแนน
+     * (กันไม่ให้หักย้อนไปถึงช่วงก่อนระบบเริ่มใช้งาน)
+     */
+    const weekKey = (iso: string): string => {
+      const dt = new Date(`${iso}T00:00:00`);
+      const dow = dt.getDay();
+      dt.setDate(dt.getDate() - dow + (dow === 0 ? -6 : 1));
+      return toIso(dt);
+    };
+
+    const scheduledByWeek = new Map<string, Set<string>>();
+    const addToWeek = (week: string, id: string) => {
+      const set = scheduledByWeek.get(week) ?? new Set<string>();
+      set.add(id);
+      scheduledByWeek.set(week, set);
+    };
+
+    const allOverrides = (ovRes.data ?? []) as Array<{
+      override_date: string; override_type: string;
+      officer_id: string | null; shift_code: string;
+    }>;
+
+    for (const sch of (schedRes.data ?? []) as Array<{
+      weekday: number; officer_id: string | null; is_active?: boolean;
+    }>) {
+      if (sch.is_active === false || !sch.officer_id) continue;
+      for (let back = 0; back <= 52 * 7; back++) {
+        const dt = new Date();
+        dt.setDate(dt.getDate() - back);
+        if (dt.getDay() !== sch.weekday) continue;
+        const iso = toIso(dt);
+        if (iso < backfillIso) continue;
+        const blocked = allOverrides.some((o) => o.override_date === iso
+          && (o.override_type === 'leave' || o.override_type === 'off')
+          && (!o.officer_id || o.officer_id === sch.officer_id));
+        if (!blocked) addToWeek(weekKey(iso), sch.officer_id);
+      }
+    }
+
+    // ใบลาที่อนุมัติ → คนที่ลาในแต่ละสัปดาห์
+    const leaveByWeek = new Map<string, string[]>();
+    for (const lv of (leavesRes.data ?? []) as Array<{
+      officer_id: string | null; start_date: string | null; end_date: string | null;
+    }>) {
+      if (!lv.officer_id || !lv.start_date || !lv.end_date) continue;
+      const cur = new Date(`${lv.start_date.slice(0, 10)}T00:00:00`);
+      const end = new Date(`${lv.end_date.slice(0, 10)}T00:00:00`);
+      for (let guard = 0; guard <= 400 && cur <= end; guard++) {
+        const wk = weekKey(toIso(cur));
+        const list = leaveByWeek.get(wk) ?? [];
+        list.push(lv.officer_id);
+        leaveByWeek.set(wk, list);
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+
     return {
       todayIso,
       weekStart7,
@@ -150,6 +213,8 @@ const SWEEP_BUTTONS: Array<{
       overrides: (ovRes.data ?? []) as never[],
       paidRecords: (paidRes.data ?? []) as never[],
       assignedMap,
+      scheduledByWeek,
+      leaveByWeek,
       allCases: (casesRes.data ?? []) as Array<{ id: string; work_report_id: string }>,
       casesAvailable: !casesRes.error,
     };
@@ -200,12 +265,19 @@ const SWEEP_BUTTONS: Array<{
           runs.push(applyMissingReportPoints(d.logs as never, new Set(
             d.reports.map((r) => r.duty_log_id).filter((id): id is string => !!id),
           )));
+        } else if (key === 'complaint') {
+          runs.push(applyVerifiedComplaintSweep());
         } else if (key === 'absent') {
           runs.push(applyWeeklyAbsencePoints({
             officers: d.officers,
             dutyLogs: d.logs,
             scheduledOfficerIds: [...scheduledIds],
             approvedLeaveOfficerIds: d.onLeave,
+            scheduledByWeek: new Map(
+              [...d.scheduledByWeek].map(([w, ids]) => [w, [...ids]]),
+            ),
+            approvedLeaveByWeek: d.leaveByWeek,
+            maxWeeks: 26,
           }));
         }
       }
@@ -459,7 +531,9 @@ const SWEEP_BUTTONS: Array<{
                 <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">
                   ถ้าเครื่องล่มหรือปิดเบราว์เซอร์ก่อนคะแนนจะบันทึก
                   กดปุ่มของเกณฑ์นั้นเพื่อให้คะแนนที่ค้างย้อนหลังได้
-                  กดซ้ำได้โดยไม่ให้คะแนนซ้ำ
+                  <br />
+                  <strong className="text-amber-400">ตรวจทั้งประวัติในระบบทุกรายการ</strong> —
+                  ไม่จำกัดเฉพาะเดือนนี้ และกดซ้ำได้โดยไม่ให้คะแนนซ้ำ
                 </p>
               </div>
             </div>
