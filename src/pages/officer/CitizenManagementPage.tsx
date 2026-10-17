@@ -14,7 +14,7 @@ import {
   VehicleType, VEHICLE_BRAND_MODELS, VEHICLE_COLORS,
 } from '../../lib/types';
 import {
-  assignRecordOfficers, fetchAssignedOfficerNames, fetchRevenueConfigs, recalculateRecord, getScopeForCategory,
+  assignRecordOfficers, fetchAssignedOfficerIds, fetchAssignedOfficerNames, fetchRevenueConfigs, recalculateRecord, getScopeForCategory,
 } from '../../lib/api/revenueSharing';
 import { useAuth } from '../../lib/AuthContext';
 import { Badge } from '../../components/Badge';
@@ -22,6 +22,8 @@ import { Modal, ConfirmDialog } from '../../components/Modal';
 import { PageHeader } from '../../components/PageHeader';
 import { SERVICE_CATEGORIES } from './ServiceRatesPage';
 import { fetchCitizenNote, saveCitizenNote } from '../../lib/api/citizenNotes';
+import { applyServiceClosedPoints } from '../../lib/api/autoPoints';
+import { useToast } from '../../hooks/use-toast';
 import { toLocalDateTimeInputValue } from '../../lib/utils';
 import {
   buildCitizenDebtRows,
@@ -38,6 +40,7 @@ type Tab = 'overview' | 'vehicles' | 'licenses' | 'fees';
 
 export function CitizenManagementPage() {
   const { officer, isCommissioner } = useAuth();
+  const { toast } = useToast();
   const [tab, setTab] = useState<Tab>('overview');
   const [searchQ, setSearchQ] = useState('');
   const [searched, setSearched] = useState(false);
@@ -81,6 +84,8 @@ export function CitizenManagementPage() {
     notes: '', service_date: toLocalDateTimeInputValue(new Date()),
   });
   const [feeAssignedIds, setFeeAssignedIds] = useState<string[]>([]);
+  /** ผู้ดูแลเคสของแต่ละบิล — ใช้ให้คะแนนตอนเปลี่ยนเป็นชำระแล้ว */
+  const [feeAssignedByRecord, setFeeAssignedByRecord] = useState<Record<string, string[]>>({});
   const [officers, setOfficers] = useState<Officer[]>([]);
   const [feeAssignedNames, setFeeAssignedNames] = useState<Record<string, string>>({});
   const [revenueConfigs, setRevenueConfigs] = useState<{ scope: string; officer_share_percent: number }[]>([]);
@@ -251,14 +256,19 @@ export function CitizenManagementPage() {
       (a, b) => new Date(b.service_date).getTime() - new Date(a.service_date).getTime(),
     );
     setFeeRecords(data);
-    // ดึงชื่อ officers ที่ assign
+
+    // ดึงผู้ดูแลเคสของทุกบิลในครั้งเดียว
+    // ใช้ทั้งแสดงชื่อ และให้คะแนนตอนกดเปลี่ยนเป็น "ชำระแล้ว"
+    const idsByRecord = await fetchAssignedOfficerIds(data.map((r) => r.id));
+    setFeeAssignedByRecord(idsByRecord);
+
     const officerLookup: Record<string, string> = {};
     for (const o of officers) officerLookup[o.id] = o.name;
     const namesMap: Record<string, string> = {};
-    await Promise.all(data.map(async (r: ServiceRecord) => {
-      const names = await fetchAssignedOfficerNames(r.id, officerLookup);
+    for (const r of data) {
+      const names = (idsByRecord[r.id] ?? []).map((id) => officerLookup[id]).filter(Boolean).join(', ');
       if (names) namesMap[r.id] = names;
-    }));
+    }
     setFeeAssignedNames((prev) => ({ ...prev, ...namesMap }));
   }
 
@@ -590,6 +600,15 @@ export function CitizenManagementPage() {
         console.warn('[CitizenManagementPage] revenue sharing skipped:', e);
       }
     }
+    // เพิ่งเปลี่ยนเป็น "ชำระแล้ว" (เคยค้างชำระ) → ให้คะแนนผู้ดูแลเคส
+    // ต้องเช็คสถานะเดิม ไม่ใช่สถานะใหม่ ไม่งั้นการแก้บิลที่จ่ายแล้วซ้ำจะให้คะแนนเพิ่ม
+    if (finalStatus === 'paid' && editingFee && editingFee.status !== 'paid') {
+      await awardCaseOfficerPoints(
+        { ...editingFee, ...payload, status: 'paid' } as ServiceRecord,
+        feeAssignedByRecord[editingFee.id] ?? feeAssignedIds,
+      );
+    }
+
     setUploading(false);
     setShowFeeForm(false);
     setFeeAssignedIds([]);
@@ -597,16 +616,82 @@ export function CitizenManagementPage() {
     await fetchRecords();
   }
 
+  /**
+   * ให้คะแนนผู้ดูแลเคสเมื่อบิลเปลี่ยนเป็น "ชำระแล้ว" (+5 PPS ต่อคน)
+   *
+   * ต้องรายงานผลจริงเสมอ เพราะเดิมกดปุ่มแล้วเงียบสนิท
+   * ถ้าให้ไม่ได้จะไม่มีใครรู้ว่าคะแนนค้าง
+   */
+  async function awardCaseOfficerPoints(
+    record: ServiceRecord,
+    assignedIds: string[],
+  ): Promise<void> {
+    if (record.status !== 'paid') return;
+
+    try {
+      const results = await applyServiceClosedPoints({ ...record, status: 'paid' }, assignedIds);
+      const awarded = results.filter((r) => r.awarded).length;
+      const already = results.length - awarded;
+      const names = results
+        .map((r) => officers.find((o) => o.id === r.officerId)?.name)
+        .filter(Boolean)
+        .join(', ');
+
+      if (results.length === 0) {
+        toast({
+          title: 'เปลี่ยนเป็นชำระแล้วแล้ว',
+          description: 'บิลนี้ไม่มีผู้ดูแลเคส จึงไม่มีคะแนนให้',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      if (awarded > 0) {
+        toast({
+          title: `ชำระแล้ว · ให้คะแนนผู้ดูแลเคส ${awarded} คน`,
+          description: (already > 0 ? `+5 คะแนน/คน · ข้าม ${already} คนที่เคยได้แล้ว` : '+5 คะแนนต่อผู้ดูแลเคส')
+            + (names ? ` · ${names}` : ''),
+        });
+      } else {
+        toast({
+          title: 'เปลี่ยนเป็นชำระแล้วแล้ว',
+          description: 'ผู้ดูแลเคสเคยได้คะแนนบิลนี้แล้ว ไม่ให้ซ้ำ',
+        });
+      }
+    } catch (err) {
+      toast({
+        title: 'เปลี่ยนสถานะสำเร็จ แต่ให้คะแนนไม่สำเร็จ',
+        description: 'กด "ตรวจคะแนนทั้งหมด" ในหน้าตั้งค่าระบบเพื่อให้คะแนนเติมภายหลัง',
+        variant: 'destructive',
+      });
+      console.error('ให้คะแนนผู้ดูแลเคสไม่สำเร็จ:', err);
+    }
+  }
+
   async function toggleFeeStatus(f: ServiceRecord) {
     if (!canManageCitizen) return;
     const newStatus = f.status === 'paid' ? 'unpaid' : 'paid';
     const newPaidAmount = newStatus === 'paid' ? f.amount : 0;
-    await supabase.from('service_records').update({
+    const { error } = await supabase.from('service_records').update({
       status: newStatus,
       paid_amount: newPaidAmount,
       updated_at: new Date().toISOString()
     }).eq('id', f.id);
+
+    if (error) {
+      toast({ title: 'เปลี่ยนสถานะไม่สำเร็จ', description: error.message, variant: 'destructive' });
+      return;
+    }
+
     setFeeRecords((prev) => prev.map((r) => r.id === f.id ? { ...r, status: newStatus, paid_amount: newPaidAmount } : r));
+
+    // ค้างชำระ → ชำระแล้ว = ให้คะแนนผู้ดูแลเคส
+    // ส่วนกรณีย้อนกลับเป็นค้างชำระ ยังไม่คืนคะแนน (ต้องกดสแกน/แก้ทีหลังถ้าจะคืน)
+    if (newStatus === 'paid') {
+      const assigned = feeAssignedByRecord[f.id] ?? (f.officer_id ? [f.officer_id] : []);
+      await awardCaseOfficerPoints({ ...f, status: 'paid' }, assigned);
+    }
+
     await fetchRecords();
   }
 
@@ -1029,7 +1114,8 @@ export function CitizenManagementPage() {
                                 )}
                               </div>
                               {canEdit ? (
-                                <button onClick={() => toggleFeeStatus(f)} title="สลับสถานะการชำระ">
+                                <button onClick={() => toggleFeeStatus(f)} title={f.status === 'paid' ? 'ย้อนกลับเป็นค้างชำระ' : 'ทำเป็นชำระแล้ว (+5 คะแนนผู้ดูแลเคส)'}
+                                  aria-label='เปลี่ยนสถานะการชำระ'>
                                   <Badge variant={f.status === 'paid' ? 'success' : isPartial ? 'warning' : 'danger'}>
                                     {f.status === 'paid' ? 'ชำระแล้ว' : isPartial ? `ชำระบางส่วน (${formatMoney(paid)})` : 'ค้างชำระ'}
                                   </Badge>

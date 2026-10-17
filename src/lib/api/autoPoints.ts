@@ -71,6 +71,8 @@ export { isAutoPointsEnabled };
 export interface AutoAwardResult {
   awarded: boolean;
   delta: number;
+  /** id ผู้ที่ได้/ถูกหักคะแนน — ใช้แสดงชื่อในข้อความแจ้งผล */
+  officerId?: string;
   /** เหตุผลที่ถูกข้าม (kill switch ปิด / ให้คะแนนไปแล้ว / ไม่มีคะแนน) */
   skipReason?: 'disabled' | 'duplicate' | 'zero' | 'no_officer' | 'error';
   balanceAfter?: number;
@@ -101,14 +103,14 @@ export async function awardAutoPoints(params: {
   const { officerId, delta, reason, markKey } = params;
 
   if (!officerId) return { awarded: false, delta, skipReason: 'no_officer' };
-  if (delta === 0) return { awarded: false, delta, skipReason: 'zero' };
+  if (delta === 0) return { awarded: false, delta, officerId, skipReason: 'zero' };
 
   if (!(await isAutoPointsEnabled())) {
-    return { awarded: false, delta, skipReason: 'disabled' };
+    return { awarded: false, delta, officerId, skipReason: 'disabled' };
   }
 
   if (await alreadyAwarded(markKey)) {
-    return { awarded: false, delta, skipReason: 'duplicate' };
+    return { awarded: false, delta, officerId, skipReason: 'duplicate' };
   }
 
   try {
@@ -120,7 +122,7 @@ export async function awardAutoPoints(params: {
       AUTO_POINTS_ACTOR.id,
       AUTO_POINTS_ACTOR.name,
     );
-    if (!result) return { awarded: false, delta, skipReason: 'disabled' };
+    if (!result) return { awarded: false, delta, officerId, skipReason: 'disabled' };
     // ประทับหลังให้สำเร็จเท่านั้น — ถ้าให้คะแนนไม่ได้จะไม่ข้ามรอบหน้า
     await supabase.from('points_award_marks').insert({
       mark_key: markKey,
@@ -131,10 +133,11 @@ export async function awardAutoPoints(params: {
     return {
       awarded: true,
       delta,
+      officerId,
       balanceAfter: result.entry.balance_after,
     };
   } catch (e) {
-    return { awarded: false, delta, skipReason: 'error', error: (e as Error).message };
+    return { awarded: false, delta, officerId, skipReason: 'error', error: (e as Error).message };
   }
 }
 
