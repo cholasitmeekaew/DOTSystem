@@ -13,7 +13,17 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        // ต้องมี 'Noto Sans Thai' ด้วย
+        // ถ้าไม่ใส่ คลาส font-sans จะตัด fallback ไทยทิ้ง
+        // ทำให้ภาษาไทยไปใช้ฟอนต์ระบบที่อาจไม่มี glyph ครบ → ซ้อนกัน/เพี้ยน
+        sans: [
+          'Inter',
+          'Noto Sans Thai',
+          'Leelawadee UI',
+          'Sarabun',
+          'system-ui',
+          'sans-serif',
+        ],
       },
     },
   },

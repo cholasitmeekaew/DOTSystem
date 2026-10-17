@@ -18,9 +18,31 @@
 @layer base {
   body {
     @apply bg-navy-900 text-white;
-    font-family: 'Inter', 'Noto Sans Thai', system-ui, sans-serif;
+    /*
+     * ฟอนต์ไทยต้องมาก่อน Inter ในกรณีที่ Inter ไม่มี glyph ไทย
+     * ปล่อยให้ browser fallback ต่อทีละตัวอักษรก็ได้ แต่ระบุชัดกว่า
+     * และเพิ่ม 'Leelawadee UI' / 'Sarabun' เป็นตัวสำรองสำหรับเครื่องที่โหลด web font ไม่ได้
+     */
+    font-family: 'Inter', 'Noto Sans Thai', 'Leelawadee UI', 'Sarabun', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
+
+    /*
+     * ห้ามใช้ text-rendering: optimizeLegibility กับภาษาไทย
+     *
+     * ค่านี้เปิด kerning/ligatures ขั้นสูง ซึ่งทำให้สระและวรรณยุกต์ไทย
+     * ที่ซ้อนกันอยู่บนพยัญชนะ (เช่น ที่ ่ + ้) ถูกวางทับกันจนอ่านไม่ออก
+     * ได้ฟ้า (เช่น "ผู้ดูแลเคส" กลายเป็น "คุณแสล")
+     *
+     * ค่า auto ปล่อยให้ browser จัดการเอง ซึ่งถูกต้องสำหรับทั้งสองสคริปต์
+     */
+    text-rendering: auto;
+
+    /*
+     * ภาษาไทยต้องการความสูงบรรทัดมากกว่าอังกฤษ
+     * เพราะมีสระ/วรรณยุกต์ซ้อนเหนือและใต้ตัวอักษร
+     * ค่า 1.6 กันไม่ให้ถูกตัดเมื่อบรรทัดสูงพอดี
+     */
+    line-height: 1.6;
   }
 
   /* ลำดับหัวข้อชัดเจนเมื่อไม่ได้กำหนด class เอง */
