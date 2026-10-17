@@ -659,14 +659,17 @@ export function CaseOfficersPage() {
         </Modal>
       )}
 
-      <ConfirmDialog
-        title={`ล้างผู้ดูแลเคส — ${confirmClear?.service_name ?? ''}`}
-        message="บิลนี้จะเหลือผู้รับผิดชอบหลักคนเดียว ส่วนแบ่งและคะแนนของผู้ร่วมงานเดิมจะถูกคืน (ถ้ามี)"
-        confirmLabel="ล้างผู้ดูแลเคส"
-        danger
-        onConfirm={() => confirmClear && clearAssign(confirmClear)}
-        onCancel={() => setConfirmClear(null)}
-      />
+      {/* ล้างผู้ดูแลเคส — ต้องมีเงื่อนไขปิด ไม่งั้น dialog จะโผล่ทันทีที่เข้าหน้า */}
+      {confirmClear && (
+        <ConfirmDialog
+          title={`ล้างผู้ดูแลเคส — ${confirmClear.service_name}`}
+          message={`บิล "${confirmClear.service_name}" ของ ${confirmClear.roblox_username} จะเหลือผู้รับผิดชอบหลักคนเดียว ส่วนแบ่งและคะแนนของผู้ร่วมงานเดิมจะถูกคืน (ถ้ามี)`}
+          confirmLabel="ล้างผู้ดูแลเคส"
+          danger
+          onConfirm={() => clearAssign(confirmClear)}
+          onCancel={() => setConfirmClear(null)}
+        />
+      )}
     </div>
   );
 }
