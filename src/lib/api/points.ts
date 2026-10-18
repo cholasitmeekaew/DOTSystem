@@ -79,10 +79,13 @@ export function pointsDebt(points: number): number {
 }
 
 /**
- * สวิตช์ "บังคับส่งรายงานปฏิบัติงาน" เปิดอยู่ไหม
+ * ระบบรายงานปฏิบัติงานยัง "เปิด" รับอยู่ไหม
  *
- * ถ้าปิด = ไม่มีระบบรายงาน → ห้ามหักคะแนนเพราะ "ไม่ส่งรายงาน"
- * เพราะเจ้าหน้าที่ไม่ได้ทำผิดอะไร ระบบไม่ได้เปิดให้ส่ง
+ * สวิตช์นี้แปลว่า "รอบการรับรายงาน"
+ *   เปิด = ยังส่งได้ → ห้ามหักคะแนนไม่ส่งรายงาน
+ *   ปิด  = ปิดรับรายงานของวันนี้แล้ว → คนที่ออกเวรแล้วแต่ไม่ส่ง = หัก
+ *
+ * หัวหน้ากรมเป็นคนกดปิดเอง ไม่ใช่ระบบหักอัตโนมัติตอนยังเปิดให้ส่งอยู่
  */
 export async function isWorkReportsEnabled(): Promise<boolean> {
   try {
@@ -91,10 +94,10 @@ export async function isWorkReportsEnabled(): Promise<boolean> {
       .select('work_reports_enabled')
       .eq('id', 1)
       .maybeSingle();
-    if (error) return false;   // อ่านไม่ได้ = ปิดไว้เพื่อความปลอดภัย ไม่หักผิดคน
+    if (error) return true;    // อ่านไม่ได้ = ถือว่ายังเปิดอยู่ ปลอดภัยกว่าหักคนผิด
     return (data as { work_reports_enabled?: boolean } | null)?.work_reports_enabled === true;
   } catch {
-    return false;
+    return true;
   }
 }
 

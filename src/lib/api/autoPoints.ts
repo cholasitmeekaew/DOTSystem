@@ -430,9 +430,9 @@ export async function applyMissingReportPoints(
   const today = new Date().toISOString().slice(0, 10);
   const results: AutoAwardResult[] = [];
 
-  // สวิตช์รายงานปิดอยู่ = ไม่มีระบบรายงาน → ห้ามหักคะแนน
-  // เจ้าหน้าที่ไม่ได้ทำผิด เพราะระบบไม่ได้เปิดให้ส่งรายงาน
-  if (!(await isWorkReportsEnabled())) return [];
+  // รายงานยัง "เปิด" อยู่ = ยังส่งได้ → ห้ามหัก
+  // หักเฉพาะหลังหัวหน้ากรมกดปิดรับรายงานแล้ว (ปิดรอบของวันนั้น)
+  if (await isWorkReportsEnabled()) return [];
 
   for (const log of logs) {
     if (!log?.officer_id || !log.clock_out || !log.clock_in) continue;

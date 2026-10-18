@@ -7,9 +7,13 @@
 --    แปลว่าเจ้าหน้าที่ที่ไม่ส่งรายงานเจอบทลงโทษช้าที่สุดเกือบ 24 ชม.
 --    ต้องการให้หัก "ทันที" ที่หน้าต่างส่งรายงานปิด
 --
--- 2. ถ้า work_reports_enabled = false (ไม่ได้เปิดระบบรายงาน)
---    ห้ามหักคะแนนเพราะ "ไม่ส่งรายงาน" เด็ดขาด
---    เจ้าหน้าที่ไม่ได้ทำผิด เพราะระบบไม่ได้เปิดให้ส่งรายงาน
+-- 2. เงื่อนไขตรงข้ามกัน:
+--    · รายงาน "เปิด" อยู่  = ยังส่งได้ → ห้ามหัก
+--    · รายงาน "ปิด" แล้ว   = ปิดรับรายงานของวันนี้
+--                      → คนที่ออกเวรวันนั้นแล้วแต่ไม่ส่ง = หักทันที
+--
+--    หัวหน้ากรมเป็นคนกดสวิตช์ปิดเอง = ตัดสินใจปิดรอบรายงาน
+--    ไม่ใช่ระบบหักใครโดยอัตโนมัติตอนยังเปิดให้ส่งอยู่
 --
 -- แก้
 -- ────
@@ -26,7 +30,7 @@
 -- 1) เพิ่มหน้าต่างเวลาส่งรายงาน
 -- ---------------------------------------------------------------
 alter table public.pps_penalty_config
-  add column if not exists report_deadline_hours integer not null default 12;
+  add column if not exists report_deadline_hours integer not null default 0;
 
 alter table public.pps_penalty_config
   drop constraint if exists pps_penalty_config_deadline;
@@ -36,7 +40,7 @@ alter table public.pps_penalty_config
   check (report_deadline_hours between 0 and 168);
 
 comment on column public.pps_penalty_config.report_deadline_hours is
-  'ให้เจ้าหน้าที่เวลากี่ชั่วโมงหลังออกเวรก่อนถือว่าไม่ส่งรายงาน (0 = หักทันทีเมื่อออกเวร)';
+  'หลังปิดรายงานแล้ว รอกี่ชั่วโมงก่อนหัก (0 = หักทันทีทุกคนที่ออกเวรแล้วแต่ไม่ส่งรายงาน)';
 
 
 -- ---------------------------------------------------------------
@@ -86,12 +90,11 @@ begin
     return jsonb_build_object('skipped', true, 'reason', 'auto_points_enabled = false');
   end if;
 
-  -- ⚠ ปิดระบบรายงาน → ห้ามหักเด็ดขาด
-  -- เจ้าหน้าที่ไม่ได้ทำผิด เพราะระบบไม่ได้เปิดให้ส่งรายงาน
-  if not pps_work_reports_enabled() then
+  -- ยังเปิดรับรายงานอยู่ → ยังส่งได้ ห้ามหัก
+  if pps_work_reports_enabled() then
     return jsonb_build_object(
       'skipped', true,
-      'reason', 'work_reports_enabled = false — ไม่หักเพราะไม่มีระบบรายงาน'
+      'reason', 'ระบบรายงานยังเปิดอยู่ — ยังส่งได้ จึงไม่หัก'
     );
   end if;
 
@@ -100,7 +103,7 @@ begin
       penalty_start_date,
       current_date - greatest(coalesce(lookback_days, 14), 1)
     ),
-    coalesce(report_deadline_hours, 12) * interval '1 hour'
+    coalesce(report_deadline_hours, 0) * interval '1 hour'
   into v_cutoff, v_deadline
   from public.pps_penalty_config
   where id = 1;
@@ -111,11 +114,11 @@ begin
   end if;
 
   --
-  -- เงื่อนไข "หักทันที"
-  --   clock_out < now() - deadline   → หน้าต่างส่งรายงานปิดแล้ว
+  -- เงื่อนไข "หักทันทีที่ปิดรายงาน"
+  --   clock_out < now() - deadline   → ระบบปิดรับรายงานแล้ว จึงหัก
   --
-  -- ไม่ใช่การเทียบวันแบบเดิม (clock_out < วันนี้) ซึ่งทำให้รอเกือบ 24 ชม.
-  -- ตอนนี้ตั้ง deadline_hours = 12 ก็หักในรอบถัดไปหลังออกเวรครบ 12 ชม.
+  -- เดิมเทียบวัน (clock_out < วันนี้) ซึ่งทำให้รอเกือบ 24 ชม.
+  -- ตอนนี้ปิดสวิตช์แล้วหักทันทีในรอบถัดไป (หรือทันทีที่กดปุ่ม)
   --
   for v_rec in
     select l.id, l.officer_id
@@ -126,7 +129,7 @@ begin
       and l.officer_id is not null
       and coalesce(l.checkout_method, '') <> 'forced'   -- ถูกบังคับ = มีโทษ -15 แล้ว
       and l.clock_out >= v_cutoff::timestamptz         -- ไม่หักย้อนก่อนวันเริ่มนับ
-      and l.clock_out < (now() - v_deadline)            -- หน้าต่างส่งรายงานปิดแล้ว
+      and l.clock_out < (now() - v_deadline)            -- ปิดรับรายงานแล้ว
       and not exists (
         select 1 from public.work_reports w
         where w.duty_log_id = l.id
@@ -293,10 +296,10 @@ select cron.schedule(
 -- 6) ข้อมูลอธิบาย
 -- ---------------------------------------------------------------
 comment on function run_pps_report_penalty() is
-  'หักคะแนนกฎไม่ส่งรายงาน — รันทุกชั่วโมง ทำงานเฉพาะตอนเปิดสวิตช์รายงาน';
+  'หักคะแนนกฎไม่ส่งรายงาน — รันทุกชั่วโมง ทำงานเฉพาะหลังปิดสวิตช์รายงานแล้ว';
 
 comment on function run_pps_daily_sweep() is
   'หักคะแนนกฎขาดเวร 7 วัน — รันวันละครั้ง เริ่มนับจาก penalty_start_date';
 
 comment on function pps_work_reports_enabled() is
-  'สวิตช์บังคับส่งรายงานเปิดอยู่ไหม — ปิด = ห้ามหักคะแนนไม่ส่งรายงาน';
+  'สวิตช์รายงานเปิดอยู่ไหม — เปิด = ยังส่งได้ ยังไม่หัก · ปิด = หักคนที่ออกเวรแล้วไม่ส่ง';
