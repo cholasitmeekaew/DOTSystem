@@ -56,6 +56,33 @@ export function OfficerManagementPage() {
   const [editItem, setEditItem] = useState<Officer | null>(null);
   const [confirmAction, setConfirmAction] = useState<{ type: ActionType; target: Officer } | null>(null);
   const [resetPw, setResetPw] = useState('');
+
+  // รหัสผ่านที่เพิ่งตั้ง — โชว์ครั้งเดียวเท่านั้น
+  //
+  // ทำไมถึงโชว์ได้แต่ดูย้อนหลังไม่ได้:
+  //   รหัสผ่านถูกเก็บเป็น SHA-256 ซึ่งถอดกลับไม่ได้ (ดู src/lib/crypto.ts)
+  //   จึงเก็บ plaintext ไม่ได้ ถ้าเก็บไว้เท่ากับไม่เข้ารหัสเลย
+  //   วิธีเดียวที่หลีกเลี่ยงการเก็บ plaintext คือโชว์ตอนตั้งครั้งแรก
+  //   ให้หัวหน้ากรมจด/ส่งให้เจ้าหน้าที่ แล้วปิดทิ้ง
+  const [revealed, setRevealed] = useState<{ name: string; username: string; password: string } | null>(null);
+
+  /**
+   * สร้างรหัสผ่านที่จำง่ายแต่เดายาก
+   *
+   * รูปแบบ: ตัวอักษรย่อ-รหัสจริง-กลุ่มตัวเลขสุ่ม
+   * เช่น CDT-01-Kq7m
+   *
+   * ตัวสุ่มมาจาก crypto.getRandomValues ไม่ใช่ Math.random
+   * เพราะ Math.random ไม่เหมาะกับค่าที่ต้องเดายาก
+   */
+  function suggestPassword(code?: string | null): string {
+    const prefix = (code && /^[A-Za-z]+-\d+$/.test(code) ? code : 'OFF').toUpperCase();
+    const chars = 'abcdefghijkmnpqrstuvwxyz23456789'; // ไม่มี l/1/0/O กันสับสน
+    const bytes = new Uint8Array(4);
+    crypto.getRandomValues(bytes);
+    const suffix = [...bytes].map((b) => chars[b % chars.length]).join('');
+    return `${prefix}-${suffix}`;
+  }
   const [adminVerifyPw, setAdminVerifyPw] = useState('');
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
@@ -776,6 +803,9 @@ export function OfficerManagementPage() {
         alert('ตั้งรหัสผ่านไม่สำเร็จ: ' + (error?.message ?? 'ยืนยันรหัสผ่านไม่ถูกต้อง'));
         return;
       }
+      // โชว์รหัสผ่านที่เพิ่งตั้งให้หัวหน้ากรมจด/ส่งให้เจ้าหน้าที่
+      // (ครั้งเดียว ปิดแล้วหายถาวร)
+      setRevealed({ name: target.name, username: target.username ?? '', password: resetPw });
       setResetPw('');
     }
 
@@ -1727,6 +1757,45 @@ export function OfficerManagementPage() {
               : undefined
           }
         />
+      )}
+
+      {/* ── โชว์รหัสผ่านที่เพิ่งตั้ง — ครั้งเดียว ── */}
+      {revealed && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4">
+          <div className="card max-w-md w-full p-5 border-amber-500/40">
+            <h3 className="text-sm font-bold text-amber-400 mb-1">ตั้งรหัสผ่านให้ {revealed.name} สำเร็จ</h3>
+            <p className="text-[11px] text-gray-400 mb-4">
+              จะแสดงรหัสผ่านนี้ <b className="text-amber-300">ครั้งเดียวเท่านั้น</b> เพราะระบบเก็บเป็นค่าเข้ารหัส SHA-256
+              ซึ่งถอดกลับไม่ได้ กรุณาจดหรือส่งให้เจ้าหน้าที่ทันที
+            </p>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2 p-2 rounded bg-navy-800 border border-gray-700">
+                <span className="text-[11px] text-gray-500 shrink-0">ชื่อผู้ใช้</span>
+                <span className="font-mono text-xs text-blue-300">@{revealed.username}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2 p-2 rounded bg-navy-800 border border-amber-500/30">
+                <span className="text-[11px] text-gray-500 shrink-0">รหัสผ่าน</span>
+                <span className="font-mono text-sm text-amber-300 font-bold">{revealed.password}</span>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => {
+                  const t = `ชื่อผู้ใช้: @${revealed.username}\nรหัสผ่าน: ${revealed.password}`;
+                  void navigator.clipboard?.writeText(t);
+                }}
+                className="btn btn-outline flex-1 text-xs"
+              >
+                คัดลอก
+              </button>
+              <button onClick={() => setRevealed(null)} className="btn btn-primary flex-1 text-xs">
+                ปิด (บันทึกไว้แล้ว)
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Officer History Modal */}
