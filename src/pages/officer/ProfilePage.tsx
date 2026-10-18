@@ -327,20 +327,51 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
                     {RANK_LABELS[data?.rank ?? 'officer'] ?? data?.rank}
                   </span>
                 </div>
-                <span
+                {/*
+                 * สถานะปฏิบัติงาน = อ้างอิงการกดเข้าเวร (is_on_duty)
+                 *
+                 * เดิมใช้ data.status ซึ่งคือ "สถานะบัญชี"
+                 * (active/suspended/deleted) ทำให้คนที่ล็อกอินได้แต่ไม่ได้กดเข้าเวร
+                 * ก็ขึ้นว่า "ปฏิบัติงานอยู่" ซึ่งไม่ตรงกับความจริง
+                 *
+                 * ค่านี้เปลี่ยนเองทันที เพราะหน้านี้ subscribe ตาราง officers แบบ realtime
+                 */}                <span
                   className={`mt-2 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-                    data?.status === 'active'
+                    data?.is_on_duty
                       ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
                       : 'bg-gray-500/15 text-gray-300 border-gray-500/40'
                   }`}
                 >
-                  {data?.status === 'active' ? 'ปฏิบัติงานอยู่' : data?.status ?? '—'}
+                  {data?.is_on_duty ? 'กำลังปฏิบัติหน้าที่' : 'ไม่ได้ปฏิบัติหน้าที่'}
+                </span>
+                {/* สถานะบัญชี แยกจากสถานะปฏิบัติงาน */}
+                <span
+                  className={`mt-1.5 px-2 py-0.5 rounded-full text-[10px] border ${
+                    data?.status === 'active'
+                      ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                  }`}
+                >
+                  บัญชี: {data?.status === 'active' ? 'ใช้งานได้' : data?.status ?? '—'}
                 </span>
               </div>
 
               <div className="pt-1">
                 <Row label="รหัสเจ้าหน้าที่">
-                  <span className="font-mono text-amber-300">{data?.username ?? '—'}</span>
+                  <span className="font-mono text-amber-300">{data?.officer_code ?? '—'}</span>
+                </Row>
+                <Row label="ชื่อผู้ใช้ (เข้าระบบ)">
+                  <span className="font-mono text-gray-300">{data?.username ?? '—'}</span>
+                </Row>
+                <Row label="สถานะปฏิบัติงาน">
+                  <span className={`inline-flex items-center gap-1.5 ${
+                    data?.is_on_duty ? 'text-emerald-400' : 'text-gray-400'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${
+                      data?.is_on_duty ? 'bg-emerald-400' : 'bg-gray-600'
+                    }`} />
+                    {data?.is_on_duty ? 'กำลังปฏิบัติหน้าที่ (เข้าเวรอยู่)' : 'ไม่ได้ปฏิบัติหน้าที่'}
+                  </span>
                 </Row>
                 <Row label="ยศ / ตำแหน่ง">{RANK_LABELS[data?.rank ?? 'officer'] ?? '—'}</Row>
                 <Row label="แผนก / ฝ่าย">
