@@ -1,7 +1,7 @@
 import { forceCheckoutOfficer } from '../../lib/api/forceCheckout';
 import { AUTO_POINTS_RULES } from '../../lib/api/autoPoints';
 import { useToast } from '../../hooks/use-toast';
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import { useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import {
   Users, DollarSign, FileText, TrendingUp, Clock, AlertCircle, Pin,
@@ -46,10 +46,11 @@ export function DashboardPage() {
   }, []);
 
   async function fetchAllData() {
+  const fields = await getOfficerFields();
     const today = new Date().toISOString().slice(0, 10);
 
     const [officersRes, servicesRes, annRes, settingsRes, emergencyRes, citizensRes, dutyRes] = await Promise.all([
-      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active').order('name'),
+      supabase.from('officers').select(fields).eq('status', 'active').order('name'),
       supabase.from('service_records').select('*').order('created_at', { ascending: false }),
       supabase.from('announcements').select('*').order('created_at', { ascending: false }).limit(4),
       supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),

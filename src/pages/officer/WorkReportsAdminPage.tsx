@@ -4,7 +4,7 @@
  * ดีไซน์/ตัวกรองเหมือนหน้าประวัติการเข้าเวรทั้งหมด (DutyLogsAdminPage)
  * ============================================================= */
 
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import { useEffect, useMemo, useState } from 'react';
 import {
   FileText, Search, Trash2, ShieldAlert, Loader2, Filter, Download, Eye,
@@ -67,6 +67,7 @@ export function WorkReportsAdminPage() {
   const [deletedHint, setDeletedHint] = useState<number | null>(null);
 
   async function load() {
+  const fields = await getOfficerFields();
     setLoading(true);
     // ต้องรู้ id รายงานก่อน จึงจะนับเคสทีละรายงานเป็นทางสำรองได้
     const repRes = await supabase.from('work_reports')
@@ -75,7 +76,7 @@ export function WorkReportsAdminPage() {
       .limit(1000);
 
     const [offRes, rankRes, countRes] = await Promise.all([
-      supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
+      supabase.from('officers').select(fields).neq('status', 'deleted').order('name'),
       supabase.from('officer_ranks').select('*').order('sort_order'),
       loadCaseCounts(((repRes.data ?? []) as WorkReport[]).map((r) => r.id)),
     ]);

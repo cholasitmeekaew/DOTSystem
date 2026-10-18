@@ -1,3 +1,4 @@
+import { supabase } from './supabase';
 /**
  * คอลัมน์ของตาราง `officers` ที่ปลอดภัยต่อการส่งออกไปยังเบราว์เซอร์
  *
@@ -41,9 +42,76 @@ export const OFFICER_PUBLIC_FIELDS = [
  * ถ้าหน้าไหนต้องการ username ให้ดึงแยกผ่าน `list_officer_usernames()`
  * (ดู `lib/api/officerUsernames.ts`)
  */
-export const OFFICER_STAFF_FIELDS = [
+export const BASE_FIELDS = [
   'id', 'name', 'rank', 'department', 'status', 'is_on_duty',
   'created_at', 'updated_at', 'photo_url', 'duty_rate', 'service_category',
   'points', 'points_period', 'points_log', 'accumulated_share',
   'generation', 'sort_order', 'last_login_at', 'last_login_ip',
 ].join(', ');
+
+/** รายการคอลัมน์พื้นฐาน (ยังไม่รวมคอลัมน์ที่รอ migration) */
+export const OFFICER_STAFF_FIELDS = BASE_FIELDS;
+
+/* ---------- คอลัมน์ที่อาจยังไม่มีในฐานข้อมูล ---------- */
+
+const OPTIONAL_FIELDS = [
+  // มาจาก migration 0050 — ถ้ายังไม่รัน migration จะไม่มีคอลัมน์นี้
+  { column: 'officer_code', probe: 'id,name,officer_code' },
+] as const;
+
+/** ผลการตรวจ: เก็บครั้งเดียวต่อ session */
+const available = new Map<string, boolean>();
+let baseResolved = false;
+let baseFields = '';
+
+/** คอลัมน์พื้นฐานที่ใช้ได้แน่นอน (ไม่ต้องตรวจ) */
+async function getBaseFields(): Promise<string> {
+  if (baseResolved) return baseFields;
+
+  const results = await Promise.all(
+    OPTIONAL_FIELDS.map(async (f) => {
+      const { error } = await supabase.from('officers').select(f.probe).limit(1);
+      const ok = !error;
+      available.set(f.column, ok);
+      return ok;
+    }),
+  );
+
+  const extra = OPTIONAL_FIELDS
+    .filter((_, i) => results[i])
+    .map((f) => f.column);
+
+  baseFields = [BASE_FIELDS, ...extra].join(', ');
+  baseResolved = true;
+  return baseFields;
+}
+
+/**
+ * รายการคอลัมน์ของตาราง officers ที่ใช้ได้จริงในตอนนี้
+ *
+ * ทำไมต้องตรวจทุกครั้ง (แค่ครั้งแรก)
+ * ────────────────────────────────
+ * ถ้าใส่คอลัมน์ที่ยังไม่มีลงไปในรายการ PostgREST จะตอบ 400 ทั้ง request
+ * ทำให้ทุกหน้าที่ใช้รายการนี้พังพร้อมกัน (เคยเกิด 2 ครั้ง)
+ *
+ * วิธีนี้จึงตรวจก่อนว่าคอลัมน์นั้นมีอยู่จริงไหม
+ * - ยังไม่รัน migration → ไม่ใส่ → ไม่พัง
+ * - รัน migration แล้ว    → ใส่เองอัตโนมัติ ไม่ต้องแก้โค้ดซ้ำ
+ *
+ * เรียกครั้งแรกจะยิง query ตรวจ 1 ครั้ง จากนั้นจำค่าไว้ทั้ง session
+ */
+export async function getOfficerFields(): Promise<string> {
+  return getBaseFields();
+}
+
+/** ตรวจว่าคอลัมน์ที่รอ migration มีใช้งานได้แล้วหรือยัง */
+export function isFieldAvailable(column: string): boolean {
+  return available.get(column) ?? false;
+}
+
+/** ล้าง cache ใช้ตอนรัน migration เสร็จแล้วในเซสชันเดิม */
+export function resetOfficerFieldsCache(): void {
+  available.clear();
+  baseResolved = false;
+  baseFields = '';
+}

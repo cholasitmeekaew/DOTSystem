@@ -8,7 +8,7 @@
  * ============================================================= */
 
 import type { WorkReport, DutyLog, ServiceRecord } from '../../lib/types';
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import {
   describeRange, filterByRangeDetailed, presetRange,
   type SweepDatePreset,
@@ -204,6 +204,7 @@ const SWEEP_BUTTONS: Array<{
  * ตอนนี้แต่ละปุ่มดึงเฉพาะตารางที่ตัวเองใช้
  */
   async function loadSweepData(keys: PointsSweepKey[]) {
+  const fields = await getOfficerFields();
     const need = new Set(keys);
     const needLogs = need.has('checkout') || need.has('force')
       || need.has('noreport') || need.has('absent');
@@ -228,7 +229,7 @@ const SWEEP_BUTTONS: Array<{
     const [officersRes, logsRes, reportsRes, leavesRes, schedRes, ovRes,
       paidRes, assignRes, casesRes, complaintsRes] = await Promise.all([
       needOfficers
-        ? supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active')
+        ? supabase.from('officers').select(fields).eq('status', 'active')
         : Promise.resolve(skip),
       needLogs
         ? supabase.from('duty_logs').select('*').is('deleted_at', null)

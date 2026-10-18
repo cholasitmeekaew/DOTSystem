@@ -1,4 +1,4 @@
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import { useEffect, useState, useMemo } from 'react';
 import {
   Wallet, DollarSign, History, RefreshCw, ChevronRight,
@@ -65,10 +65,11 @@ export function DepartmentBalancePage() {
   const [historySearch, setHistorySearch] = useState<string>('');
 
   async function fetchAll() {
+  const fields = await getOfficerFields();
     setLoading(true);
     try {
       const [{ data: o }, { data: r }, { data: dl }, configs, overrides, claims] = await Promise.all([
-        supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
+        supabase.from('officers').select(fields).neq('status', 'deleted').order('name'),
         supabase.from('service_records').select('*').eq('status', 'paid').order('service_date', { ascending: false }),
         supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }),
         fetchRevenueConfigs(),

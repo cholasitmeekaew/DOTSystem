@@ -1,4 +1,4 @@
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Plus, Search, DollarSign, Edit2, Trash2, Image as ImageIcon, Upload, X, Eye, Car, Lock, User, Users, Banknote, HandCoins, Download, Receipt, RefreshCw, AlertCircle,
@@ -127,11 +127,12 @@ export function ServiceFeesPage() {
   }, [officer?.id]);
 
   async function fetchAll() {
+  const fields = await getOfficerFields();
     try {
       const [rec, rateData, offData, cfgs] = await Promise.all([
         supabase.from('service_records').select('*').order('service_date', { ascending: false }).limit(10000),
         supabase.from('service_rates').select('*').eq('is_active', true).order('name'),
-        supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
+        supabase.from('officers').select(fields).neq('status', 'deleted').order('name'),
         fetchRevenueConfigs(),
       ]);
       const recordsList = (rec.data ?? []) as ServiceRecord[];

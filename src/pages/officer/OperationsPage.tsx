@@ -1,4 +1,4 @@
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import { forceCheckoutOfficer } from '../../lib/api/forceCheckout';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -136,6 +136,7 @@ export function OperationsPage({
 
   // =============== ตารางเวร ===============
   async function fetchScheduleData() {
+  const fields = await getOfficerFields();
     const weekStart = shiftWeek(weekAnchor, 0);
     const weekEnd = shiftWeek(weekAnchor, 1);
     const [schedRes, ovRes, offRes, rankRes, leaveRes] = await Promise.all([
@@ -145,7 +146,7 @@ export function OperationsPage({
         .select('*')
         .gte('override_date', weekStart)
         .lt('override_date', weekEnd),
-      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('status', 'active').order('name'),
+      supabase.from('officers').select(fields).eq('status', 'active').order('name'),
       supabase.from('officer_ranks').select('*').eq('is_active', true).order('sort_order'),
       supabase
         .from('officer_leaves')
@@ -773,12 +774,13 @@ export function OperationsPage({
   }
 
   async function fetchData() {
+  const fields = await getOfficerFields();
     setLoading(true);
     const reportsQuery = canAdmin
       ? supabase.from('work_reports').select('*').order('created_at', { ascending: false })
       : supabase.from('work_reports').select('*').eq('officer_id', officer?.id).order('created_at', { ascending: false });
     const [duty, logs, settingsRes, reportsRes, citizensRes] = await Promise.all([
-      supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('is_on_duty', true).eq('status', 'active').order('name'),
+      supabase.from('officers').select(fields).eq('is_on_duty', true).eq('status', 'active').order('name'),
       canAdmin
         ? supabase.from('duty_logs').select('*').is('deleted_at', null).order('clock_in', { ascending: false }).limit(200)
         : supabase.from('duty_logs').select('*').eq('officer_id', officer?.id).is('deleted_at', null).order('clock_in', { ascending: false }).limit(100),

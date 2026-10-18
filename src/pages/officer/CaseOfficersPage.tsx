@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import { assignRecordOfficers, fetchAssignedOfficerIds } from '../../lib/api/revenueSharing';
 import { getOfficerUsernameMap } from '../../lib/api/officerUsernames';
 import type { Officer, ServiceRecord } from '../../lib/types';
@@ -64,11 +64,12 @@ export function CaseOfficersPage() {
   /* ---------- โหลดข้อมูล ---------- */
 
   const load = useCallback(async () => {
+  const fields = await getOfficerFields();
     setLoading(true);
 
     const [recRes, offRes] = await Promise.all([
       supabase.from('service_records').select('*').order('service_date', { ascending: false }),
-      supabase.from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name'),
+      supabase.from('officers').select(fields).neq('status', 'deleted').order('name'),
     ]);
 
     const recs = (recRes.data ?? []) as ServiceRecord[];

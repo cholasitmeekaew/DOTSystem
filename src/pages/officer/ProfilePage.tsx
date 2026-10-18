@@ -5,7 +5,7 @@
  * หัวหน้ากรมเลือกดูของรายบุคคลได้
  * ============================================================= */
 
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import {
   groupPointsLog, pointsCategoryOf, POINTS_CATEGORIES, type PointsCategoryKey,
 } from '../../lib/pointsCategory';
@@ -89,8 +89,9 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
   useEffect(() => {
     if (!isCommissioner || !officer) { setTargetId(officer?.id ?? ''); return; }
     (async () => {
+  const fields = await getOfficerFields();
       const { data: rows } = await supabase
-        .from('officers').select(OFFICER_STAFF_FIELDS).neq('status', 'deleted').order('name');
+        .from('officers').select(fields).neq('status', 'deleted').order('name');
       setOfficersList((rows ?? []) as Officer[]);
     })();
   }, [isCommissioner, officer]);
@@ -105,9 +106,10 @@ export function ProfilePage({ onNavigate, onOpenOpsTab }: Props) {
     setLoading(true);
 
     try {
+      const fields = await getOfficerFields();
       const [oRes, rRes, lRes, qRes, dRes] = await Promise.all([
         // maybeSingle: ไม่ error เมื่อไม่พบแถว (single จะ error ถ้า 0 แถว)
-        supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('id', targetId).maybeSingle(),
+        supabase.from('officers').select(fields).eq('id', targetId).maybeSingle(),
         supabase.from('work_reports').select('*').eq('officer_id', targetId)
           .order('created_at', { ascending: false }).limit(60),
         supabase.from('officer_leaves').select('*').eq('officer_id', targetId)

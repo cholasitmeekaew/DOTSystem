@@ -1,4 +1,4 @@
-import { OFFICER_STAFF_FIELDS } from '../../lib/officerColumns';
+import { getOfficerFields } from '../../lib/officerColumns';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Award, Search, Plus, Minus, X, History, RotateCcw, Trophy, TrendingUp, TrendingDown, Trash2, AlertCircle,
@@ -128,6 +128,7 @@ export function PointsManagementPage() {
   }, [officers, search]);
 
   async function handleAddPoints(o: Officer, delta: number, reason: string) {
+    const fields = await getOfficerFields();
     if (!actor) return;
     try {
       await addOfficerPoints(
@@ -139,7 +140,7 @@ export function PointsManagementPage() {
       );
       await fetchAll();
       // refresh editing row จาก Supabase เพื่อเอา field อื่นๆ ครบ
-      const { data } = await supabase.from('officers').select(OFFICER_STAFF_FIELDS).eq('id', o.id).single();
+      const { data } = await supabase.from('officers').select(fields).eq('id', o.id).single();
       if (data) setEditing(data as unknown as Officer);
       toast({ title: 'ให้/หักคะแนนสำเร็จ', description: `${o.name} · ${delta > 0 ? '+' : ''}${delta} คะแนน` });
     } catch (e) {
