@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, RefreshCw, Server } from 'lucide-react';
+import { syncServerStatusDays } from '../lib/api/serverStatusSync';
 
 const API_BASE = 'https://bitnewsth.qd.je/api/public/server-status';
 
@@ -130,6 +131,11 @@ export function ServerStatusCard() {
   async function load() {
     setLoading(true);
     setError(null);
+
+    // บันทึกสถานะรายวันไว้ ให้กฎ "ขาดเวร 7 วัน" ใช้ตัดสินว่าวันไหนเซิร์ฟเวอร์เปิด
+    // ทำงานเงียบ ๆ เพราะเป็นงานเบื้องหลัง — ถ้าส่งไม่สำเร็จ cron จะข้ามรอบนั้น
+    void syncServerStatusDays(range === '30d' ? '30d' : '7d');
+
     try {
       const [statusRes, historyRes] = await Promise.allSettled([
         fetch(API_BASE).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))),
