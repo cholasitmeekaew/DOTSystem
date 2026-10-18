@@ -28,14 +28,21 @@ export const OFFICER_PUBLIC_FIELDS = [
  * ทั้งสองคอลัมน์ถูกลบออกจากตารางแล้วใน migration 0043
  * (ย้ายไปเก็บใน schema `private` ที่ PostgREST มองไม่เห็น)
  *
- * ถ้าใส่คอลัมน์ที่ไม่มีแล้วลงไป PostgREST จะตอบ 400 ทั้ง request
- * ทำให้ทุกหน้าที่ใช้ค่านี้โหลดข้อมูลไม่ขึ้นทั้งหมด — เคยเกิดขึ้นแล้ว
+ * ถ้าใส่คอลัมน์ที่ยังไม่มีในฐานข้อมูล PostgREST จะตอบ 400 ทั้ง request
+ * ทำให้ทุกหน้าที่ใช้ค่านี้ (11 ไฟล์) โหลดข้อมูลไม่ขึ้นพร้อมกัน
+ * เคยเกิดขึ้นแล้ว 2 ครั้ง จึงต้องยึดกฎนี้:
+ *
+ *   ⚠ เพิ่มคอลัมน์ใหม่ในรายการนี้ หลังรัน migration เสร็จเท่านั้น
+ *     ถ้ายังไม่รัน migration แล้วเพิ่มก่อน → ทุกหน้าจะพังทันที
+ *
+ *   ถ้าจำเป็นต้องใช้คอลัมน์ใหม่ก่อนรัน migration
+ *   ให้ใช้ select('*') แทน (ปลอดภัยได้เพราะ password_hash/username ถูกลบไปแล้วใน 0043)
  *
  * ถ้าหน้าไหนต้องการ username ให้ดึงแยกผ่าน `list_officer_usernames()`
  * (ดู `lib/api/officerUsernames.ts`)
  */
 export const OFFICER_STAFF_FIELDS = [
-  'id', 'officer_code', 'name', 'rank', 'department', 'status', 'is_on_duty',
+  'id', 'name', 'rank', 'department', 'status', 'is_on_duty',
   'created_at', 'updated_at', 'photo_url', 'duty_rate', 'service_category',
   'points', 'points_period', 'points_log', 'accumulated_share',
   'generation', 'sort_order', 'last_login_at', 'last_login_ip',
