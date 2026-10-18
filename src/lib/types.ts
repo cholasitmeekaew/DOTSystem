@@ -22,6 +22,8 @@ export type Department =
 
 export interface Officer {
   id: string;
+  /** รหัสเจ้าหน้าที่ เช่น CDT-01 (แยกจากชื่อ — migration 0050) */
+  officer_code?: string | null;
   /**
    * ย้ายข้อมูลเข้าระบบ (username / password_hash) ไปไว้ใน schema `private`
    * แล้ว (migration 0043) — anon อ่านจากตาราง officers ไม่ได้อีกต่อไป
@@ -605,6 +607,9 @@ export const VEHICLE_TYPE_LABELS: Record<VehicleType, string> = {
 // Legacy fallback labels — used only before ranks are loaded from DB
 export const RANK_LABELS: Record<string, string> = {
   commissioner: 'หัวหน้ากรมขนส่ง',
+  // ⚠ rank_key ตัวนี้มาจากตาราง officer_ranks ไม่ใช่ค่าคงที่ในระบบ
+  //   ถ้าไม่แมปไว้ หน้าจอจะโชว์คีย์ดิบว่า "Deputy Head"
+  'Deputy Head': 'รองหัวหน้ากรมขนส่ง',
   inspector: 'ผู้คุมสอบกรมขนส่ง',
   officer: 'พนักงาน',
 };

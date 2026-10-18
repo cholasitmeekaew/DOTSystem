@@ -35,7 +35,7 @@ export const OFFICER_PUBLIC_FIELDS = [
  * (ดู `lib/api/officerUsernames.ts`)
  */
 export const OFFICER_STAFF_FIELDS = [
-  'id', 'name', 'rank', 'department', 'status', 'is_on_duty',
+  'id', 'officer_code', 'name', 'rank', 'department', 'status', 'is_on_duty',
   'created_at', 'updated_at', 'photo_url', 'duty_rate', 'service_category',
   'points', 'points_period', 'points_log', 'accumulated_share',
   'generation', 'sort_order', 'last_login_at', 'last_login_ip',

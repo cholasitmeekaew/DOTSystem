@@ -93,6 +93,7 @@ export function OfficerManagementPage() {
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const [wizardTemplate, setWizardTemplate] = useState<Officer | null>(null);
   const [wizardForm, setWizardForm] = useState({
+    officer_code: '',
     name: '',
     username: '',
     password: '',
@@ -112,6 +113,7 @@ export function OfficerManagementPage() {
     setWizardTemplate(null);
     setWizardForm({
       name: '',
+      officer_code: '',
       username: '',
       password: '',
       rank: 'officer',
@@ -161,6 +163,7 @@ export function OfficerManagementPage() {
       // เพราะ anon อ่านตารางนี้ได้ — เก็บแยกใน schema private (migration 0043)
       const passwordHash = await hashPassword(wizardForm.password);
       const insertData: Record<string, unknown> = {
+        officer_code: wizardForm.officer_code.trim().toUpperCase() || null,
         name: wizardForm.name,
         rank: wizardForm.rank,
         department: wizardForm.department,
@@ -224,6 +227,7 @@ export function OfficerManagementPage() {
   const [form, setForm] = useState({
     username: '',
     password: '',
+    officer_code: '',
     name: '',
     rank: 'officer' as OfficerRank,
     department: 'traffic_management' as Department,
@@ -233,6 +237,29 @@ export function OfficerManagementPage() {
   });
 
   useEffect(() => { fetchAll(); fetchRanks(); fetchGenerations(); }, []);
+
+  /**
+   * Realtime: เปลี่ยนสถานะปฏิบัติงานให้เห็นทันที
+   *
+   * เดิมหน้านี้ไม่ subscribe ตาราง officers เลย
+   * พอมีคนกดเข้า/ออกเวร สถานะจะค้างจนกว่าจะกดรีเฟรช
+   * ซึ่งทำให้หัวหน้ากรมเห็นสถานะผิดและตัดสินใจผิด
+   */
+  useEffect(() => {
+    const ch = supabase
+      .channel('officers_live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'officers' },
+        (payload: { eventType: string; new: Record<string, unknown>; old: Record<string, unknown> }) => {
+          // ดึงใหม่ทั้งชุด เพื่อให้ได้ username ครบด้วย
+          void fetchAll();
+        },
+      )
+      .subscribe();
+
+    return () => { void supabase.removeChannel(ch); };
+  }, []);
 
   async function fetchAll() {
     setLoading(true);
@@ -537,6 +564,7 @@ export function OfficerManagementPage() {
     setForm({
       username: '',
       password: '',
+      officer_code: '',
       name: '',
       rank: defaultRank,
       department: 'traffic_management',
@@ -554,6 +582,7 @@ export function OfficerManagementPage() {
     setForm({
       username: item.username ?? '',
       password: '',
+      officer_code: item.officer_code ?? '',
       name: item.name,
       rank: item.rank,
       department: item.department,
@@ -623,6 +652,7 @@ export function OfficerManagementPage() {
       if (!currentOfficer) { alert('ไม่พบข้อมูลผู้ดำเนินการ'); return; }
 
       const ins = await supabase.from('officers').insert({
+        officer_code: form.officer_code.trim().toUpperCase() || null,
         name: form.name,
         rank: form.rank,
         department: form.department,
@@ -1215,9 +1245,29 @@ export function OfficerManagementPage() {
                                   คุณ
                                 </span>
                               )}
+                              {o.officer_code && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30 flex-shrink-0">
+                                  {o.officer_code}
+                                </span>
+                              )}
                               <span className="truncate">{o.name}</span>
                             </div>
-                            <div className="text-gray-500 text-[11px] font-mono truncate">{o.username ? `@${o.username}` : ''}</div>
+                            {/* สถานะปฏิบัติงาน — เปลี่ยนทันทีเมื่อกดเข้า/ออกเวร */}
+                            <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
+                              <span
+                                className={`inline-flex items-center gap-1 ${
+                                  o.is_on_duty ? 'text-emerald-400' : 'text-gray-500'
+                                }`}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${
+                                  o.is_on_duty ? 'bg-emerald-400' : 'bg-gray-600'
+                                }`} />
+                                {o.is_on_duty ? 'กำลังปฏิบัติหน้าที่' : 'ไม่ได้ปฏิบัติหน้าที่'}
+                              </span>
+                              {o.username && (
+                                <span className="text-gray-500 font-mono truncate">@{o.username}</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -1297,6 +1347,18 @@ export function OfficerManagementPage() {
               </label>
             </div>
 
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">รหัสเจ้าหน้าที่</label>
+              <input
+                className="input-field font-mono"
+                placeholder="เช่น CDT-01"
+                value={form.officer_code}
+                onChange={(e) => setForm({ ...form, officer_code: e.target.value })}
+              />
+              <p className="text-[11px] text-gray-500 mt-1">
+                ใช้ตัวอักษรภาษาอังกฤษคั่นด้วยขีดและตัวเลข เช่น CDT-01 (เว้นว่างได้)
+              </p>
+            </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">ชื่อ-นามสกุล *</label>
               <input required className="input-field" placeholder="ชื่อเจ้าหน้าที่" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -1503,6 +1565,15 @@ export function OfficerManagementPage() {
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Username *</label>
                 <input required className="input-field font-mono" value={wizardForm.username} onChange={(e) => setWizardForm({ ...wizardForm, username: e.target.value })} />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">รหัสเจ้าหน้าที่</label>
+                <input
+                  className="input-field font-mono"
+                  placeholder="เช่น CDT-01"
+                  value={wizardForm.officer_code}
+                  onChange={(e) => setWizardForm({ ...wizardForm, officer_code: e.target.value })}
+                />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">รหัสผ่าน *</label>
