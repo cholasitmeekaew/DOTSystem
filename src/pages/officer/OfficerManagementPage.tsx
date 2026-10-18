@@ -1160,6 +1160,7 @@ export function OfficerManagementPage() {
                 <tr className="border-b border-amber-500/15">
                   <th className="w-10 text-center">ลาก</th>
                   <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">ลำดับ</th>
+                  <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">รหัส</th>
                   <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">ชื่อ / Username</th>
                   <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">ตำแหน่ง</th>
                   <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 uppercase">แผนก</th>
@@ -1226,6 +1227,23 @@ export function OfficerManagementPage() {
                         </div>
                       </td>
 
+                      {/* รหัสเจ้าหน้าที่ — แยกคอลัมน์ให้เห็นชัด กันลืมกรอก */}
+                      <td className="px-3 py-3">
+                        {o.officer_code ? (
+                          <span className="font-mono text-xs font-semibold text-blue-300 bg-blue-500/10 border border-blue-500/30 rounded px-1.5 py-0.5 inline-block">
+                            {o.officer_code}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => { openEdit(o); setForm({ ...form, officer_code: '' }); }}
+                            className="text-[11px] text-amber-400 hover:text-amber-300 underline underline-offset-2"
+                            title="ยังไม่ได้ตั้งรหัสเจ้าหน้าที่ — คลิกเพื่อกรอก"
+                          >
+                            ยังไม่ได้ตั้ง
+                          </button>
+                        )}
+                      </td>
+
                       {/* ชื่อ / Username */}
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-3">
@@ -1243,11 +1261,6 @@ export function OfficerManagementPage() {
                               {o.id === currentOfficer?.id && (
                                 <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex-shrink-0">
                                   คุณ
-                                </span>
-                              )}
-                              {o.officer_code && (
-                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30 flex-shrink-0">
-                                  {o.officer_code}
                                 </span>
                               )}
                               <span className="truncate">{o.name}</span>
