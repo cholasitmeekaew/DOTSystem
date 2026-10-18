@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { hashPassword } from '../../lib/crypto';
-import { clearOfficerUsernameCache, withUsernames } from '../../lib/api/officerUsernames';
+import { clearOfficerUsernameCache, getOfficerUsername, withUsernames } from '../../lib/api/officerUsernames';
 import { uploadImage } from '../../lib/storage';
 import {
   Officer, OfficerRank, OfficerRankRecord, OfficerGenerationRecord, Department,
@@ -88,6 +88,8 @@ export function OfficerManagementPage() {
   // Wizard state (เพิ่มเจ้าหน้าที่แบบ step-by-step)
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardAdminPw, setWizardAdminPw] = useState('');
+  /** รหัสผ่านของหัวหน้ากรม ใช้ยืนยันตัวตนก่อนแก้ข้อมูลเข้าระบบของคนอื่น */
+  const [formAdminPw, setFormAdminPw] = useState('');
   const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const [wizardTemplate, setWizardTemplate] = useState<Officer | null>(null);
   const [wizardForm, setWizardForm] = useState({
@@ -576,6 +578,8 @@ export function OfficerManagementPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     let photoUrl = editItem?.photo_url ?? null;
+    /** id ของเจ้าหน้าที่ที่เพิ่งสร้าง — ใช้สร้าง credentials หลังจากนี้ */
+    let created: { id: string } | null = null;
 
     if (photoFile) {
       setUploadingPhoto(true);
@@ -601,8 +605,6 @@ export function OfficerManagementPage() {
         photo_url: photoUrl,
         updated_at: new Date().toISOString(),
       };
-      // รหัสผ่านไม่ได้อยู่ในตาราง officers แล้ว (migration 0043)
-      // ถ้าต้องการเปลี่ยน ให้ใช้ปุ่ม "ตั้งรหัสผ่าน" แยก ซึ่งยืนยันตัวตนก่อน
       const { error } = await supabase.from('officers').update(update).eq('id', editItem.id);
       if (error) {
         if (error.code === '42501' || error.message?.includes('permission')) {
@@ -615,8 +617,12 @@ export function OfficerManagementPage() {
         return;
       }
     } else {
-      if (!form.password) return;
-      const { error } = await supabase.from('officers').insert({
+      if (!form.password) { alert('กรุณาตั้งรหัสผ่าน'); return; }
+      if (!form.username.trim()) { alert('กรุณากรอก Username'); return; }
+      if (!formAdminPw) { alert('กรุณายืนยันรหัสผ่านของหัวหน้ากรมก่อนสร้างบัญชี'); return; }
+      if (!currentOfficer) { alert('ไม่พบข้อมูลผู้ดำเนินการ'); return; }
+
+      const ins = await supabase.from('officers').insert({
         name: form.name,
         rank: form.rank,
         department: form.department,
@@ -626,7 +632,9 @@ export function OfficerManagementPage() {
         photo_url: photoUrl,
         status: 'active',
         is_on_duty: false,
-      });
+      }).select('id').single();
+      created = ins.data;
+      const error = ins.error;
       if (error) {
         if (error.code === '23505') {
           alert('Username นี้ถูกใช้แล้ว กรุณาใช้ชื่ออื่น');
@@ -640,6 +648,59 @@ export function OfficerManagementPage() {
         return;
       }
     }
+
+    // ---------- ข้อมูลเข้าระบบ (เก็บใน schema private) ----------
+    //
+    // ถ้าไม่สร้าง credentials เจ้าหน้าที่คนใหม่จะล็อกอินไม่ได้เลย
+    // เพราะตาราง officers ไม่มี username/password_hash อีกแล้ว (migration 0043)
+    if (editItem) {
+      // โหมดแก้ไข — แก้เฉพาะเมื่อมีการเปลี่ยน username หรือรหัสผ่าน
+      const newUsername = form.username.trim();
+      const oldUsername = await getOfficerUsername(editItem.id);
+      const usernameChanged = newUsername && newUsername !== oldUsername;
+
+      if (usernameChanged || form.password) {
+        if (!formAdminPw) {
+          alert('กรุณายืนยันรหัสผ่านของหัวหน้ากรมก่อนเปลี่ยนข้อมูลเข้าระบบ');
+          return;
+        }
+        if (!currentOfficer) { alert('ไม่พบข้อมูลผู้ดำเนินการ'); return; }
+
+        const { data: ok, error: credErr } = await supabase.rpc('admin_set_password', {
+          p_actor_id: currentOfficer.id,
+          p_actor_hash: await hashPassword(formAdminPw),
+          p_target_id: editItem.id,
+          p_new_hash: form.password ? await hashPassword(form.password) : '',
+          p_new_username: usernameChanged ? newUsername : null,
+        });
+        setFormAdminPw('');
+
+        if (credErr || !ok) {
+          alert('เปลี่ยนข้อมูลเข้าระบบไม่สำเร็จ: ' + (credErr?.message ?? 'ยืนยันรหัสผ่านหัวหน้ากรมไม่ถูกต้อง'));
+          return;
+        }
+      }
+    } else if (created && currentOfficer) {
+      // โหมดเพิ่มใหม่ — ต้องสร้าง credentials เสมอ
+      const { data: ok, error: credErr } = await supabase.rpc('admin_create_credentials', {
+        p_actor_id: currentOfficer.id,
+        p_actor_hash: await hashPassword(formAdminPw),
+        p_new_id: created.id,
+        p_username: form.username.trim(),
+        p_password_hash: await hashPassword(form.password),
+      });
+      setFormAdminPw('');
+
+      if (credErr || !ok) {
+        // สร้าง officer แล้วแต่ credentials ไม่ผ่าน → ถอยออก
+        // ไม่ให้เหลือบัญชีที่ล็อกอินไม่ได้
+        await supabase.from('officers').delete().eq('id', created.id);
+        alert('สร้างบัญชีไม่สำเร็จ: ' + (credErr?.message ?? 'ยืนยันรหัสผ่านหัวหน้ากรมไม่ถูกต้อง'));
+        return;
+      }
+    }
+
+    clearOfficerUsernameCache();
     setShowForm(false);
     setEditItem(null);
     setPhotoPreview(null);
@@ -1210,7 +1271,7 @@ export function OfficerManagementPage() {
 
       {/* Add/Edit Modal */}
       {showForm && (
-        <Modal title={editItem ? 'แก้ไขข้อมูลเจ้าหน้าที่' : 'เพิ่มเจ้าหน้าที่ใหม่'} onClose={() => { setShowForm(false); setEditItem(null); setPhotoPreview(null); setPhotoFile(null); }} size="md">
+        <Modal title={editItem ? 'แก้ไขข้อมูลเจ้าหน้าที่' : 'เพิ่มเจ้าหน้าที่ใหม่'} onClose={() => { setShowForm(false); setEditItem(null); setPhotoPreview(null); setPhotoFile(null); setFormAdminPw(''); }} size="md">
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Photo Upload */}
             <div className="flex flex-col items-center gap-3">
@@ -1240,12 +1301,38 @@ export function OfficerManagementPage() {
               <label className="block text-xs text-gray-400 mb-1">ชื่อ-นามสกุล *</label>
               <input required className="input-field" placeholder="ชื่อเจ้าหน้าที่" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </div>
-            {!editItem && (
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Username *</label>
-                <input required className="input-field font-mono" placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-              </div>
-            )}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Username *</label>
+              <input
+                required
+                className="input-field font-mono"
+                placeholder="username"
+                value={form.username}
+                onChange={(e) => setForm({ ...form, username: e.target.value })}
+              />
+              {editItem && form.username && (
+                <p className="text-[11px] text-gray-500 mt-1">
+                  ข้อมูลนี้เก็บแยกจากข้อมูลเจ้าหน้าที่ ต้องยืนยันรหัสผ่านของคุณก่อนบันทึก
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs text-amber-400 mb-1">
+                ยืนยันรหัสผ่านของคุณ (หัวหน้ากรม) *
+              </label>
+              <input
+                required
+                type="password"
+                className="input-field"
+                placeholder="ใส่รหัสผ่านของคุณเอง"
+                value={formAdminPw}
+                onChange={(e) => setFormAdminPw(e.target.value)}
+                autoComplete="current-password"
+              />
+              <p className="text-[11px] text-gray-500 mt-1">
+                ต้องยืนยันตัวตนก่อนจึงจะสร้างหรือเปลี่ยนข้อมูลเข้าระบบของเจ้าหน้าที่ได้
+              </p>
+            </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">{editItem ? 'รหัสผ่านใหม่ (เว้นว่างถ้าไม่เปลี่ยน)' : 'รหัสผ่าน *'}</label>
               <input
@@ -1333,7 +1420,7 @@ export function OfficerManagementPage() {
               <p className="text-[10px] text-gray-500 mt-1">ระบบจะนำไปคูณกับจำนวนชั่วโมงที่เข้าเวรจริง (Clock-in ถึง Clock-out) ในการตัดยอดเงินเดือนรายเดือน</p>
             </div>
             <div className="flex gap-3 pt-2">
-              <button type="button" onClick={() => { setShowForm(false); setEditItem(null); setPhotoPreview(null); setPhotoFile(null); }} className="btn-secondary flex-1">ยกเลิก</button>
+              <button type="button" onClick={() => { setShowForm(false); setEditItem(null); setPhotoPreview(null); setPhotoFile(null); setFormAdminPw(''); }} className="btn-secondary flex-1">ยกเลิก</button>
               <button type="submit" disabled={uploadingPhoto} className="btn-primary flex-1 disabled:opacity-50">
                 {uploadingPhoto ? 'กำลังอัปโหลด...' : editItem ? 'บันทึก' : 'เพิ่มเจ้าหน้าที่'}
               </button>
