@@ -63,32 +63,43 @@ function PageFallback() {
  * ถ้าเปิด true → เจ้าหน้าที่ที่ไม่ใช่หัวหน้ากรมถูกบล็อกทุกหน้า
  * หัวหน้ากรม (commissioner) ยังเข้าได้ เพื่อปิดโหมดจาก Admin Settings
  */
+type MaintMode = 'off' | 'standard' | 'readonly' | 'emergency';
+
 function useMaintenanceMode() {
-  const [enabled, setEnabled] = useState(false);
+  const [mode, setMode] = useState<MaintMode>('off');
   const [title, setTitle] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+
+    /** boolean เก่า / string ใหม่ → normalize เป็น MaintMode */
+    function norm(raw: unknown): MaintMode {
+      if (raw === true) return 'standard';
+      if (raw === false || raw == null) return 'off';
+      const s = String(raw);
+      return (['off', 'standard', 'readonly', 'emergency'] as const).includes(s as MaintMode)
+        ? (s as MaintMode) : 'off';
+    }
+
     void (async () => {
       const { data } = await supabase
         .from('system_settings').select('maintenance_mode, maintenance_title, maintenance_message')
         .eq('id', 1).maybeSingle();
       if (!cancelled && data) {
-        setEnabled(Boolean((data as Record<string, unknown>).maintenance_mode));
+        setMode(norm((data as Record<string, unknown>).maintenance_mode));
         setTitle((data as Record<string, unknown>).maintenance_title as string | null);
         setMessage((data as Record<string, unknown>).maintenance_message as string | null);
       }
     })();
 
-    // realtime — ให้หน้า maintenance ปรากฏ/หายทันทีเมื่อหัวหน้ากรมกด toggle
     const ch = supabase
       .channel('maintenance-watch')
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'system_settings', filter: 'id=eq.1' },
         (payload: { new: Record<string, unknown> }) => {
-          setEnabled(Boolean(payload.new.maintenance_mode));
+          setMode(norm(payload.new.maintenance_mode));
           setTitle(payload.new.maintenance_title as string | null);
           setMessage(payload.new.maintenance_message as string | null);
         },
@@ -98,7 +109,7 @@ function useMaintenanceMode() {
     return () => { cancelled = true; void supabase.removeChannel(ch); };
   }, []);
 
-  return { enabled, title, message };
+  return { mode, title, message };
 }
 
 function AccessDenied({ onBack }: { onBack: () => void }) {
@@ -121,14 +132,16 @@ function OfficerApp() {
   const [currentPage, setCurrentPage] = useState<OfficerPage>('dashboard');
   /** แท็บที่จะเปิดเมื่อเข้าหน้าปฏิบัติการ — ใช้ตอนกดการ์ดทางลัดที่ระบุแท็บ */
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
-  const { enabled: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
+  const { mode: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
 
   if (!officer) return null;
 
-  // ── Maintenance Mode: block ทุกคนยกเว้นหัวหน้ากรม ──
-  if (maintMode && officer.rank !== COMMISSIONER_RANK) {
+  // ── Maintenance: block ทุกคนยกเว้นหัวหน้ากรม ──
+  if ((maintMode === 'standard' || maintMode === 'emergency')
+    && officer.rank !== COMMISSIONER_RANK) {
     return (
       <MaintenanceScreen
+        mode={maintMode}
         title={maintTitle}
         message={maintMsg}
         officerName={officer.name}
@@ -176,6 +189,13 @@ function OfficerApp() {
        *
        * resetKey={currentPage} = เปลี่ยนหน้าแล้วเริ่มใหม่อัตโนมัติ
        */}
+      {/* ── Read-Only banner: แสดงบนสุดเมื่อเปิด readonly mode ── */}
+      {maintMode === 'readonly' && officer.rank !== COMMISSIONER_RANK && (
+        <div className="bg-yellow-500/15 border-b border-yellow-500/40 px-4 py-2 text-center text-xs font-semibold text-yellow-300">
+          🟡 โหมด Read-Only — ดูข้อมูลได้อย่างเดียว ไม่สามารถทำรายการได้
+        </div>
+      )}
+
       <ErrorBoundary resetKey={currentPage}>
         <Suspense fallback={<PageFallback />}>
           {isDenied ? (
@@ -231,16 +251,15 @@ function OfficerApp() {
 function PublicApp() {
   const { setAuth } = useAuth();
   const [route, setRoute] = useState<PublicPage>('home');
-  const { enabled: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
+  const { mode: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
 
   function handleLogin(officer: Officer) {
     setAuth(officer);
   }
 
-  // ── Maintenance Mode: block หน้าสาธารณะ (ยกเว้นหน้า login) ──
-  // หัวหน้ากรมต้องยัง login ได้เพื่อเข้าไปปิดโหมด
-  if (maintMode && route !== 'login') {
-    return <MaintenanceScreen title={maintTitle} message={maintMsg} />;
+  // ── standard / emergency: block หน้าสาธารณะ (ยกเว้น login) ──
+  if ((maintMode === 'standard' || maintMode === 'emergency') && route !== 'login') {
+    return <MaintenanceScreen mode={maintMode} title={maintTitle} message={maintMsg} />;
   }
 
   if (route === 'login') {

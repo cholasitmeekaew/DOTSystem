@@ -549,40 +549,51 @@ const SWEEP_BUTTONS: Array<{
     });
   }
 
-  /* ---------- Maintenance Mode ---------- */
-  async function toggleMaintenance() {
-    if (!officer || !settings || busy || missingMaintCol) return;
-    const next = !settings.maintenance_mode;
+  /* ---------- Maintenance Mode (3 โหมด) ---------- */
+  type MaintMode = 'off' | 'standard' | 'readonly' | 'emergency';
 
-    setSettings({ ...settings, maintenance_mode: next });
+  const MAINT_LABELS: Record<MaintMode, string> = {
+    off:       'ปิด',
+    standard:  '🟢 Standard — ปิดปรับปรุงทั่วไป',
+    readonly:  '🟡 Read-Only — ดูได้อย่างเดียว',
+    emergency: '🔴 Emergency — ล็อกด่วน',
+  };
+
+  async function setMaintenanceMode(mode: MaintMode) {
+    if (!officer || !settings || busy || missingMaintCol) return;
+    const prev = (settings.maintenance_mode as string) || 'off';
+
+    setSettings({ ...settings, maintenance_mode: mode });
     setNotice(null);
 
     const { error } = await supabase.from('system_settings').update({
-      maintenance_mode: next,
+      maintenance_mode: mode,
       updated_at: new Date().toISOString(),
       updated_by: officer.id,
       updated_by_name: officer.name,
     }).eq('id', 1);
 
     if (error) {
-      setSettings({ ...settings, maintenance_mode: !next });
-      setNotice({ kind: 'err', text: `เปลี่ยนโหมดปรับปรุงไม่สำเร็จ: ${error.message}` });
+      setSettings({ ...settings, maintenance_mode: prev });
+      setNotice({ kind: 'err', text: `เปลี่ยนโหมดไม่สำเร็จ: ${error.message}` });
       return;
     }
 
     await supabase.from('audit_logs').insert({
-      action: next ? 'ENABLE_MAINTENANCE' : 'DISABLE_MAINTENANCE',
+      action: 'SET_MAINTENANCE_MODE',
       target_type: 'system',
       performed_by: officer.id,
       performed_by_name: officer.name,
-      details: { message: settings.maintenance_message },
+      details: { from: prev, to: mode },
     });
-    setNotice({
-      kind: 'ok',
-      text: next
-        ? 'เปิดโหมดปิดปรับปรุงแล้ว — เจ้าหน้าที่ทุกคน (ยกเว้นหัวหน้ากรม) ถูกบล็อกจากทุกหน้า'
-        : 'ปิดโหมดปิดปรับปรุงแล้ว — เจ้าหน้าที่ทุกคนใช้งานได้ตามปกติ',
-    });
+
+    const TEXTS: Record<MaintMode, string> = {
+      off:       'ปิดโหมดปิดปรับปรุง — ทุกคนใช้งานได้ตามปกติ',
+      standard:  'เปิด Standard Mode — เจ้าหน้าที่ทุกคนเห็นหน้าปิดปรับปรุง (หัวหน้ากรมเข้าได้)',
+      readonly:  'เปิด Read-Only Mode — เจ้าหน้าที่ดูข้อมูลได้แต่ทำรายการไม่ได้',
+      emergency: 'เปิด Emergency Mode — ล็อกทุกช่องทาง (เฉพาะหัวหน้ากรมเข้าได้)',
+    };
+    setNotice({ kind: 'ok', text: TEXTS[mode] });
   }
 
   /** บันทึกหัวข้อ + เนื้อหา maintenance */
@@ -983,50 +994,70 @@ const SWEEP_BUTTONS: Array<{
             </div>
           </div>
 
-          {/* ── โหมดปิดปรับปรุงระบบ ── */}
+          {/* ── โหมดปิดปรับปรุงระบบ (3 โหมด) ── */}
           <div className={`card p-4 sm:p-5 border-2 ${
             missingMaintCol ? 'border-gray-700'
-              : settings?.maintenance_mode ? 'border-red-500/40' : 'border-gray-700'
+              : settings?.maintenance_mode === 'emergency' ? 'border-red-500/50'
+              : settings?.maintenance_mode === 'readonly' ? 'border-yellow-500/40'
+              : settings?.maintenance_mode === 'standard' ? 'border-amber-500/40'
+              : 'border-gray-700'
           }`}>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                  missingMaintCol ? 'bg-navy-800 text-gray-600'
-                    : settings?.maintenance_mode ? 'bg-red-500/15 text-red-400' : 'bg-navy-800 text-gray-500'
-                }`}
-                >
-                  <Wrench size={20} />
-                </div>
-                <div className="min-w-0">
-                  <h2 className="text-sm font-bold text-white">โหมดปิดปรับปรุงระบบ</h2>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {missingMaintCol
-                      ? 'ยังเปิดใช้ไม่ได้ — ต้องรัน migration 0051_maintenance_mode.sql ก่อน'
-                      : settings?.maintenance_mode
-                        ? 'เปิดอยู่ — เจ้าหน้าที่ทุกคน (ยกเว้นหัวหน้ากรม) ถูกบล็อกจากทุกหน้า แสดงหน้า "ปิดปรับปรุงระบบ" แทน'
-                        : 'ปิดอยู่ — ทุกคนใช้งานได้ตามปกติ'}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={toggleMaintenance}
-                disabled={busy || missingMaintCol}
-                className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
-                  settings?.maintenance_mode ? 'bg-red-500' : 'bg-navy-600'
-                }`}
-                aria-label="เปิด/ปิดโหมดปิดปรับปรุง"
-                aria-pressed={settings?.maintenance_mode ?? false}
+            <div className="flex items-center gap-3 mb-4">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                missingMaintCol ? 'bg-navy-800 text-gray-600'
+                  : settings?.maintenance_mode === 'emergency' ? 'bg-red-500/15 text-red-400'
+                  : settings?.maintenance_mode === 'readonly' ? 'bg-yellow-500/15 text-yellow-400'
+                  : settings?.maintenance_mode === 'standard' ? 'bg-amber-500/15 text-amber-400'
+                  : 'bg-navy-800 text-gray-500'
+              }`}
               >
-                <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-lg transition-transform ${
-                  settings?.maintenance_mode ? 'translate-x-8' : ''
-                }`}
-                />
-              </button>
+                <Wrench size={20} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-white">โหมดปิดปรับปรุงระบบ</h2>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  {missingMaintCol
+                    ? 'ยังใช้ไม่ได้ — ต้องรัน migration 0051 + 0053 ก่อน'
+                    : `สถานะปัจจุบัน: ${MAINT_LABELS[(settings?.maintenance_mode as MaintMode) ?? 'off']}`}
+                </p>
+              </div>
             </div>
+
+            {/* 3-way selector */}
+            {!missingMaintCol && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                {(['off', 'standard', 'readonly', 'emergency'] as MaintMode[]).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => void setMaintenanceMode(m)}
+                    disabled={busy}
+                    className={`px-3 py-2.5 rounded-lg text-xs font-semibold border-2 transition-colors disabled:opacity-50 text-left ${
+                      (settings?.maintenance_mode ?? 'off') === m
+                        ? m === 'off' ? 'border-gray-500 bg-gray-500/15 text-gray-300'
+                        : m === 'standard' ? 'border-amber-500 bg-amber-500/15 text-amber-300'
+                        : m === 'readonly' ? 'border-yellow-500 bg-yellow-500/15 text-yellow-300'
+                        : 'border-red-500 bg-red-500/15 text-red-300'
+                        : 'border-gray-700 bg-navy-900/50 text-gray-500 hover:border-gray-600'
+                    }`}
+                  >
+                    {m === 'off' && 'ปิด'}
+                    {m === 'standard' && '🟢 Standard'}
+                    {m === 'readonly' && '🟡 Read-Only'}
+                    {m === 'emergency' && '🔴 Emergency'}
+                    <div className="text-[9px] font-normal mt-0.5 leading-tight">
+                      {m === 'off' && 'ปกติ ไม่บล็อกใคร'}
+                      {m === 'standard' && 'บล็อกทุกคน ยกเว้นหัวหน้ากรม'}
+                      {m === 'readonly' && 'ดูได้ ทำรายการไม่ได้'}
+                      {m === 'emergency' && 'ล็อกทั้งหมด'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* หัวข้อ + เนื้อหา — รูปแบบเดียวกับฟอร์มประกาศ */}
             {!missingMaintCol && (
-              <div className="mt-4 pt-3 border-t border-gray-800 space-y-3">
+              <div className="pt-3 border-t border-gray-800 space-y-3">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">หัวข้อ *</label>
                   <input
@@ -1052,21 +1083,31 @@ const SWEEP_BUTTONS: Array<{
                   className="btn btn-outline text-xs inline-flex items-center gap-1.5"
                 >
                   <Save size={12} />
-                  บันทึก
+                  บันทึกข้อความ
                 </button>
               </div>
             )}
 
-            {/* ตัวอย่างหน้าจอที่ผู้ใช้จะเห็น */}
-            {settings?.maintenance_mode && (
+            {/* ตัวอย่างหน้าจอ */}
+            {settings?.maintenance_mode && settings.maintenance_mode !== 'off' && (
               <div className="mt-4 pt-3 border-t border-gray-800">
                 <div className="text-[10px] text-gray-500 mb-1.5">ตัวอย่างหน้าจอที่เจ้าหน้าที่จะเห็น</div>
                 <div className="rounded-lg bg-navy-950 border border-gray-800 p-4 text-center">
-                  <Wrench size={20} className="text-amber-400/60 mx-auto mb-2" />
+                  <Wrench size={20} className={`mx-auto mb-2 ${
+                    settings.maintenance_mode === 'emergency' ? 'text-red-400/70'
+                      : settings.maintenance_mode === 'readonly' ? 'text-yellow-400/70'
+                      : 'text-amber-400/60'
+                  }`} />
                   <div className="text-xs font-bold text-white">
                     {settings.maintenance_title || 'ปิดปรับปรุงระบบชั่วคราว'}
                   </div>
-                  <div className="text-[10px] text-gray-500 mt-0.5">ระบบอยู่ระหว่างการบำรุงรักษา</div>
+                  <div className="text-[10px] text-gray-500 mt-0.5">
+                    {settings.maintenance_mode === 'emergency'
+                      ? 'ระบบกำลังปิดปรับปรุงกรณีเร่งด่วน'
+                      : settings.maintenance_mode === 'readonly'
+                        ? 'ดูข้อมูลได้อย่างเดียว ไม่สามารถทำรายการได้'
+                        : 'ระบบอยู่ระหว่างการบำรุงรักษา'}
+                  </div>
                   {settings.maintenance_message && (
                     <div className="text-[10px] text-amber-400/80 mt-2 whitespace-pre-wrap">
                       {settings.maintenance_message}

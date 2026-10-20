@@ -468,8 +468,11 @@ export interface SystemSettings {
   auto_points_enabled?: boolean;
   /** สวิตช์เปิด/ปิดการรายงานปฏิบัติงาน (migration 0034) */
   work_reports_enabled?: boolean;
-  /** โหมดปิดปรับปรุงระบบ (migration 0051) */
-  maintenance_mode?: boolean;
+  /**
+   * โหมดปิดปรับปรุงระบบ (migration 0051 → 0053)
+   * 'off' | 'standard' | 'readonly' | 'emergency'
+   */
+  maintenance_mode?: string;
   /** หัวข้อหน้า maintenance (migration 0052) */
   maintenance_title?: string | null;
   /** เนื้อหาที่แสดงให้ผู้ใช้เห็นเมื่อระบบปิดปรับปรุง */
