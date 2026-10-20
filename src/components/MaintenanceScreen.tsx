@@ -11,15 +11,19 @@
 import { Wrench, LogOut } from 'lucide-react';
 
 interface MaintenanceScreenProps {
-  /** ข้อความสาเหตุที่หัวหน้ากรมพิมพ์ไว้ */
+  /** หัวข้อจาก Admin (migration 0052) */
+  title?: string | null;
+  /** เนื้อหาจาก Admin (migration 0051) */
   message?: string | null;
-  /** ปุ่มออกจากระบบ (ให้กดได้เสมอ เพราะคนนี้เข้าระบบไม่ได้) */
+  /** ปุ่มออกจากระบบ */
   onLogout?: () => void;
   /** ชื่อผู้ใช้ที่ล็อกอิน (แสดงว่าบัญชีนี้ถูกบล็อก) */
   officerName?: string;
 }
 
-export function MaintenanceScreen({ message, onLogout, officerName }: MaintenanceScreenProps) {
+export function MaintenanceScreen({ title, message, onLogout, officerName }: MaintenanceScreenProps) {
+  const heading = title?.trim() || 'ปิดปรับปรุงระบบชั่วคราว';
+
   return (
     <div className="min-h-screen bg-navy-950 flex items-center justify-center p-4">
       <div className="w-full max-w-md text-center">
@@ -29,14 +33,12 @@ export function MaintenanceScreen({ message, onLogout, officerName }: Maintenanc
         </div>
 
         {/* หัวข้อ */}
-        <h1 className="text-xl font-bold text-white mb-2">
-          ปิดปรับปรุงระบบชั่วคราว
-        </h1>
+        <h1 className="text-xl font-bold text-white mb-2">{heading}</h1>
         <p className="text-sm text-gray-400 mb-6">
           ระบบอยู่ระหว่างการบำรุงรักษา กรุณารอสักครู่แล้วลองใหม่อีกครั้ง
         </p>
 
-        {/* ข้อความสาเหตุจากหัวหน้ากรม */}
+        {/* เนื้อหา */}
         {message && (
           <div className="card p-4 border-amber-500/20 mb-6">
             <div className="text-[10px] text-gray-500 mb-1">รายละเอียด</div>

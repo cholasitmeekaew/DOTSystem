@@ -120,8 +120,9 @@ export function AdminSettingsPage() {
   /** migration 0051 ยังไม่ถูกรัน → คอลัมน์ maintenance_mode ไม่มีในตาราง */
   const [missingMaintCol, setMissingMaintCol] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  /** ข้อความ maintenance ที่กำลังแก้ (ยังไม่ save) */
-  const [maintDraft, setMaintDraft] = useState('');
+  /** หัวข้อ + เนื้อหา maintenance ที่กำลังแก้ (ยังไม่ save) */
+  const [maintTitleDraft, setMaintTitleDraft] = useState('');
+  const [maintMsgDraft, setMaintMsgDraft] = useState('');
 
   async function load() {
     setLoading(true);
@@ -131,7 +132,8 @@ export function AdminSettingsPage() {
     // ตรวจว่าคอลัมน์ของ 0034 มีจริงหรือยัง — ถ้าไม่มี สวิตช์จะกดไม่ได้
     setMissingReportCol(!(row && 'work_reports_enabled' in row));
     setMissingMaintCol(!(row && 'maintenance_mode' in row));
-    setMaintDraft((row as Record<string, unknown> | null)?.maintenance_message as string ?? '');
+    setMaintTitleDraft((row as Record<string, unknown> | null)?.maintenance_title as string ?? '');
+    setMaintMsgDraft((row as Record<string, unknown> | null)?.maintenance_message as string ?? '');
     setLoading(false);
   }
 
@@ -583,12 +585,13 @@ const SWEEP_BUTTONS: Array<{
     });
   }
 
-  /** บันทึกข้อความ maintenance */
+  /** บันทึกหัวข้อ + เนื้อหา maintenance */
   async function saveMaintenanceMessage() {
     if (!officer || !settings || busy) return;
 
     const { error } = await supabase.from('system_settings').update({
-      maintenance_message: maintDraft.trim() || null,
+      maintenance_title: maintTitleDraft.trim() || null,
+      maintenance_message: maintMsgDraft.trim() || null,
       updated_at: new Date().toISOString(),
       updated_by: officer.id,
       updated_by_name: officer.name,
@@ -599,8 +602,12 @@ const SWEEP_BUTTONS: Array<{
       return;
     }
 
-    setSettings({ ...settings, maintenance_message: maintDraft.trim() || null });
-    setNotice({ kind: 'ok', text: 'บันทึกข้อความแจ้งเตือนแล้ว' });
+    setSettings({
+      ...settings,
+      maintenance_title: maintTitleDraft.trim() || null,
+      maintenance_message: maintMsgDraft.trim() || null,
+    });
+    setNotice({ kind: 'ok', text: 'บันทึกหัวข้อและเนื้อหาแล้ว' });
   }
 
   /* ---------- ระบบเข้าเวร ---------- */
@@ -1017,26 +1024,35 @@ const SWEEP_BUTTONS: Array<{
               </button>
             </div>
 
-            {/* ข้อความสาเหตุ — แสดงให้ผู้ใช้เห็นตอนถูกบล็อก */}
+            {/* หัวข้อ + เนื้อหา — รูปแบบเดียวกับฟอร์มประกาศ */}
             {!missingMaintCol && (
-              <div className="mt-4 pt-3 border-t border-gray-800">
-                <label className="text-[11px] text-gray-500 block mb-1.5">
-                  ข้อความแจ้งเตือน (แสดงให้ผู้ใช้เห็นเมื่อถูกบล็อก)
-                </label>
-                <textarea
-                  value={maintDraft}
-                  onChange={(e) => setMaintDraft(e.target.value)}
-                  placeholder="เช่น ปิดปรับปรุงระบบฐานข้อมูล คาดว่าจะแล้วเสร็จเวลา 18:00 น."
-                  rows={2}
-                  className="input-field w-full resize-none text-sm"
-                />
+              <div className="mt-4 pt-3 border-t border-gray-800 space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">หัวข้อ *</label>
+                  <input
+                    className="input-field w-full"
+                    placeholder="เช่น ปิดปรับปรุงระบบชั่วคราว"
+                    value={maintTitleDraft}
+                    onChange={(e) => setMaintTitleDraft(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">เนื้อหา *</label>
+                  <textarea
+                    className="input-field w-full resize-none"
+                    rows={4}
+                    placeholder="เช่น ปิดปรับปรุงระบบฐานข้อมูล คาดว่าจะแล้วเสร็จเวลา 18:00 น. (พิมพ์ขึ้นบรรทัดใหม่ได้)"
+                    value={maintMsgDraft}
+                    onChange={(e) => setMaintMsgDraft(e.target.value)}
+                  />
+                </div>
                 <button
                   onClick={saveMaintenanceMessage}
                   disabled={busy}
-                  className="btn btn-outline text-xs inline-flex items-center gap-1.5 mt-2"
+                  className="btn btn-outline text-xs inline-flex items-center gap-1.5"
                 >
                   <Save size={12} />
-                  บันทึกข้อความ
+                  บันทึก
                 </button>
               </div>
             )}
@@ -1047,7 +1063,9 @@ const SWEEP_BUTTONS: Array<{
                 <div className="text-[10px] text-gray-500 mb-1.5">ตัวอย่างหน้าจอที่เจ้าหน้าที่จะเห็น</div>
                 <div className="rounded-lg bg-navy-950 border border-gray-800 p-4 text-center">
                   <Wrench size={20} className="text-amber-400/60 mx-auto mb-2" />
-                  <div className="text-xs font-bold text-white">ปิดปรับปรุงระบบชั่วคราว</div>
+                  <div className="text-xs font-bold text-white">
+                    {settings.maintenance_title || 'ปิดปรับปรุงระบบชั่วคราว'}
+                  </div>
                   <div className="text-[10px] text-gray-500 mt-0.5">ระบบอยู่ระหว่างการบำรุงรักษา</div>
                   {settings.maintenance_message && (
                     <div className="text-[10px] text-amber-400/80 mt-2 whitespace-pre-wrap">

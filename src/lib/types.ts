@@ -470,7 +470,9 @@ export interface SystemSettings {
   work_reports_enabled?: boolean;
   /** โหมดปิดปรับปรุงระบบ (migration 0051) */
   maintenance_mode?: boolean;
-  /** ข้อความที่แสดงให้ผู้ใช้เห็นเมื่อระบบปิดปรับปรุง */
+  /** หัวข้อหน้า maintenance (migration 0052) */
+  maintenance_title?: string | null;
+  /** เนื้อหาที่แสดงให้ผู้ใช้เห็นเมื่อระบบปิดปรับปรุง */
   maintenance_message?: string | null;
   updated_at: string;
   updated_by: string | null;

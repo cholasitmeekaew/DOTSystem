@@ -65,16 +65,18 @@ function PageFallback() {
  */
 function useMaintenanceMode() {
   const [enabled, setEnabled] = useState(false);
+  const [title, setTitle] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const { data } = await supabase
-        .from('system_settings').select('maintenance_mode, maintenance_message')
+        .from('system_settings').select('maintenance_mode, maintenance_title, maintenance_message')
         .eq('id', 1).maybeSingle();
       if (!cancelled && data) {
         setEnabled(Boolean((data as Record<string, unknown>).maintenance_mode));
+        setTitle((data as Record<string, unknown>).maintenance_title as string | null);
         setMessage((data as Record<string, unknown>).maintenance_message as string | null);
       }
     })();
@@ -87,6 +89,7 @@ function useMaintenanceMode() {
         { event: 'UPDATE', schema: 'public', table: 'system_settings', filter: 'id=eq.1' },
         (payload: { new: Record<string, unknown> }) => {
           setEnabled(Boolean(payload.new.maintenance_mode));
+          setTitle(payload.new.maintenance_title as string | null);
           setMessage(payload.new.maintenance_message as string | null);
         },
       )
@@ -95,7 +98,7 @@ function useMaintenanceMode() {
     return () => { cancelled = true; void supabase.removeChannel(ch); };
   }, []);
 
-  return { enabled, message };
+  return { enabled, title, message };
 }
 
 function AccessDenied({ onBack }: { onBack: () => void }) {
@@ -118,7 +121,7 @@ function OfficerApp() {
   const [currentPage, setCurrentPage] = useState<OfficerPage>('dashboard');
   /** แท็บที่จะเปิดเมื่อเข้าหน้าปฏิบัติการ — ใช้ตอนกดการ์ดทางลัดที่ระบุแท็บ */
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
-  const { enabled: maintMode, message: maintMsg } = useMaintenanceMode();
+  const { enabled: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
 
   if (!officer) return null;
 
@@ -126,6 +129,7 @@ function OfficerApp() {
   if (maintMode && officer.rank !== COMMISSIONER_RANK) {
     return (
       <MaintenanceScreen
+        title={maintTitle}
         message={maintMsg}
         officerName={officer.name}
         onLogout={() => logout()}
@@ -227,7 +231,7 @@ function OfficerApp() {
 function PublicApp() {
   const { setAuth } = useAuth();
   const [route, setRoute] = useState<PublicPage>('home');
-  const { enabled: maintMode, message: maintMsg } = useMaintenanceMode();
+  const { enabled: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
 
   function handleLogin(officer: Officer) {
     setAuth(officer);
@@ -236,7 +240,7 @@ function PublicApp() {
   // ── Maintenance Mode: block หน้าสาธารณะ (ยกเว้นหน้า login) ──
   // หัวหน้ากรมต้องยัง login ได้เพื่อเข้าไปปิดโหมด
   if (maintMode && route !== 'login') {
-    return <MaintenanceScreen message={maintMsg} />;
+    return <MaintenanceScreen title={maintTitle} message={maintMsg} />;
   }
 
   if (route === 'login') {

@@ -210,6 +210,7 @@ export const seedData: JsonDb = {
       auto_points_enabled: true,
       work_reports_enabled: true,
       maintenance_mode: false,
+      maintenance_title: null,
       maintenance_message: null,
       updated_at: NOW,
       updated_by: null,
