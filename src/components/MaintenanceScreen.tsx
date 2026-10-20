@@ -61,7 +61,7 @@ export function MaintenanceScreen({ mode = 'standard', title, message, onLogout,
 
         {/* ── ข้อความจาก Admin อยู่ด้านหน้าสุด ── */}
         {message && (
-          <div className={`card p-5 border-2 ${cfg.border} ${cfg.bg} mb-5`}>
+          <div className={`card p-5 border-2 text-left ${cfg.border} ${cfg.bg} mb-5`}>
             <div className="text-[10px] text-gray-500 mb-1">ข้อความแจ้งเตือน</div>
             <p className={`text-base font-semibold leading-relaxed whitespace-pre-wrap ${cfg.color}`}>
               {message}
@@ -70,8 +70,8 @@ export function MaintenanceScreen({ mode = 'standard', title, message, onLogout,
         )}
 
         {/* ── ไอคอน + หัวข้อ ── */}
-        <div className="text-center">
-          <div className={`w-20 h-20 rounded-full ${cfg.bg} border-2 ${cfg.border} flex items-center justify-center mx-auto mb-5`}>
+        <div className="text-left">
+          <div className={`w-20 h-20 rounded-full ${cfg.bg} border-2 ${cfg.border} flex items-center justify-center mb-5`}>
             {cfg.icon}
           </div>
           <h1 className="text-xl font-bold text-white mb-2">{heading}</h1>
@@ -87,7 +87,7 @@ export function MaintenanceScreen({ mode = 'standard', title, message, onLogout,
 
         {/* ปุ่มออกจากระบบ */}
         {onLogout && (
-          <div className="text-center">
+          <div className="text-left">
             <button
               onClick={onLogout}
               className="btn btn-outline text-xs inline-flex items-center gap-1.5"
