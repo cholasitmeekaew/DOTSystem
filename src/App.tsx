@@ -1,6 +1,6 @@
 import { ClaimSharePage } from './pages/officer/ClaimSharePage';
 import { ErrorBoundary } from './components/error-boundary';
-import { useState, lazy, Suspense } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import { QueryProvider } from './hooks/useQueryProvider';
 import { Toaster } from './components/ui/toaster';
@@ -45,6 +45,9 @@ const CaseOfficersPage = lazy(() => import('./pages/officer/CaseOfficersPage').t
 
 // Access Denied
 import { ShieldOff } from 'lucide-react';
+import { MaintenanceScreen } from './components/MaintenanceScreen';
+import { supabase } from './lib/supabase';
+import { COMMISSIONER_RANK } from './lib/types';
 
 function PageFallback() {
   return (
@@ -52,6 +55,47 @@ function PageFallback() {
       <div className="w-8 h-8 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
     </div>
   );
+}
+
+/**
+ * ตรวจ system_settings.maintenance_mode + realtime
+ *
+ * ถ้าเปิด true → เจ้าหน้าที่ที่ไม่ใช่หัวหน้ากรมถูกบล็อกทุกหน้า
+ * หัวหน้ากรม (commissioner) ยังเข้าได้ เพื่อปิดโหมดจาก Admin Settings
+ */
+function useMaintenanceMode() {
+  const [enabled, setEnabled] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase
+        .from('system_settings').select('maintenance_mode, maintenance_message')
+        .eq('id', 1).maybeSingle();
+      if (!cancelled && data) {
+        setEnabled(Boolean((data as Record<string, unknown>).maintenance_mode));
+        setMessage((data as Record<string, unknown>).maintenance_message as string | null);
+      }
+    })();
+
+    // realtime — ให้หน้า maintenance ปรากฏ/หายทันทีเมื่อหัวหน้ากรมกด toggle
+    const ch = supabase
+      .channel('maintenance-watch')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'system_settings', filter: 'id=eq.1' },
+        (payload: { new: Record<string, unknown> }) => {
+          setEnabled(Boolean(payload.new.maintenance_mode));
+          setMessage(payload.new.maintenance_message as string | null);
+        },
+      )
+      .subscribe();
+
+    return () => { cancelled = true; void supabase.removeChannel(ch); };
+  }, []);
+
+  return { enabled, message };
 }
 
 function AccessDenied({ onBack }: { onBack: () => void }) {
@@ -74,8 +118,20 @@ function OfficerApp() {
   const [currentPage, setCurrentPage] = useState<OfficerPage>('dashboard');
   /** แท็บที่จะเปิดเมื่อเข้าหน้าปฏิบัติการ — ใช้ตอนกดการ์ดทางลัดที่ระบุแท็บ */
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
+  const { enabled: maintMode, message: maintMsg } = useMaintenanceMode();
 
   if (!officer) return null;
+
+  // ── Maintenance Mode: block ทุกคนยกเว้นหัวหน้ากรม ──
+  if (maintMode && officer.rank !== COMMISSIONER_RANK) {
+    return (
+      <MaintenanceScreen
+        message={maintMsg}
+        officerName={officer.name}
+        onLogout={() => logout()}
+      />
+    );
+  }
 
   // ต้องครอบคลุมทุกหน้าใน ADMIN_MENU_ITEMS + หน้า hub เอง
   // (เดิมพลาดไป 4 หน้า: points-management, department-balance, emergency, vehicles)
@@ -171,9 +227,16 @@ function OfficerApp() {
 function PublicApp() {
   const { setAuth } = useAuth();
   const [route, setRoute] = useState<PublicPage>('home');
+  const { enabled: maintMode, message: maintMsg } = useMaintenanceMode();
 
   function handleLogin(officer: Officer) {
     setAuth(officer);
+  }
+
+  // ── Maintenance Mode: block หน้าสาธารณะ (ยกเว้นหน้า login) ──
+  // หัวหน้ากรมต้องยัง login ได้เพื่อเข้าไปปิดโหมด
+  if (maintMode && route !== 'login') {
+    return <MaintenanceScreen message={maintMsg} />;
   }
 
   if (route === 'login') {

@@ -17,7 +17,7 @@ import { forceCheckoutAllOpenLogs } from '../../lib/api/forceCheckout';
 import { useEffect, useState } from 'react';
 import {
   Settings, Award, Power, Loader2, Sparkles, ShieldAlert, RefreshCw, FileText, AlertTriangle,
-  CalendarDays,
+  CalendarDays, Wrench, Save,
 } from 'lucide-react';
 import { useAuth } from '../../lib/AuthContext';
 import { supabase } from '../../lib/supabase';
@@ -117,7 +117,11 @@ export function AdminSettingsPage() {
   const [busy, setBusy] = useState(false);
   /** migration 0034 ยังไม่ถูกรัน → คอลัมน์ work_reports_enabled ไม่มีในตาราง */
   const [missingReportCol, setMissingReportCol] = useState(false);
+  /** migration 0051 ยังไม่ถูกรัน → คอลัมน์ maintenance_mode ไม่มีในตาราง */
+  const [missingMaintCol, setMissingMaintCol] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  /** ข้อความ maintenance ที่กำลังแก้ (ยังไม่ save) */
+  const [maintDraft, setMaintDraft] = useState('');
 
   async function load() {
     setLoading(true);
@@ -126,6 +130,8 @@ export function AdminSettingsPage() {
     setSettings(row as SystemSettings | null);
     // ตรวจว่าคอลัมน์ของ 0034 มีจริงหรือยัง — ถ้าไม่มี สวิตช์จะกดไม่ได้
     setMissingReportCol(!(row && 'work_reports_enabled' in row));
+    setMissingMaintCol(!(row && 'maintenance_mode' in row));
+    setMaintDraft((row as Record<string, unknown> | null)?.maintenance_message as string ?? '');
     setLoading(false);
   }
 
@@ -541,6 +547,62 @@ const SWEEP_BUTTONS: Array<{
     });
   }
 
+  /* ---------- Maintenance Mode ---------- */
+  async function toggleMaintenance() {
+    if (!officer || !settings || busy || missingMaintCol) return;
+    const next = !settings.maintenance_mode;
+
+    setSettings({ ...settings, maintenance_mode: next });
+    setNotice(null);
+
+    const { error } = await supabase.from('system_settings').update({
+      maintenance_mode: next,
+      updated_at: new Date().toISOString(),
+      updated_by: officer.id,
+      updated_by_name: officer.name,
+    }).eq('id', 1);
+
+    if (error) {
+      setSettings({ ...settings, maintenance_mode: !next });
+      setNotice({ kind: 'err', text: `เปลี่ยนโหมดปรับปรุงไม่สำเร็จ: ${error.message}` });
+      return;
+    }
+
+    await supabase.from('audit_logs').insert({
+      action: next ? 'ENABLE_MAINTENANCE' : 'DISABLE_MAINTENANCE',
+      target_type: 'system',
+      performed_by: officer.id,
+      performed_by_name: officer.name,
+      details: { message: settings.maintenance_message },
+    });
+    setNotice({
+      kind: 'ok',
+      text: next
+        ? 'เปิดโหมดปิดปรับปรุงแล้ว — เจ้าหน้าที่ทุกคน (ยกเว้นหัวหน้ากรม) ถูกบล็อกจากทุกหน้า'
+        : 'ปิดโหมดปิดปรับปรุงแล้ว — เจ้าหน้าที่ทุกคนใช้งานได้ตามปกติ',
+    });
+  }
+
+  /** บันทึกข้อความ maintenance */
+  async function saveMaintenanceMessage() {
+    if (!officer || !settings || busy) return;
+
+    const { error } = await supabase.from('system_settings').update({
+      maintenance_message: maintDraft.trim() || null,
+      updated_at: new Date().toISOString(),
+      updated_by: officer.id,
+      updated_by_name: officer.name,
+    }).eq('id', 1);
+
+    if (error) {
+      setNotice({ kind: 'err', text: `บันทึกข้อความไม่สำเร็จ: ${error.message}` });
+      return;
+    }
+
+    setSettings({ ...settings, maintenance_message: maintDraft.trim() || null });
+    setNotice({ kind: 'ok', text: 'บันทึกข้อความแจ้งเตือนแล้ว' });
+  }
+
   /* ---------- ระบบเข้าเวร ---------- */
   async function toggleDutySystem() {
     if (!officer || !settings || busy) return;
@@ -912,6 +974,89 @@ const SWEEP_BUTTONS: Array<{
                 />
               </button>
             </div>
+          </div>
+
+          {/* ── โหมดปิดปรับปรุงระบบ ── */}
+          <div className={`card p-4 sm:p-5 border-2 ${
+            missingMaintCol ? 'border-gray-700'
+              : settings?.maintenance_mode ? 'border-red-500/40' : 'border-gray-700'
+          }`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                  missingMaintCol ? 'bg-navy-800 text-gray-600'
+                    : settings?.maintenance_mode ? 'bg-red-500/15 text-red-400' : 'bg-navy-800 text-gray-500'
+                }`}
+                >
+                  <Wrench size={20} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-bold text-white">โหมดปิดปรับปรุงระบบ</h2>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {missingMaintCol
+                      ? 'ยังเปิดใช้ไม่ได้ — ต้องรัน migration 0051_maintenance_mode.sql ก่อน'
+                      : settings?.maintenance_mode
+                        ? 'เปิดอยู่ — เจ้าหน้าที่ทุกคน (ยกเว้นหัวหน้ากรม) ถูกบล็อกจากทุกหน้า แสดงหน้า "ปิดปรับปรุงระบบ" แทน'
+                        : 'ปิดอยู่ — ทุกคนใช้งานได้ตามปกติ'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={toggleMaintenance}
+                disabled={busy || missingMaintCol}
+                className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                  settings?.maintenance_mode ? 'bg-red-500' : 'bg-navy-600'
+                }`}
+                aria-label="เปิด/ปิดโหมดปิดปรับปรุง"
+                aria-pressed={settings?.maintenance_mode ?? false}
+              >
+                <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-lg transition-transform ${
+                  settings?.maintenance_mode ? 'translate-x-8' : ''
+                }`}
+                />
+              </button>
+            </div>
+
+            {/* ข้อความสาเหตุ — แสดงให้ผู้ใช้เห็นตอนถูกบล็อก */}
+            {!missingMaintCol && (
+              <div className="mt-4 pt-3 border-t border-gray-800">
+                <label className="text-[11px] text-gray-500 block mb-1.5">
+                  ข้อความแจ้งเตือน (แสดงให้ผู้ใช้เห็นเมื่อถูกบล็อก)
+                </label>
+                <textarea
+                  value={maintDraft}
+                  onChange={(e) => setMaintDraft(e.target.value)}
+                  placeholder="เช่น ปิดปรับปรุงระบบฐานข้อมูล คาดว่าจะแล้วเสร็จเวลา 18:00 น."
+                  rows={2}
+                  className="input-field w-full resize-none text-sm"
+                />
+                <button
+                  onClick={saveMaintenanceMessage}
+                  disabled={busy}
+                  className="btn btn-outline text-xs inline-flex items-center gap-1.5 mt-2"
+                >
+                  <Save size={12} />
+                  บันทึกข้อความ
+                </button>
+              </div>
+            )}
+
+            {/* ตัวอย่างหน้าจอที่ผู้ใช้จะเห็น */}
+            {settings?.maintenance_mode && (
+              <div className="mt-4 pt-3 border-t border-gray-800">
+                <div className="text-[10px] text-gray-500 mb-1.5">ตัวอย่างหน้าจอที่เจ้าหน้าที่จะเห็น</div>
+                <div className="rounded-lg bg-navy-950 border border-gray-800 p-4 text-center">
+                  <Wrench size={20} className="text-amber-400/60 mx-auto mb-2" />
+                  <div className="text-xs font-bold text-white">ปิดปรับปรุงระบบชั่วคราว</div>
+                  <div className="text-[10px] text-gray-500 mt-0.5">ระบบอยู่ระหว่างการบำรุงรักษา</div>
+                  {settings.maintenance_message && (
+                    <div className="text-[10px] text-amber-400/80 mt-2 whitespace-pre-wrap">
+                      {settings.maintenance_message}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* ค่าที่อ่านได้อย่างเดียว */}
