@@ -122,7 +122,9 @@ export function AdminSettingsPage() {
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   /** หัวข้อ + เนื้อหา maintenance ที่กำลังแก้ (ยังไม่ save) */
   const [maintTitleDraft, setMaintTitleDraft] = useState('');
+  const [maintSubtitleDraft, setMaintSubtitleDraft] = useState('');
   const [maintMsgDraft, setMaintMsgDraft] = useState('');
+  const [maintEtaDraft, setMaintEtaDraft] = useState('');
 
   async function load() {
     setLoading(true);
@@ -132,8 +134,13 @@ export function AdminSettingsPage() {
     // ตรวจว่าคอลัมน์ของ 0034 มีจริงหรือยัง — ถ้าไม่มี สวิตช์จะกดไม่ได้
     setMissingReportCol(!(row && 'work_reports_enabled' in row));
     setMissingMaintCol(!(row && 'maintenance_mode' in row));
-    setMaintTitleDraft((row as Record<string, unknown> | null)?.maintenance_title as string ?? '');
-    setMaintMsgDraft((row as Record<string, unknown> | null)?.maintenance_message as string ?? '');
+    const r = row as Record<string, unknown> | null;
+    setMaintTitleDraft((r?.maintenance_title as string) ?? '');
+    setMaintSubtitleDraft((r?.maintenance_subtitle as string) ?? '');
+    setMaintMsgDraft((r?.maintenance_message as string) ?? '');
+    // timestamptz → datetime-local format (YYYY-MM-DDTHH:MM)
+    const eta = r?.maintenance_eta as string | null;
+    setMaintEtaDraft(eta ? eta.slice(0, 16) : '');
     setLoading(false);
   }
 
@@ -596,29 +603,35 @@ const SWEEP_BUTTONS: Array<{
     setNotice({ kind: 'ok', text: TEXTS[mode] });
   }
 
-  /** บันทึกหัวข้อ + เนื้อหา maintenance */
+  /** บันทึกหัวข้อ + ข้อความรอง + เนื้อหา + เวลานับถอยหลัง */
   async function saveMaintenanceMessage() {
     if (!officer || !settings || busy) return;
 
+    const etaIso = maintEtaDraft ? new Date(maintEtaDraft).toISOString() : null;
+
     const { error } = await supabase.from('system_settings').update({
       maintenance_title: maintTitleDraft.trim() || null,
+      maintenance_subtitle: maintSubtitleDraft.trim() || null,
       maintenance_message: maintMsgDraft.trim() || null,
+      maintenance_eta: etaIso,
       updated_at: new Date().toISOString(),
       updated_by: officer.id,
       updated_by_name: officer.name,
     }).eq('id', 1);
 
     if (error) {
-      setNotice({ kind: 'err', text: `บันทึกข้อความไม่สำเร็จ: ${error.message}` });
+      setNotice({ kind: 'err', text: `บันทึกไม่สำเร็จ: ${error.message}` });
       return;
     }
 
     setSettings({
       ...settings,
       maintenance_title: maintTitleDraft.trim() || null,
+      maintenance_subtitle: maintSubtitleDraft.trim() || null,
       maintenance_message: maintMsgDraft.trim() || null,
+      maintenance_eta: etaIso,
     });
-    setNotice({ kind: 'ok', text: 'บันทึกหัวข้อและเนื้อหาแล้ว' });
+    setNotice({ kind: 'ok', text: 'บันทึกข้อมูล maintenance แล้ว' });
   }
 
   /* ---------- ระบบเข้าเวร ---------- */
@@ -1068,6 +1081,15 @@ const SWEEP_BUTTONS: Array<{
                   />
                 </div>
                 <div>
+                  <label className="block text-xs text-gray-400 mb-1">ข้อความรอง (ใต้หัวข้อ)</label>
+                  <input
+                    className="input-field w-full"
+                    placeholder="เช่น ระบบอยู่ระหว่างการบำรุงรักษา กรุณารอสักครู่"
+                    value={maintSubtitleDraft}
+                    onChange={(e) => setMaintSubtitleDraft(e.target.value)}
+                  />
+                </div>
+                <div>
                   <label className="block text-xs text-gray-400 mb-1">เนื้อหา *</label>
                   <textarea
                     className="input-field w-full resize-none"
@@ -1077,13 +1099,25 @@ const SWEEP_BUTTONS: Array<{
                     onChange={(e) => setMaintMsgDraft(e.target.value)}
                   />
                 </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">เวลารอบ่ำปรุงเสร็จ (นับถอยหลัง)</label>
+                  <input
+                    type="datetime-local"
+                    className="input-field w-full"
+                    value={maintEtaDraft}
+                    onChange={(e) => setMaintEtaDraft(e.target.value)}
+                  />
+                  <div className="text-[10px] text-gray-600 mt-1">
+                    ปล่อยว่าง = ไม่นับถอยหลัง
+                  </div>
+                </div>
                 <button
                   onClick={saveMaintenanceMessage}
                   disabled={busy}
                   className="btn btn-outline text-xs inline-flex items-center gap-1.5"
                 >
                   <Save size={12} />
-                  บันทึกข้อความ
+                  บันทึกทั้งหมด
                 </button>
               </div>
             )}

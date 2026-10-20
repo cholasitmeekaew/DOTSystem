@@ -477,6 +477,10 @@ export interface SystemSettings {
   maintenance_title?: string | null;
   /** เนื้อหาที่แสดงให้ผู้ใช้เห็นเมื่อระบบปิดปรับปรุง */
   maintenance_message?: string | null;
+  /** ข้อความรองใต้หัวข้อ (migration 0054) */
+  maintenance_subtitle?: string | null;
+  /** เวลาคาดว่าจะเสร็จ — นับถอยหลัง (migration 0054) */
+  maintenance_eta?: string | null;
   updated_at: string;
   updated_by: string | null;
   updated_by_name: string | null;

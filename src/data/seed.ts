@@ -212,6 +212,8 @@ export const seedData: JsonDb = {
       maintenance_mode: 'off',
       maintenance_title: null,
       maintenance_message: null,
+      maintenance_subtitle: null,
+      maintenance_eta: null,
       updated_at: NOW,
       updated_by: null,
       updated_by_name: null,

@@ -68,7 +68,9 @@ type MaintMode = 'off' | 'standard' | 'readonly' | 'emergency';
 function useMaintenanceMode() {
   const [mode, setMode] = useState<MaintMode>('off');
   const [title, setTitle] = useState<string | null>(null);
+  const [subtitle, setSubtitle] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [eta, setEta] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,12 +86,15 @@ function useMaintenanceMode() {
 
     void (async () => {
       const { data } = await supabase
-        .from('system_settings').select('maintenance_mode, maintenance_title, maintenance_message')
+        .from('system_settings').select('maintenance_mode, maintenance_title, maintenance_subtitle, maintenance_message, maintenance_eta')
         .eq('id', 1).maybeSingle();
       if (!cancelled && data) {
-        setMode(norm((data as Record<string, unknown>).maintenance_mode));
-        setTitle((data as Record<string, unknown>).maintenance_title as string | null);
-        setMessage((data as Record<string, unknown>).maintenance_message as string | null);
+        const d = data as Record<string, unknown>;
+        setMode(norm(d.maintenance_mode));
+        setTitle(d.maintenance_title as string | null);
+        setSubtitle(d.maintenance_subtitle as string | null);
+        setMessage(d.maintenance_message as string | null);
+        setEta(d.maintenance_eta as string | null);
       }
     })();
 
@@ -99,9 +104,12 @@ function useMaintenanceMode() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'system_settings', filter: 'id=eq.1' },
         (payload: { new: Record<string, unknown> }) => {
-          setMode(norm(payload.new.maintenance_mode));
-          setTitle(payload.new.maintenance_title as string | null);
-          setMessage(payload.new.maintenance_message as string | null);
+          const d = payload.new;
+          setMode(norm(d.maintenance_mode));
+          setTitle(d.maintenance_title as string | null);
+          setSubtitle(d.maintenance_subtitle as string | null);
+          setMessage(d.maintenance_message as string | null);
+          setEta(d.maintenance_eta as string | null);
         },
       )
       .subscribe();
@@ -109,7 +117,7 @@ function useMaintenanceMode() {
     return () => { cancelled = true; void supabase.removeChannel(ch); };
   }, []);
 
-  return { mode, title, message };
+  return { mode, title, subtitle, message, eta };
 }
 
 function AccessDenied({ onBack }: { onBack: () => void }) {
@@ -132,7 +140,7 @@ function OfficerApp() {
   const [currentPage, setCurrentPage] = useState<OfficerPage>('dashboard');
   /** แท็บที่จะเปิดเมื่อเข้าหน้าปฏิบัติการ — ใช้ตอนกดการ์ดทางลัดที่ระบุแท็บ */
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
-  const { mode: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
+  const { mode: maintMode, title: maintTitle, subtitle: maintSub, message: maintMsg, eta: maintEta } = useMaintenanceMode();
 
   if (!officer) return null;
 
@@ -143,7 +151,9 @@ function OfficerApp() {
       <MaintenanceScreen
         mode={maintMode}
         title={maintTitle}
+        subtitle={maintSub}
         message={maintMsg}
+        eta={maintEta}
         officerName={officer.name}
         onLogout={() => logout()}
       />
@@ -251,7 +261,7 @@ function OfficerApp() {
 function PublicApp() {
   const { setAuth } = useAuth();
   const [route, setRoute] = useState<PublicPage>('home');
-  const { mode: maintMode, title: maintTitle, message: maintMsg } = useMaintenanceMode();
+  const { mode: maintMode, title: maintTitle, subtitle: maintSub, message: maintMsg, eta: maintEta } = useMaintenanceMode();
 
   function handleLogin(officer: Officer) {
     setAuth(officer);
@@ -259,7 +269,7 @@ function PublicApp() {
 
   // ── standard / emergency: block หน้าสาธารณะ (ยกเว้น login) ──
   if ((maintMode === 'standard' || maintMode === 'emergency') && route !== 'login') {
-    return <MaintenanceScreen mode={maintMode} title={maintTitle} message={maintMsg} />;
+    return <MaintenanceScreen mode={maintMode} title={maintTitle} subtitle={maintSub} message={maintMsg} eta={maintEta} />;
   }
 
   if (route === 'login') {
