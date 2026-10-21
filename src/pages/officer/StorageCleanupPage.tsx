@@ -495,9 +495,10 @@ export function StorageCleanupPage() {
               <tr className="border-b border-gray-800">
                 <th className="text-left px-2 py-2 text-gray-500 font-medium">โมดูล</th>
                 <th className="text-right px-2 py-2 text-gray-500 font-medium">จำนวนแถว</th>
+                <th className="text-center px-2 py-2 text-gray-500 font-medium">🖼 รูปที่แนบในเมนู</th>
+                <th className="text-center px-2 py-2 text-gray-500 font-medium">📁 รูปใน Storage</th>
                 <th className="text-right px-2 py-2 text-gray-500 font-medium">พื้นที่ DB</th>
-                <th className="text-center px-2 py-2 text-gray-500 font-medium">🖼 ไฟล์ใน Storage</th>
-                <th className="text-right px-2 py-2 text-gray-500 font-medium">ขนาดไฟล์</th>
+                <th className="text-right px-2 py-2 text-gray-500 font-medium">ขนาดรูป</th>
                 <th className="text-right px-2 py-2 text-gray-500 font-medium">สัดส่วน</th>
                 <th className="text-left px-2 py-2 text-gray-500 font-medium">📊</th>
               </tr>
@@ -515,20 +516,19 @@ export function StorageCleanupPage() {
                   <tr key={g.def.key} className="border-b border-gray-800/50 hover:bg-navy-900/30">
                     <td className="px-2 py-2 text-white font-medium">{g.def.label}</td>
                     <td className="px-2 py-2 text-right font-mono text-gray-400">{g.rows.toLocaleString()}</td>
-                    <td className="px-2 py-2 text-right font-mono text-gray-300">{fmtBytes(g.bytes)}</td>
-                    <td className="px-2 py-2 text-center font-mono text-blue-300">
+                    <td className="px-2 py-2 text-center font-mono">
                       {!hasStorage ? <span className="text-gray-700">—</span>
-                        : (
-                          <>
-                            <div>{fileCount} ไฟล์</div>
-                            <div className="text-[9px] text-gray-500">อ้างอิง DB: {dbRefs}</div>
-                          </>
-                        )}
+                        : dbRefs > 0 ? <span className="text-emerald-400">{dbRefs} รูป</span>
+                        : <span className="text-gray-600">0 รูป</span>}
                     </td>
-                    <td className="px-2 py-2 text-right font-mono text-blue-300">
+                    <td className="px-2 py-2 text-center font-mono">
                       {!hasStorage ? <span className="text-gray-700">—</span>
-                        : fileBytes > 0 ? fmtBytes(fileBytes)
-                        : <span className="text-gray-700">—</span>}
+                        : fileCount > 0 ? <span className="text-blue-300">{fileCount} รูป</span>
+                        : <span className="text-gray-600">0 รูป</span>}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-gray-300">{fmtBytes(g.bytes)}</td>
+                    <td className="px-2 py-2 text-right font-mono text-blue-300">
+                      {!hasStorage || fileBytes <= 0 ? <span className="text-gray-700">—</span> : fmtBytes(fileBytes)}
                     </td>
                     <td className="px-2 py-2 text-right font-mono text-amber-400">{pct.toFixed(1)}%</td>
                     <td className="px-2 py-2 w-40">
@@ -546,10 +546,13 @@ export function StorageCleanupPage() {
                 <td className="px-2 py-2 text-right font-mono text-gray-300">
                   {rows.reduce((s, r) => s + r.row_count, 0).toLocaleString()}
                 </td>
-                <td className="px-2 py-2 text-right font-mono text-white">{fmtBytes(totalUsed)}</td>
-                <td className="px-2 py-2 text-center font-mono text-blue-300">
-                  {modStorageStats.reduce((s, m) => s + m.file_count, 0)} ไฟล์
+                <td className="px-2 py-2 text-center font-mono text-emerald-400">
+                  {modStorageStats.reduce((s, m) => s + m.db_ref_count, 0)} รูป
                 </td>
+                <td className="px-2 py-2 text-center font-mono text-blue-300">
+                  {modStorageStats.reduce((s, m) => s + m.file_count, 0)} รูป
+                </td>
+                <td className="px-2 py-2 text-right font-mono text-white">{fmtBytes(totalUsed)}</td>
                 <td className="px-2 py-2 text-right font-mono text-blue-300">
                   {fmtBytes(modStorageStats.reduce((s, m) => s + m.file_bytes, 0))}
                 </td>
@@ -561,6 +564,12 @@ export function StorageCleanupPage() {
             </tfoot>
           </table>
         </div>
+        <p className="mt-3 text-[11px] text-gray-500 leading-relaxed">
+          🖼 <span className="text-emerald-400">รูปที่แนบในเมนู</span> = URL รูปที่ผูกกับข้อมูลของเมนูนั้นในฐานข้อมูล ·
+          📁 <span className="text-blue-300">รูปใน Storage</span> = ไฟล์จริงใน bucket/โฟลเดอร์ของเมนูนั้น
+          <br />
+          ถ้าสองคอลัมน์ต่างกันมาก แปลว่าไฟล์ยังอยู่ใน Storage แต่ไม่ได้ผูกกับเมนูแล้ว — ดูกล่อง “ไฟล์กำพร้า” ด้านล่าง
+        </p>
       </div>
 
       {/* ═══ 3.2 Cleanup Tool ═══ */}
