@@ -400,9 +400,14 @@ export function StorageGuardPage() {
                             <CheckCircle2 size={12} /> ปกติ
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-red-400" title={m.error}>
-                            <XCircle size={12} /> ผิดรูป
-                          </span>
+                          <div className="text-red-400">
+                            <span className="inline-flex items-center gap-1" title={m.error}>
+                              <XCircle size={12} /> ผิดรูป
+                            </span>
+                            {m.error && (
+                              <div className="text-[9px] text-red-400/70 leading-tight mt-0.5">{m.error}</div>
+                            )}
+                          </div>
                         )}
                       </td>
                     </tr>

@@ -170,11 +170,11 @@ declare
   cond   text;
 begin
   select * into rec
-  from public.storage_module_registry
-  where module_key = p_module_key;
+  from public.storage_module_registry r
+  where r.module_key = p_module_key;
 
   if not found then
-    return;   -- ไม่มีโมดูลนี้ → 0 แถว (ฝั่งเว็บแสดง 0 / -)
+    return;
   end if;
 
   if rec.db_table is not null then
@@ -259,7 +259,7 @@ declare
   p   text;
   cond text;
 begin
-  select * into rec from public.storage_module_registry where module_key = p_module_key;
+  select * into rec from public.storage_module_registry r where r.module_key = p_module_key;
   if not found then return; end if;
   if rec.db_table is null or rec.db_column is null then return; end if;
 
