@@ -231,17 +231,30 @@ export function StorageCleanupPage() {
     if (!mod) { setRunning(false); return; }
 
     const errors: string[] = [];
+    const skipped: string[] = [];
+
+    // ── กรองเฉพาะ (ตาราง, คอลัมน์) ที่มีจริงใน schema ณ ตอนนี้ ──
+    // กัน bundle เก่า / schema เปลี่ยน ไม่ให้ยิงคอลัมน์ที่ไม่มีจน error
     const pairs = imagePairs(mod);
+    const validPairs: Array<{ table: string; col: string }> = [];
+    for (const p of pairs) {
+      const probe = await supabase.from(p.table).select(p.col).limit(1);
+      if (probe.error && /Could not find|does not exist|schema cache/i.test(probe.error.message)) {
+        skipped.push(`${p.table}.${p.col}`);
+        continue;
+      }
+      validPairs.push(p);
+    }
 
     // ── ขั้นที่ 1: เก็บ URL รูปไว้ก่อนลบ DB ──
     let urls: string[] = [];
-    if (pairs.length) {
-      urls = await collectImageUrls(pairs);
+    if (validPairs.length) {
+      urls = await collectImageUrls(validPairs);
     }
 
-    // ── ขั้นที่ 2: ลบ/อัปเดต DB (เฉพาะตารางที่มีคอลัมน์จริง) ──
+    // ── ขั้นที่ 2: ลบ/อัปเดต DB (เฉพาะตารางที่คอลัมน์มีจริง) ──
     if (deleteMode === 'image') {
-      for (const { table: t, col } of pairs) {
+      for (const { table: t, col } of validPairs) {
         const { error } = await supabase.from(t).update({ [col]: null }).neq(col, '');
         if (error) errors.push(`${t}: ${error.message}`);
       }
@@ -270,7 +283,8 @@ export function StorageCleanupPage() {
     if (!errors.length) {
       const what = deleteMode === 'image' ? 'รูปภาพ' : 'ข้อมูล';
       const fileNote = filesDeleted ? ` + ลบไฟล์รูป ${filesDeleted} ไฟล์ออกจาก Storage` : '';
-      setResult({ ok: true, msg: `ลบ${what}จาก "${mod.label}" สำเร็จ${fileNote}` });
+      const skipNote = skipped.length ? ` (ข้าม ${skipped.length} ตารางที่ไม่มีคอลัมน์: ${skipped.join(', ')})` : '';
+      setResult({ ok: true, msg: `ลบ${what}จาก "${mod.label}" สำเร็จ${fileNote}${skipNote}` });
       const { data } = await supabase.rpc('get_storage_usage');
       setRows((data ?? []) as StorageRow[]);
       const fs = await supabase.rpc('get_storage_file_stats');
