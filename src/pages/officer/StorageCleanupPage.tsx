@@ -315,6 +315,12 @@ export function StorageCleanupPage() {
   /** ลบไฟล์กำพร้าทั้งหมด — คืนพื้นที่ที่ไฟล์ไม่มีเจ้าของ */
   async function cleanOrphans() {
     if (!orphans.length || cleaningOrphans) return;
+    const totalBytes = orphans.reduce((s, o) => s + o.file_size, 0);
+    const ok = window.confirm(
+      `ลบไฟล์กำพร้า ${orphans.length} ไฟล์ (${fmtBytes(totalBytes)}) ออกจาก Storage ถาวร?\n\n` +
+      'ไฟล์เหล่านี้ไม่มีข้อมูลใดอ้างถึงแล้ว การลบจะคืนพื้นที่แต่กู้คืนไม่ได้',
+    );
+    if (!ok) return;
     setCleaningOrphans(true);
     setResult(null);
     const res = await deleteOrphanFiles(orphans.map((f) => ({ bucket_id: f.bucket_id, name: f.name })));
@@ -433,8 +439,18 @@ export function StorageCleanupPage() {
         {orphans.length > 0 && (
           <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center gap-2 p-3 rounded-lg bg-red-950/20 border border-red-900/40">
             <div className="flex-1 text-[11px] text-red-300">
-              พบไฟล์กำพร้า {orphans.length} ไฟล์ ({fmtBytes(orphans.reduce((s, o) => s + o.file_size, 0))})
-              — ไฟล์ที่อยู่ใน Storage แต่ไม่มีข้อมูลใดอ้างถึง กดลบเพื่อคืนพื้นที่
+              <div>
+                พบไฟล์กำพร้า {orphans.length} ไฟล์ ({fmtBytes(orphans.reduce((s, o) => s + o.file_size, 0))})
+                — อยู่ใน Storage แต่ไม่มีข้อมูลใดอ้างถึง
+              </div>
+              <div className="text-[10px] text-red-400/70 mt-0.5">
+                {Object.entries(
+                  orphans.reduce<Record<string, number>>((acc, o) => {
+                    acc[o.bucket_id] = (acc[o.bucket_id] ?? 0) + 1;
+                    return acc;
+                  }, {}),
+                ).map(([b, n]) => `${b}: ${n}`).join(' · ')}
+              </div>
             </div>
             <button
               onClick={() => void cleanOrphans()}
