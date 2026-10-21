@@ -1,16 +1,21 @@
 import { supabase } from './supabase';
 
-// Bucket ต้องตรงกับ supabase/migrations/0004_storage.sql (+ 0024_storage_announcements_fix.sql)
-// เดิมใช้ 'dot-uploads' ซึ่งไม่มีอยู่จริง ทำให้ทุกอัปโหลดล้มเหลวแบบเงียบ ๆ
-const BUCKET_BY_FOLDER = {
-  announcements: 'announcements',
-  officers: 'officer-photos',
-  evidence: 'evidence',
-  vehicles: 'vehicles',
-  manual: 'manual',
+// Bucket + โฟลเดอร์ แยกตามโมดูล (ตรงกับตาราง storage_module_locations)
+// ต้องตรงกับ supabase/migrations/0004_storage.sql (+ 0024)
+const UPLOAD_TARGETS = {
+  announcements:           { bucket: 'announcements', prefix: 'announcements' },
+  officers:                { bucket: 'officer-photos', prefix: 'officers' },
+  vehicles:                { bucket: 'vehicles',      prefix: 'vehicles' },
+  manual:                  { bucket: 'manual',        prefix: 'manual' },
+  // แยกหลักฐานตามโมดูล เพื่อให้ Storage Monitoring นับแยกกันได้จริง
+  'evidence/services':     { bucket: 'evidence',      prefix: 'evidence/services' },
+  'evidence/work_reports': { bucket: 'evidence',      prefix: 'evidence/work_reports' },
+  'evidence/emergency':    { bucket: 'evidence',      prefix: 'evidence/emergency' },
+  // legacy (ไฟล์เก่า) — เก็บไว้เพื่อความเข้ากันได้
+  evidence:                { bucket: 'evidence',      prefix: 'evidence' },
 } as const;
 
-type Folder = keyof typeof BUCKET_BY_FOLDER;
+type Folder = keyof typeof UPLOAD_TARGETS;
 
 function generateFileName(prefix: string, file: File): string {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpg';
@@ -23,8 +28,9 @@ export async function uploadImage(
   file: File,
   folder: Folder,
 ): Promise<string | null> {
-  const bucket = BUCKET_BY_FOLDER[folder];
-  const filePath = generateFileName(folder, file);
+  const target = UPLOAD_TARGETS[folder];
+  const bucket = target.bucket;
+  const filePath = generateFileName(target.prefix, file);
   const { error } = await supabase.storage
     .from(bucket)
     .upload(filePath, file, { cacheControl: '3600', upsert: false });

@@ -77,11 +77,13 @@ interface ModuleImageStats {
   img_bytes: number;
 }
 
-/* ─── ไฟล์รูปจริงใน Storage รายโมดูล (นับจาก bucket + โฟลเดอร์) ─── */
-interface ModuleFileStats {
+/* ─── สถิติจาก Mapping Table (storage_module_registry + locations) ─── */
+interface ModuleStorageStats {
   module_key: string;
+  module_label: string;
   file_count: number;
-  total_bytes: number;
+  file_bytes: number;
+  db_ref_count: number;
 }
 
 /* ─── ไฟล์กำพร้า (อยู่ใน Storage แต่ไม่มี URL อ้างอิง) ─── */
@@ -111,7 +113,7 @@ export function StorageCleanupPage() {
   const [rows, setRows] = useState<StorageRow[]>([]);
   const [fileStats, setFileStats] = useState<StorageFileStats[]>([]);
   const [modImgStats, setModImgStats] = useState<ModuleImageStats[]>([]);
-  const [modFileStats, setModFileStats] = useState<ModuleFileStats[]>([]);
+  const [modStorageStats, setModStorageStats] = useState<ModuleStorageStats[]>([]);
   const [orphans, setOrphans] = useState<OrphanFile[]>([]);
   const [cleaningOrphans, setCleaningOrphans] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -139,9 +141,9 @@ export function StorageCleanupPage() {
       // ตารางรายโมดูล: นับรูปจากตารางจริงของแต่ละโมดูล (แยกอิสระ)
       const mi = await supabase.rpc('get_module_image_stats');
       if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
-      // ไฟล์จริงใน Storage รายโมดูล (นับจาก bucket + โฟลเดอร์)
-      const mf = await supabase.rpc('get_module_file_stats');
-      if (!mf.error && mf.data) setModFileStats(mf.data as ModuleFileStats[]);
+      // สถิติจาก Mapping Table (registry + locations)
+      const ms = await supabase.rpc('get_module_storage_stats');
+      if (!ms.error && ms.data) setModStorageStats(ms.data as ModuleStorageStats[]);
       // ไฟล์กำพร้า: อยู่ใน bucket แต่ไม่มี URL อ้างอิง
       const orph = await supabase.rpc('get_orphan_files');
       if (!orph.error && orph.data) setOrphans(orph.data as OrphanFile[]);
@@ -165,19 +167,12 @@ export function StorageCleanupPage() {
     return [...groups.values()].sort((a, b) => b.bytes - a.bytes);
   }, [rows]);
 
-  /** module_key → { count, bytes } — จำนวน URL ที่อ้างอิงใน DB */
-  const modImgMap = useMemo(() => {
-    const m = new Map<string, { count: number; bytes: number }>();
-    for (const f of modImgStats) m.set(f.module_key, { count: f.img_count, bytes: f.img_bytes });
+  /** module_key → สถิติจาก mapping table */
+  const modStorageMap = useMemo(() => {
+    const m = new Map<string, ModuleStorageStats>();
+    for (const f of modStorageStats) m.set(f.module_key, f);
     return m;
-  }, [modImgStats]);
-
-  /** module_key → { count, bytes } — ไฟล์จริงใน Storage ของโมดูล */
-  const modFileMap = useMemo(() => {
-    const m = new Map<string, { count: number; bytes: number }>();
-    for (const f of modFileStats) m.set(f.module_key, { count: f.file_count, bytes: f.total_bytes });
-    return m;
-  }, [modFileStats]);
+  }, [modStorageStats]);
 
   const totalUsed = rows.reduce((s, r) => s + r.total_bytes, 0);
   /** Postgres default จำกัด 100 MB ต่อ database (Free tier) — ใช้เป็น scale */
@@ -320,8 +315,8 @@ export function StorageCleanupPage() {
       if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
       const mi = await supabase.rpc('get_module_image_stats');
       if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
-      const mf = await supabase.rpc('get_module_file_stats');
-      if (!mf.error && mf.data) setModFileStats(mf.data as ModuleFileStats[]);
+      const ms = await supabase.rpc('get_module_storage_stats');
+      if (!ms.error && ms.data) setModStorageStats(ms.data as ModuleStorageStats[]);
       const orph = await supabase.rpc('get_orphan_files');
       if (!orph.error && orph.data) setOrphans(orph.data as OrphanFile[]);
     } else {
@@ -345,17 +340,17 @@ export function StorageCleanupPage() {
     setResult(null);
     const res = await deleteOrphanFiles(orphans.map((f) => ({ bucket_id: f.bucket_id, name: f.name })));
     // รีเฟรชทุกอย่าง
-    const [u, fs, mi, mf, orph] = await Promise.all([
+    const [u, fs, mi, ms, orph] = await Promise.all([
       supabase.rpc('get_storage_usage'),
       supabase.rpc('get_storage_file_stats'),
       supabase.rpc('get_module_image_stats'),
-      supabase.rpc('get_module_file_stats'),
+      supabase.rpc('get_module_storage_stats'),
       supabase.rpc('get_orphan_files'),
     ]);
     if (!u.error && u.data) setRows(u.data as StorageRow[]);
     if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
     if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
-    if (!mf.error && mf.data) setModFileStats(mf.data as ModuleFileStats[]);
+    if (!ms.error && ms.data) setModStorageStats(ms.data as ModuleStorageStats[]);
     if (!orph.error && orph.data) setOrphans(orph.data as OrphanFile[]);
     setResult(
       res.failed
@@ -510,12 +505,12 @@ export function StorageCleanupPage() {
             <tbody>
               {moduleStats.map((g) => {
                 const pct = totalUsed > 0 ? (g.bytes / totalUsed) * 100 : 0;
-                // ไฟล์จริงใน Storage ของโมดูลนี้ (นับจาก bucket + โฟลเดอร์)
-                const mf = modFileMap.get(g.def.key);
-                // จำนวน URL ที่อ้างอิงใน DB (แสดงเป็นบรรทัดย่อย)
-                const mi = modImgMap.get(g.def.key);
-                const dbRefs = mi?.count ?? 0;
-                const hasStorage = ['officers','services','announcements','vehicles','manual'].includes(g.def.key);
+                // สถิติจาก mapping table ของโมดูลนี้โดยตรง
+                const ms = modStorageMap.get(g.def.key);
+                const fileCount = ms?.file_count ?? 0;
+                const fileBytes = ms?.file_bytes ?? 0;
+                const dbRefs = ms?.db_ref_count ?? 0;
+                const hasStorage = !!ms;
                 return (
                   <tr key={g.def.key} className="border-b border-gray-800/50 hover:bg-navy-900/30">
                     <td className="px-2 py-2 text-white font-medium">{g.def.label}</td>
@@ -525,14 +520,14 @@ export function StorageCleanupPage() {
                       {!hasStorage ? <span className="text-gray-700">—</span>
                         : (
                           <>
-                            <div>{mf ? `${mf.count} ไฟล์` : '0 ไฟล์'}</div>
+                            <div>{fileCount} ไฟล์</div>
                             <div className="text-[9px] text-gray-500">อ้างอิง DB: {dbRefs}</div>
                           </>
                         )}
                     </td>
                     <td className="px-2 py-2 text-right font-mono text-blue-300">
                       {!hasStorage ? <span className="text-gray-700">—</span>
-                        : mf && mf.bytes > 0 ? fmtBytes(mf.bytes)
+                        : fileBytes > 0 ? fmtBytes(fileBytes)
                         : <span className="text-gray-700">—</span>}
                     </td>
                     <td className="px-2 py-2 text-right font-mono text-amber-400">{pct.toFixed(1)}%</td>
@@ -553,10 +548,10 @@ export function StorageCleanupPage() {
                 </td>
                 <td className="px-2 py-2 text-right font-mono text-white">{fmtBytes(totalUsed)}</td>
                 <td className="px-2 py-2 text-center font-mono text-blue-300">
-                  {moduleStats.reduce((s, g) => s + (modFileMap.get(g.def.key)?.count ?? 0), 0)} ไฟล์
+                  {modStorageStats.reduce((s, m) => s + m.file_count, 0)} ไฟล์
                 </td>
                 <td className="px-2 py-2 text-right font-mono text-blue-300">
-                  {fmtBytes(moduleStats.reduce((s, g) => s + (modFileMap.get(g.def.key)?.bytes ?? 0), 0))}
+                  {fmtBytes(modStorageStats.reduce((s, m) => s + m.file_bytes, 0))}
                 </td>
                 <td className="px-2 py-2 text-right font-mono text-amber-400">
                   {moduleStats.reduce((s, g) => s + (totalUsed > 0 ? (g.bytes / totalUsed) * 100 : 0), 0).toFixed(1)}%

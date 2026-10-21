@@ -45,7 +45,7 @@ export function EmergencyReportPage() {
 
     let imageUrl: string | null = null;
     if (imageFile) {
-      imageUrl = await uploadImage(imageFile, 'evidence');
+      imageUrl = await uploadImage(imageFile, 'evidence/emergency');
     }
 
     const locationValue = pin

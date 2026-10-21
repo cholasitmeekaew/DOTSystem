@@ -304,7 +304,7 @@ export function ServiceFeesPage() {
 
     let evidenceUrl = editRecord?.evidence_url ?? null;
     if (evidenceFile) {
-      const uploaded = await uploadImage(evidenceFile, 'evidence');
+      const uploaded = await uploadImage(evidenceFile, 'evidence/services');
       if (uploaded) {
         if (editRecord?.evidence_url) deleteImage(editRecord.evidence_url);
         evidenceUrl = uploaded;

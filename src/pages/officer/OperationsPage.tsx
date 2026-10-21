@@ -650,7 +650,7 @@ export function OperationsPage({
   async function handleCaseImageUpload(idx: number, file: File) {
     setUploadingCaseIndex(idx);
     try {
-      const url = await uploadImage(file, 'evidence');
+      const url = await uploadImage(file, 'evidence/work_reports');
       if (url) {
         updateReportCase(idx, 'evidence_url', url);
       } else {

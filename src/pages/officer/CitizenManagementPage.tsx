@@ -544,7 +544,7 @@ export function CitizenManagementPage() {
 
     let evidenceUrl = editingFee?.evidence_url ?? null;
     if (evidenceFile) {
-      const uploaded = await uploadImage(evidenceFile, 'evidence');
+      const uploaded = await uploadImage(evidenceFile, 'evidence/services');
       if (uploaded) {
         if (editingFee?.evidence_url) deleteImage(editingFee.evidence_url);
         evidenceUrl = uploaded;
