@@ -31,7 +31,6 @@ import {
   AUTO_POINTS_SUMMARY, AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 import { resolveScheduledOfficerIds } from '../../lib/dutySchedule';
-import { StorageCleanupPage } from './StorageCleanupPage';
 import { toIso } from '../../lib/dutySchedule';
 
 /** วันเริ่มสัปดาห์ (จันทร์) ของวันที่ที่ระบุ */
@@ -1012,10 +1011,7 @@ const SWEEP_BUTTONS: Array<{
             </div>
           </div>
 
-          {/* ── 📊 Storage Chart & Cleanup (ศูนย์กลาง) ── */}
-      <StorageCleanupPage />
-
-      {/* ── โหมดปิดปรับปรุงระบบ (3 โหมด) ── */}
+          {/* ── โหมดปิดปรับปรุงระบบ (3 โหมด) ── */}
           <div className={`card p-4 sm:p-5 border-2 ${
             missingMaintCol ? 'border-gray-700'
               : settings?.maintenance_mode === 'emergency' ? 'border-red-500/50'
