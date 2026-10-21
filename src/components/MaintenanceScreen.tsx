@@ -11,7 +11,10 @@
  * ============================================================= */
 
 import { useState, useEffect } from 'react';
-import { Wrench, EyeOff, ShieldAlert, LogOut, Timer } from 'lucide-react';
+import { Wrench, EyeOff, ShieldAlert, LogOut, Timer, KeyRound, Loader2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { hashPassword } from '../lib/crypto';
+import { COMMISSIONER_RANK, type Officer } from '../lib/types';
 
 type MaintMode = 'standard' | 'readonly' | 'emergency';
 
@@ -23,6 +26,8 @@ interface MaintenanceScreenProps {
   eta?: string | null;
   onLogout?: () => void;
   officerName?: string;
+  /** เรียกเมื่อหัวหน้ากรม login สำเร็จ → เข้าสู่ระบบหลังบ้าน */
+  onBypass?: (officer: Officer) => void;
 }
 
 const MODE_CONFIG: Record<MaintMode, {
@@ -83,8 +88,105 @@ function useCountdown(eta: string | null | undefined): string | null {
   return `${pad(h)}:${pad(m)}:${pad(sec)}`;
 }
 
+/**
+ * ปุ่มเข้าสู่ระบบสำหรับผู้ดูแล — มุมขวาล่างหน้า Maintenance
+ *
+ * Super Admin (หัวหน้ากรม) กรอก username + password แล้วเข้าระบบหลังบ้านได้
+ * คนอื่นกรอกแล้วระบบ拒绝 (RPC login_officer คืน null)
+ */
+function QuickBypassLogin({ onBypass }: { onBypass?: (o: Officer) => void }) {
+  const [open, setOpen] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    if (!username || !password) return;
+    setBusy(true);
+    setErr('');
+    try {
+      const { data, error } = await supabase.rpc('login_officer', {
+        p_username: username.trim(),
+        p_password_hash: await hashPassword(password),
+      });
+      if (error || !data) {
+        setErr('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
+        return;
+      }
+      const officer = data as unknown as Officer;
+      if (officer.rank !== COMMISSIONER_RANK) {
+        setErr('เฉพาะหัวหน้ากรมเท่านั้นที่ข้ามได้');
+        return;
+      }
+      onBypass?.(officer);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!onBypass) return null;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50">
+      {open ? (
+        <form
+          onSubmit={handleLogin}
+          className="card p-4 w-72 border border-gray-700 shadow-2xl"
+        >
+          <div className="text-xs font-bold text-gray-300 mb-3 flex items-center gap-1.5">
+            <KeyRound size={13} className="text-amber-400" />
+            เข้าสู่ระบบสำหรับผู้ดูแล
+          </div>
+          <input
+            className="input-field w-full text-sm mb-2"
+            placeholder="ชื่อผู้ใช้"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+          />
+          <input
+            type="password"
+            className="input-field w-full text-sm mb-2"
+            placeholder="รหัสผ่าน"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {err && <div className="text-[11px] text-red-400 mb-2">{err}</div>}
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={busy}
+              className="btn btn-primary flex-1 text-xs inline-flex items-center justify-center gap-1"
+            >
+              {busy ? <Loader2 size={12} className="animate-spin" /> : null}
+              เข้าสู่ระบบ
+            </button>
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setErr(''); }}
+              className="btn btn-outline text-xs"
+            >
+              ยกเลิก
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button
+          onClick={() => setOpen(true)}
+          className="btn btn-outline text-xs inline-flex items-center gap-1.5 shadow-lg"
+        >
+          <KeyRound size={12} />
+          เข้าสู่ระบบสำหรับผู้ดูแล
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function MaintenanceScreen({
-  mode = 'standard', title, subtitle, message, eta, onLogout, officerName,
+  mode = 'standard', title, subtitle, message, eta, onLogout, officerName, onBypass,
 }: MaintenanceScreenProps) {
   const cfg = MODE_CONFIG[mode];
   const heading = title?.trim() || 'ปิดปรับปรุงระบบชั่วคราว';
@@ -149,6 +251,9 @@ export function MaintenanceScreen({
           </div>
         )}
       </div>
+
+      {/* ปุ่มเข้าสู่ระบบสำหรับผู้ดูแล — มุมขวาล่าง */}
+      <QuickBypassLogin onBypass={onBypass} />
     </div>
   );
 }

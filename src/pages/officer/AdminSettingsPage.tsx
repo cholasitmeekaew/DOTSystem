@@ -31,6 +31,7 @@ import {
   AUTO_POINTS_SUMMARY, AUTO_POINTS_RULES,
 } from '../../lib/api/autoPoints';
 import { resolveScheduledOfficerIds } from '../../lib/dutySchedule';
+import { StorageCleanupPage } from './StorageCleanupPage';
 import { toIso } from '../../lib/dutySchedule';
 
 /** วันเริ่มสัปดาห์ (จันทร์) ของวันที่ที่ระบุ */
@@ -561,9 +562,9 @@ const SWEEP_BUTTONS: Array<{
 
   const MAINT_LABELS: Record<MaintMode, string> = {
     off:       'ปิด',
-    standard:  '🟢 Standard — ปิดปรับปรุงทั่วไป',
-    readonly:  '🟡 Read-Only — ดูได้อย่างเดียว',
-    emergency: '🔴 Emergency — ล็อกด่วน',
+    standard:  '🔴 โหมดปิดปรับปรุงตามแผน',
+    readonly:  '🟡 โหมดอ่านอย่างเดียว',
+    emergency: '⚠️ โหมดปิดระบบฉุกเฉิน',
   };
 
   async function setMaintenanceMode(mode: MaintMode) {
@@ -596,9 +597,9 @@ const SWEEP_BUTTONS: Array<{
 
     const TEXTS: Record<MaintMode, string> = {
       off:       'ปิดโหมดปิดปรับปรุง — ทุกคนใช้งานได้ตามปกติ',
-      standard:  'เปิด Standard Mode — เจ้าหน้าที่ทุกคนเห็นหน้าปิดปรับปรุง (หัวหน้ากรมเข้าได้)',
-      readonly:  'เปิด Read-Only Mode — เจ้าหน้าที่ดูข้อมูลได้แต่ทำรายการไม่ได้',
-      emergency: 'เปิด Emergency Mode — ล็อกทุกช่องทาง (เฉพาะหัวหน้ากรมเข้าได้)',
+      standard:  'เปิดโหมดปิดปรับปรุงตามแผน — เจ้าหน้าที่ทุกคนเห็นหน้าแจ้งเตือน (หัวหน้ากรมเข้าได้)',
+      readonly:  'เปิดโหมดอ่านอย่างเดียว — เจ้าหน้าที่ดูข้อมูลได้แต่ทำรายการไม่ได้',
+      emergency: 'เปิดโหมดปิดระบบฉุกเฉิน — ล็อกทุกช่องทาง (เฉพาะหัวหน้ากรมเข้าได้)',
     };
     setNotice({ kind: 'ok', text: TEXTS[mode] });
   }
@@ -1007,7 +1008,10 @@ const SWEEP_BUTTONS: Array<{
             </div>
           </div>
 
-          {/* ── โหมดปิดปรับปรุงระบบ (3 โหมด) ── */}
+          {/* ── 📊 Storage Chart & Cleanup (ศูนย์กลาง) ── */}
+      <StorageCleanupPage />
+
+      {/* ── โหมดปิดปรับปรุงระบบ (3 โหมด) ── */}
           <div className={`card p-4 sm:p-5 border-2 ${
             missingMaintCol ? 'border-gray-700'
               : settings?.maintenance_mode === 'emergency' ? 'border-red-500/50'
@@ -1036,32 +1040,57 @@ const SWEEP_BUTTONS: Array<{
               </div>
             </div>
 
-            {/* 3-way selector */}
+            {/* Toggle เปิด/ปิด */}
             {!missingMaintCol && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-                {(['off', 'standard', 'readonly', 'emergency'] as MaintMode[]).map((m) => (
+              <div className="flex items-center justify-between mb-4 p-3 rounded-lg bg-navy-900/50 border border-gray-800">
+                <span className="text-sm font-semibold text-white">
+                  {settings?.maintenance_mode && settings.maintenance_mode !== 'off'
+                    ? 'เปิดใช้งานอยู่' : 'ปิดอยู่'}
+                </span>
+                <button
+                  onClick={() => void setMaintenanceMode(
+                    settings?.maintenance_mode && settings.maintenance_mode !== 'off'
+                      ? 'off' : 'standard'
+                  )}
+                  disabled={busy}
+                  className={`relative w-16 h-8 rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                    settings?.maintenance_mode && settings.maintenance_mode !== 'off'
+                      ? 'bg-red-500' : 'bg-navy-600'
+                  }`}
+                  aria-label="เปิด/ปิดโหมดปิดปรับปรุง"
+                  aria-pressed={!!settings?.maintenance_mode && settings.maintenance_mode !== 'off'}
+                >
+                  <div className={`absolute top-1 left-1 w-6 h-6 bg-white rounded-full shadow-lg transition-transform ${
+                    settings?.maintenance_mode && settings.maintenance_mode !== 'off' ? 'translate-x-8' : ''
+                  }`}
+                  />
+                </button>
+              </div>
+            )}
+
+            {/* Mode Badge — เลือกหมวดหมู่เมื่อเปิดอยู่ */}
+            {!missingMaintCol && settings?.maintenance_mode && settings.maintenance_mode !== 'off' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
+                {(['standard', 'readonly', 'emergency'] as MaintMode[]).map((m) => (
                   <button
                     key={m}
                     onClick={() => void setMaintenanceMode(m)}
                     disabled={busy}
                     className={`px-3 py-2.5 rounded-lg text-xs font-semibold border-2 transition-colors disabled:opacity-50 text-left ${
-                      (settings?.maintenance_mode ?? 'off') === m
-                        ? m === 'off' ? 'border-gray-500 bg-gray-500/15 text-gray-300'
-                        : m === 'standard' ? 'border-amber-500 bg-amber-500/15 text-amber-300'
+                      settings.maintenance_mode === m
+                        ? m === 'standard' ? 'border-red-500 bg-red-500/15 text-red-300'
                         : m === 'readonly' ? 'border-yellow-500 bg-yellow-500/15 text-yellow-300'
-                        : 'border-red-500 bg-red-500/15 text-red-300'
+                        : 'border-orange-500 bg-orange-500/15 text-orange-300'
                         : 'border-gray-700 bg-navy-900/50 text-gray-500 hover:border-gray-600'
                     }`}
                   >
-                    {m === 'off' && 'ปิด'}
-                    {m === 'standard' && '🟢 Standard'}
-                    {m === 'readonly' && '🟡 Read-Only'}
-                    {m === 'emergency' && '🔴 Emergency'}
+                    {m === 'standard' && '🔴 โหมดปิดปรับปรุงตามแผน'}
+                    {m === 'readonly' && '🟡 โหมดอ่านอย่างเดียว'}
+                    {m === 'emergency' && '⚠️ โหมดปิดระบบฉุกเฉิน'}
                     <div className="text-[9px] font-normal mt-0.5 leading-tight">
-                      {m === 'off' && 'ปกติ ไม่บล็อกใคร'}
                       {m === 'standard' && 'บล็อกทุกคน ยกเว้นหัวหน้ากรม'}
                       {m === 'readonly' && 'ดูได้ ทำรายการไม่ได้'}
-                      {m === 'emergency' && 'ล็อกทั้งหมด'}
+                      {m === 'emergency' && 'ล็อกทั้งหมดด่วน'}
                     </div>
                   </button>
                 ))}

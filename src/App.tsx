@@ -136,7 +136,7 @@ function AccessDenied({ onBack }: { onBack: () => void }) {
 }
 
 function OfficerApp() {
-  const { officer, logout, isCommissioner } = useAuth();
+  const { officer, logout, setAuth, isCommissioner } = useAuth();
   const [currentPage, setCurrentPage] = useState<OfficerPage>('dashboard');
   /** แท็บที่จะเปิดเมื่อเข้าหน้าปฏิบัติการ — ใช้ตอนกดการ์ดทางลัดที่ระบุแท็บ */
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
@@ -156,6 +156,7 @@ function OfficerApp() {
         eta={maintEta}
         officerName={officer.name}
         onLogout={() => logout()}
+        onBypass={(o) => setAuth(o)}
       />
     );
   }
@@ -269,7 +270,16 @@ function PublicApp() {
 
   // ── standard / emergency: block หน้าสาธารณะ (ยกเว้น login) ──
   if ((maintMode === 'standard' || maintMode === 'emergency') && route !== 'login') {
-    return <MaintenanceScreen mode={maintMode} title={maintTitle} subtitle={maintSub} message={maintMsg} eta={maintEta} />;
+    return (
+      <MaintenanceScreen
+        mode={maintMode}
+        title={maintTitle}
+        subtitle={maintSub}
+        message={maintMsg}
+        eta={maintEta}
+        onBypass={handleLogin}
+      />
+    );
   }
 
   if (route === 'login') {
