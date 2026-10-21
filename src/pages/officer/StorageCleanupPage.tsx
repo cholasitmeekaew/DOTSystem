@@ -21,7 +21,7 @@ import {
   AlertTriangle, FileCode2, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { deleteImage } from '../../lib/storage';
+import { deleteImages, deleteOrphanFiles } from '../../lib/storage';
 import { useAuth } from '../../lib/AuthContext';
 
 /* ─── โมดูล ─── */
@@ -77,6 +77,13 @@ interface ModuleImageStats {
   img_bytes: number;
 }
 
+/* ─── ไฟล์กำพร้า (อยู่ใน Storage แต่ไม่มี URL อ้างอิง) ─── */
+interface OrphanFile {
+  bucket_id: string;
+  name: string;
+  file_size: number;
+}
+
 /* ─── ข้อมูลพื้นที่จาก RPC ─── */
 interface StorageRow {
   table_name: string;
@@ -97,6 +104,8 @@ export function StorageCleanupPage() {
   const [rows, setRows] = useState<StorageRow[]>([]);
   const [fileStats, setFileStats] = useState<StorageFileStats[]>([]);
   const [modImgStats, setModImgStats] = useState<ModuleImageStats[]>([]);
+  const [orphans, setOrphans] = useState<OrphanFile[]>([]);
+  const [cleaningOrphans, setCleaningOrphans] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
@@ -122,6 +131,9 @@ export function StorageCleanupPage() {
       // ตารางรายโมดูล: นับรูปจากตารางจริงของแต่ละโมดูล (แยกอิสระ)
       const mi = await supabase.rpc('get_module_image_stats');
       if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
+      // ไฟล์กำพร้า: อยู่ใน bucket แต่ไม่มี URL อ้างอิง
+      const orph = await supabase.rpc('get_orphan_files');
+      if (!orph.error && orph.data) setOrphans(orph.data as OrphanFile[]);
       setLoading(false);
     })();
   }, []);
@@ -268,15 +280,14 @@ export function StorageCleanupPage() {
       }
     }
 
-    // ── ขั้นที่ 3: ลบไฟล์จริงออกจาก Supabase Storage ──
+    // ── ขั้นที่ 3: ลบไฟล์จริงออกจาก Supabase Storage (await จริง) ──
     let filesDeleted = 0;
+    let filesFailed = 0;
     if (urls.length) {
-      for (const u of urls) {
-        deleteImage(u);   // fire-and-forget ใน storage.ts
-        filesDeleted++;
-      }
-      // รอให้ request ยิงเสร็จ (deleteImage ไม่ await)
-      await new Promise((r) => setTimeout(r, 800));
+      const res = await deleteImages(urls);
+      filesDeleted = res.deleted;
+      filesFailed = res.failed;
+      if (filesFailed) errors.push(`ลบไฟล์ใน Storage ไม่สำเร็จ ${filesFailed} ไฟล์`);
     }
 
     // ── รีเฟรชข้อมูล ──
@@ -291,12 +302,39 @@ export function StorageCleanupPage() {
       if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
       const mi = await supabase.rpc('get_module_image_stats');
       if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
+      const orph = await supabase.rpc('get_orphan_files');
+      if (!orph.error && orph.data) setOrphans(orph.data as OrphanFile[]);
     } else {
       setResult({ ok: false, msg: errors.join('; ') });
     }
     setRunning(false);
     setShowConfirm(false);
     setConfirmText('');
+  }
+
+  /** ลบไฟล์กำพร้าทั้งหมด — คืนพื้นที่ที่ไฟล์ไม่มีเจ้าของ */
+  async function cleanOrphans() {
+    if (!orphans.length || cleaningOrphans) return;
+    setCleaningOrphans(true);
+    setResult(null);
+    const res = await deleteOrphanFiles(orphans.map((f) => ({ bucket_id: f.bucket_id, name: f.name })));
+    // รีเฟรชทุกอย่าง
+    const [u, fs, mi, orph] = await Promise.all([
+      supabase.rpc('get_storage_usage'),
+      supabase.rpc('get_storage_file_stats'),
+      supabase.rpc('get_module_image_stats'),
+      supabase.rpc('get_orphan_files'),
+    ]);
+    if (!u.error && u.data) setRows(u.data as StorageRow[]);
+    if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
+    if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
+    if (!orph.error && orph.data) setOrphans(orph.data as OrphanFile[]);
+    setResult(
+      res.failed
+        ? { ok: false, msg: `ลบไฟล์กำพร้าแล้ว ${res.deleted} ไฟล์ (ล้มเหลว ${res.failed})` }
+        : { ok: true, msg: `ลบไฟล์กำพร้า ${res.deleted} ไฟล์ คืนพื้นที่สำเร็จ` },
+    );
+    setCleaningOrphans(false);
   }
 
   const selectedMod = MODULES.find((m) => m.key === selectedModule);
@@ -350,28 +388,64 @@ export function StorageCleanupPage() {
           </div>
         </div>
 
-        {/* แถบสรุปภาพรวมรูปภาพ */}
-        <div className="grid grid-cols-3 gap-3 mb-6">
+        {/* แถบสรุปภาพรวมรูปภาพ — แยก 3 แหล่งให้ตรงกัน */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+          {/* 1) รูปที่ถูกอ้างอิงในฐานข้อมูล */}
           <div className="bg-blue-950/30 border border-blue-900/50 rounded-lg p-3 text-center">
             <ImageIcon size={16} className="mx-auto mb-1 text-blue-400" />
             <div className="text-xl font-bold text-white font-mono">
-              {fileStats.reduce((s, f) => s + f.file_count, 0)}
+              {modImgStats.reduce((s, m) => s + m.img_count, 0)}
             </div>
-            <div className="text-[10px] text-gray-400">รูปภาพทั้งหมดใน Storage</div>
+            <div className="text-[10px] text-gray-400">รูปที่ใช้งาน (อ้างอิงใน DB)</div>
+            <div className="text-[10px] font-mono text-blue-300 mt-0.5">
+              {fmtBytes(modImgStats.reduce((s, m) => s + m.img_bytes, 0))}
+            </div>
           </div>
+
+          {/* 2) ไฟล์ทั้งหมดใน Storage */}
           <div className="bg-cyan-950/30 border border-cyan-900/50 rounded-lg p-3 text-center">
             <Database size={16} className="mx-auto mb-1 text-cyan-400" />
             <div className="text-xl font-bold text-white font-mono">
+              {fileStats.reduce((s, f) => s + f.file_count, 0)}
+            </div>
+            <div className="text-[10px] text-gray-400">ไฟล์ทั้งหมดใน Storage</div>
+            <div className="text-[10px] font-mono text-cyan-300 mt-0.5">
               {fmtBytes(fileStats.reduce((s, f) => s + f.total_bytes, 0))}
             </div>
-            <div className="text-[10px] text-gray-400">พื้นที่ไฟล์รูปที่ใช้</div>
           </div>
-          <div className="bg-purple-950/30 border border-purple-900/50 rounded-lg p-3 text-center">
-            <HardDrive size={16} className="mx-auto mb-1 text-purple-400" />
-            <div className="text-xl font-bold text-white font-mono">{fileStats.length}</div>
-            <div className="text-[10px] text-gray-400">Bucket ที่มีไฟล์</div>
+
+          {/* 3) ไฟล์กำพร้า */}
+          <div className={`rounded-lg p-3 text-center border ${
+            orphans.length ? 'bg-red-950/40 border-red-800/60' : 'bg-emerald-950/30 border-emerald-900/50'
+          }`}>
+            <AlertTriangle size={16} className={`mx-auto mb-1 ${orphans.length ? 'text-red-400' : 'text-emerald-400'}`} />
+            <div className={`text-xl font-bold font-mono ${orphans.length ? 'text-red-300' : 'text-emerald-300'}`}>
+              {orphans.length}
+            </div>
+            <div className="text-[10px] text-gray-400">ไฟล์กำพร้า (ไม่มีเจ้าของ)</div>
+            <div className={`text-[10px] font-mono mt-0.5 ${orphans.length ? 'text-red-300' : 'text-emerald-300'}`}>
+              {fmtBytes(orphans.reduce((s, o) => s + o.file_size, 0))}
+            </div>
           </div>
         </div>
+
+        {/* ปุ่มลบไฟล์กำพร้า */}
+        {orphans.length > 0 && (
+          <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center gap-2 p-3 rounded-lg bg-red-950/20 border border-red-900/40">
+            <div className="flex-1 text-[11px] text-red-300">
+              พบไฟล์กำพร้า {orphans.length} ไฟล์ ({fmtBytes(orphans.reduce((s, o) => s + o.file_size, 0))})
+              — ไฟล์ที่อยู่ใน Storage แต่ไม่มีข้อมูลใดอ้างถึง กดลบเพื่อคืนพื้นที่
+            </div>
+            <button
+              onClick={() => void cleanOrphans()}
+              disabled={cleaningOrphans}
+              className="btn text-xs inline-flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white disabled:opacity-50 px-3 py-1.5 rounded-lg"
+            >
+              {cleaningOrphans ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+              ลบไฟล์กำพร้าทั้งหมด
+            </button>
+          </div>
+        )}
 
         {/* Progress bar */}
         <div className="w-full h-3 bg-navy-800 rounded-full overflow-hidden mb-6">

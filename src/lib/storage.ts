@@ -38,21 +38,87 @@ export async function uploadImage(
   return data.publicUrl;
 }
 
-export function deleteImage(url: string): void {
+/**
+ * แยก URL รูป → { bucket, path }
+ * รูปแบบ: .../storage/v1/object/public/<bucket>/<path>
+ */
+function parseImageUrl(url: string): { bucket: string; path: string } | null {
+  const m = url.match(/\/object\/public\/([^/?]+)\/([^?]+)/);
+  if (!m) return null;
+  return { bucket: m[1], path: m[2] };
+}
+
+/**
+ * ลบไฟล์รูป 1 ไฟล์ — await จริง + ตรวจ error
+ * คืน true เมื่อลบสำเร็จ, false เมื่อล้มเหลว/URL ไม่ใช่ storage
+ *
+ * NOTE: เดิมเป็น fire-and-forget ไม่รอผล ทำให้ไฟล์ไม่ถูกลบจริง
+ *       แล้วเกิดไฟล์กำพร้าใน bucket (กินพื้นที่ฟรี)
+ */
+export async function deleteImage(url: string): Promise<boolean> {
+  const parsed = parseImageUrl(url);
+  if (!parsed) return false;
   try {
-    for (const bucket of Object.values(BUCKET_BY_FOLDER)) {
-      const parts = url.split(`/object/public/${bucket}/`);
-      if (parts.length === 2) {
-        supabase.storage.from(bucket).remove([parts[1]]);
-        return;
-      }
+    const { error } = await supabase.storage.from(parsed.bucket).remove([parsed.path]);
+    if (error) {
+      console.error('Delete image error:', error.message);
+      return false;
     }
-    // fallback เผื่อ URL เก่าจาก bucket เดิม dot-uploads
-    const legacy = url.split('/object/public/dot-uploads/');
-    if (legacy.length === 2) {
-      supabase.storage.from('dot-uploads').remove([legacy[1]]);
-    }
-  } catch {
-    // best-effort cleanup
+    return true;
+  } catch (e) {
+    console.error('Delete image exception:', e);
+    return false;
   }
+}
+
+/**
+ * ลบหลายไฟล์พร้อมกัน — จัดกลุ่มตาม bucket แล้วลบทีละชุด
+ * คืนจำนวนที่ลบสำเร็จ / ล้มเหลว
+ */
+export async function deleteImages(urls: string[]): Promise<{ deleted: number; failed: number }> {
+  const byBucket = new Map<string, string[]>();
+  for (const u of urls) {
+    const parsed = parseImageUrl(u);
+    if (!parsed) continue;
+    const arr = byBucket.get(parsed.bucket) ?? [];
+    arr.push(parsed.path);
+    byBucket.set(parsed.bucket, arr);
+  }
+
+  let deleted = 0;
+  let failed = 0;
+  for (const [bucket, paths] of byBucket) {
+    // แบ่งชุดละ 100 กัน request ใหญ่เกิน
+    for (let i = 0; i < paths.length; i += 100) {
+      const chunk = paths.slice(i, i + 100);
+      const { error } = await supabase.storage.from(bucket).remove(chunk);
+      if (error) { failed += chunk.length; console.error('Delete images error:', error.message); }
+      else deleted += chunk.length;
+    }
+  }
+  return { deleted, failed };
+}
+
+/** ลบไฟล์กำพร้าตามรายการ (bucket_id + name) */
+export async function deleteOrphanFiles(
+  files: Array<{ bucket_id: string; name: string }>,
+): Promise<{ deleted: number; failed: number }> {
+  const byBucket = new Map<string, string[]>();
+  for (const f of files) {
+    const arr = byBucket.get(f.bucket_id) ?? [];
+    arr.push(f.name);
+    byBucket.set(f.bucket_id, arr);
+  }
+
+  let deleted = 0;
+  let failed = 0;
+  for (const [bucket, names] of byBucket) {
+    for (let i = 0; i < names.length; i += 100) {
+      const chunk = names.slice(i, i + 100);
+      const { error } = await supabase.storage.from(bucket).remove(chunk);
+      if (error) { failed += chunk.length; console.error('Delete orphans error:', error.message); }
+      else deleted += chunk.length;
+    }
+  }
+  return { deleted, failed };
 }
