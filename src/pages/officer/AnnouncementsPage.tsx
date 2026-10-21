@@ -102,8 +102,11 @@ export function AnnouncementsPage() {
 
   async function handleDelete() {
     if (!deleteItem) return;
-    if (deleteItem.image_url) deleteImage(deleteItem.image_url);
-    await supabase.from('announcements').delete().eq('id', deleteItem.id);
+    const item = deleteItem;
+    if (item.image_url) { try { await deleteImage(item.image_url); } catch { /* best-effort */ } }
+    const { data, error } = await supabase.from('announcements').delete().eq('id', item.id).select('id');
+    if (error) { alert('ลบในฐานข้อมูลไม่สำเร็จ: ' + error.message); return; }
+    if (!data || data.length === 0) { alert('ไม่พบรายการนี้ในฐานข้อมูล (อาจถูกลบไปแล้ว)'); }
     setDeleteItem(null);
     await fetchAll();
   }

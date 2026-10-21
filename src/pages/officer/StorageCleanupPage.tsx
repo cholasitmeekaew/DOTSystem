@@ -202,13 +202,22 @@ export function StorageCleanupPage() {
 
     const pairs = imagePairs(mod);
 
+    // เงื่อนไขช่วงวันที่ (ใช้กับทุกโหมด)
+    const dateWhere: string[] = [];
+    if (dateFrom) dateWhere.push(`created_at >= '${dateFrom}'`);
+    if (dateTo) dateWhere.push(`created_at < '${dateTo}'::date + interval '1 day'`);
+    const dateCond = dateWhere.length ? ` where ${dateWhere.join(' and ')}` : '';
+
     if (deleteMode === 'image') {
       if (!pairs.length) {
         lines.push('-- โมดูลนี้ไม่มีคอลัมน์รูปภาพโดยตรง');
       }
       for (const { table: t, col } of pairs) {
+        const where = [`${col} is not null`];
+        if (dateFrom) where.push(`created_at >= '${dateFrom}'`);
+        if (dateTo) where.push(`created_at < '${dateTo}'::date + interval '1 day'`);
         lines.push(`-- ลบรูปภาพจาก ${t}.${col} + ลบไฟล์ออกจาก Supabase Storage`);
-        lines.push(`update public.${t} set ${col} = null where ${col} is not null`);
+        lines.push(`update public.${t} set ${col} = null where ${where.join(' and ')}`);
       }
       if (mod.bucket) lines.push(`-- แล้วลบไฟล์จริงใน bucket '${mod.bucket}'`);
     } else {
@@ -218,24 +227,20 @@ export function StorageCleanupPage() {
       }
       lines.push('-- 2) ลบ rows');
       for (const t of mod.tables) {
-        const where: string[] = [];
-        if (dateFrom) where.push(`created_at >= '${dateFrom}'`);
-        if (dateTo) where.push(`created_at < '${dateTo}'::date + interval '1 day'`);
-        const cond = where.length ? ` where ${where.join(' and ')}` : '';
-        lines.push(`delete from public.${t}${cond};`);
+        lines.push(`delete from public.${t}${dateCond};`);
       }
       lines.push('-- 3) ลบไฟล์รูปออกจาก Supabase Storage (ทีละ URL)');
     }
     return lines.join('\n');
   }
 
-  /** เก็บ URL รูปทั้งหมดจาก (ตาราง, คอลัมน์) ที่มีจริง — ไม่ยิงตารางที่ไม่มีคอลัมน์ */
+  /** เก็บ URL รูปทั้งหมดจาก (ตาราง, คอลัมน์) ที่มีจริง — กรองตามช่วงวันที่ที่เลือกเสมอ */
   async function collectImageUrls(pairs: Array<{ table: string; col: string }>): Promise<string[]> {
     const urls: string[] = [];
     for (const { table: t, col } of pairs) {
       let q = supabase.from(t).select(col).not(col, 'is', null);
-      if (deleteMode !== 'image' && dateFrom) q = q.gte('created_at', dateFrom);
-      if (deleteMode !== 'image' && dateTo) q = q.lte('created_at', `${dateTo}T23:59:59`);
+      if (dateFrom) q = q.gte('created_at', dateFrom);
+      if (dateTo) q = q.lte('created_at', `${dateTo}T23:59:59`);
       const { data, error } = await q;
       if (error || !data) continue;
       for (const row of data) {
@@ -278,18 +283,25 @@ export function StorageCleanupPage() {
     }
 
     // ── ขั้นที่ 2: ลบ/อัปเดต DB (เฉพาะตารางที่คอลัมน์มีจริง) ──
+    let rowsAffected = 0;
     if (deleteMode === 'image') {
       for (const { table: t, col } of validPairs) {
-        const { error } = await supabase.from(t).update({ [col]: null }).neq(col, '');
+        // ตั้งรูปเป็น NULL เฉพาะแถวในช่วงวันที่ที่เลือก
+        let q = supabase.from(t).update({ [col]: null }).neq(col, '');
+        if (dateFrom) q = q.gte('created_at', dateFrom);
+        if (dateTo) q = q.lte('created_at', `${dateTo}T23:59:59`);
+        const { data, error } = await q.select('id');
         if (error) errors.push(`${t}: ${error.message}`);
+        else rowsAffected += (data?.length ?? 0);
       }
     } else {
       for (const t of mod.tables) {
         let q = supabase.from(t).delete();
         if (dateFrom) q = q.gte('created_at', dateFrom);
         if (dateTo) q = q.lt('created_at', `${dateTo}T23:59:59`);
-        const { error } = await q;
+        const { data, error } = await q.select('id');
         if (error) errors.push(`${t}: ${error.message}`);
+        else rowsAffected += (data?.length ?? 0);
       }
     }
 
@@ -306,9 +318,10 @@ export function StorageCleanupPage() {
     // ── รีเฟรชข้อมูล ──
     if (!errors.length) {
       const what = deleteMode === 'image' ? 'รูปภาพ' : 'ข้อมูล';
+      const rangeNote = (dateFrom || dateTo) ? ` (ช่วง ${dateFrom || '*'} → ${dateTo || '*'})` : ' (ทั้งช่วงเวลา)';
       const fileNote = filesDeleted ? ` + ลบไฟล์รูป ${filesDeleted} ไฟล์ออกจาก Storage` : '';
       const skipNote = skipped.length ? ` (ข้าม ${skipped.length} ตารางที่ไม่มีคอลัมน์: ${skipped.join(', ')})` : '';
-      setResult({ ok: true, msg: `ลบ${what}จาก "${mod.label}" สำเร็จ${fileNote}${skipNote}` });
+      setResult({ ok: true, msg: `ลบ${what}จาก "${mod.label}"${rangeNote} สำเร็จ ${rowsAffected} แถว${fileNote}${skipNote}` });
       const { data } = await supabase.rpc('get_storage_usage');
       setRows((data ?? []) as StorageRow[]);
       const fs = await supabase.rpc('get_storage_file_stats');
@@ -607,6 +620,13 @@ export function StorageCleanupPage() {
             <input type="date" className="input-field w-full text-sm" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
           </div>
         </div>
+
+        <p className="mb-4 text-[11px] text-gray-500 leading-relaxed">
+          ช่วงวันที่กรองจาก <span className="text-gray-300">created_at</span> ของแต่ละแถว —
+          {(dateFrom || dateTo)
+            ? <> จะลบเฉพาะ <span className="text-amber-300">{dateFrom || '*'}</span> ถึง <span className="text-amber-300">{dateTo || '*'}</span> เท่านั้น</>
+            : <span className="text-amber-300"> ยังไม่ได้เลือกวันที่ → จะลบทั้งช่วงเวลา (ทั้งหมด)</span>}
+        </p>
 
         {/* โหมดลบ */}
         {selectedModule && (

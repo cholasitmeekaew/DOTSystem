@@ -5,6 +5,7 @@ import {
   XCircle, Loader2, Pencil, Save, UserCheck,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { deleteImage } from '../../lib/storage';
 import {
   EmergencyReport, EmergencyReportType, EmergencyReportStatus, Officer,
   EMERGENCY_TYPE_LABELS, EMERGENCY_STATUS_LABELS,
@@ -195,13 +196,19 @@ export function EmergencyManagementPage() {
 
   async function handleDelete() {
     if (!deleteReport || !officer) return;
-    await supabase.from('emergency_reports').delete().eq('id', deleteReport.id);
+    const rep = deleteReport;
+    if ((rep as { image_url?: string | null }).image_url) {
+      try { await deleteImage((rep as { image_url: string }).image_url); } catch { /* best-effort */ }
+    }
+    const { data, error } = await supabase.from('emergency_reports').delete().eq('id', rep.id).select('id');
+    if (error) { alert('ลบในฐานข้อมูลไม่สำเร็จ: ' + error.message); return; }
+    if (!data || data.length === 0) { alert('ไม่พบรายการนี้ในฐานข้อมูล (อาจถูกลบไปแล้ว)'); }
     await supabase.from('audit_logs').insert({
       action: 'DELETE_EMERGENCY_REPORT',
-      target_id: deleteReport.id,
+      target_id: rep.id,
       performed_by: officer.id,
       performed_by_name: officer.name,
-      details: { discord_username: deleteReport.discord_username, type: deleteReport.report_type },
+      details: { discord_username: rep.discord_username, type: rep.report_type },
     });
     setDeleteReport(null);
     await fetchAll();

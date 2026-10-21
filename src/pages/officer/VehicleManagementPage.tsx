@@ -141,15 +141,18 @@ export function VehicleManagementPage() {
 
   async function handleDelete() {
     if (!deleteVehicle || !officer) return;
-    if (deleteVehicle.image_url) deleteImage(deleteVehicle.image_url);
-    await supabase.from('vehicles').delete().eq('id', deleteVehicle.id);
+    const v = deleteVehicle;
+    if (v.image_url) { try { await deleteImage(v.image_url); } catch { /* best-effort */ } }
+    const { data, error } = await supabase.from('vehicles').delete().eq('id', v.id).select('id');
+    if (error) { alert('ลบในฐานข้อมูลไม่สำเร็จ: ' + error.message); return; }
+    if (!data || data.length === 0) { alert('ไม่พบรายการนี้ในฐานข้อมูล (อาจถูกลบไปแล้ว)'); }
     await supabase.from('audit_logs').insert({
       action: 'DELETE_VEHICLE',
       target_type: 'vehicle',
-      target_id: deleteVehicle.id,
+      target_id: v.id,
       performed_by: officer.id,
       performed_by_name: officer.name,
-      details: { plate: deleteVehicle.license_plate },
+      details: { plate: v.license_plate },
     });
     setDeleteVehicle(null);
     await fetchVehicles();

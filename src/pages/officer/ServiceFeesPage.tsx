@@ -404,8 +404,13 @@ export function ServiceFeesPage() {
 
   async function handleDelete() {
     if (!deleteRecord) return;
-    if (deleteRecord.evidence_url) deleteImage(deleteRecord.evidence_url);
-    await supabase.from('service_records').delete().eq('id', deleteRecord.id);
+    const rec = deleteRecord;
+    // ลบไฟล์รูปใน Storage จริง (await ให้เสร็จก่อน)
+    if (rec.evidence_url) { try { await deleteImage(rec.evidence_url); } catch { /* best-effort */ } }
+    // ลบในฐานข้อมูลจริง + ยืนยันว่าแถวถูกลบ
+    const { data, error } = await supabase.from('service_records').delete().eq('id', rec.id).select('id');
+    if (error) { alert('ลบในฐานข้อมูลไม่สำเร็จ: ' + error.message); return; }
+    if (!data || data.length === 0) { alert('ไม่พบรายการนี้ในฐานข้อมูล (อาจถูกลบไปแล้ว)'); }
     setDeleteRecord(null);
     await fetchAll();
   }

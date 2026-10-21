@@ -748,8 +748,10 @@ export function CitizenManagementPage() {
   async function deleteFee(id: string) {
     if (!selectedCitizen) return;
     const rec = feeRecords.find((r) => r.id === id);
-    if (rec?.evidence_url) deleteImage(rec.evidence_url);
-    await supabase.from('service_records').delete().eq('id', id);
+    if (rec?.evidence_url) { try { await deleteImage(rec.evidence_url); } catch { /* best-effort */ } }
+    const { data, error } = await supabase.from('service_records').delete().eq('id', id).select('id');
+    if (error) { alert('ลบในฐานข้อมูลไม่สำเร็จ: ' + error.message); return; }
+    if (!data || data.length === 0) { alert('ไม่พบรายการนี้ในฐานข้อมูล (อาจถูกลบไปแล้ว)'); }
     await fetchFees(selectedCitizen.id);
   }
 
