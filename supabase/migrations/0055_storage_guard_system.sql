@@ -36,8 +36,9 @@ begin
 end;
 $$;
 
-drop table if exists public.storage_module_locations;
-drop table if exists public.storage_module_registry;
+drop table if exists public.storage_module_sources cascade;
+drop table if exists public.storage_module_locations cascade;
+drop table if exists public.storage_module_registry cascade;
 
 -- ── 1) ตาราง Quota (แหล่งความจริงของโควตา) ──
 create table if not exists public.storage_quota (
