@@ -52,11 +52,18 @@ const MODULES: ModuleDef[] = [
   { key: 'other',        label: 'อื่น ๆ',              tables: [] },
 ];
 
-/* ─── สถิติไฟล์รูปใน Storage ─── */
+/* ─── สถิติไฟล์รูปใน Storage (ราย bucket — ใช้เฉพาะแถบสรุปบนสุด) ─── */
 interface StorageFileStats {
   bucket_id: string;
   file_count: number;
   total_bytes: number;
+}
+
+/* ─── สถิติรูปรายโมดูล (นับจากตารางจริง แยกอิสระไม่แชร์กัน) ─── */
+interface ModuleImageStats {
+  module_key: string;
+  img_count: number;
+  img_bytes: number;
 }
 
 /* ─── ข้อมูลพื้นที่จาก RPC ─── */
@@ -78,6 +85,7 @@ export function StorageCleanupPage() {
   const { officer } = useAuth();
   const [rows, setRows] = useState<StorageRow[]>([]);
   const [fileStats, setFileStats] = useState<StorageFileStats[]>([]);
+  const [modImgStats, setModImgStats] = useState<ModuleImageStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
@@ -97,9 +105,12 @@ export function StorageCleanupPage() {
       const { data, error } = await supabase.rpc('get_storage_usage');
       if (error) { setErr(error.message); setLoading(false); return; }
       setRows((data ?? []) as StorageRow[]);
-      // โหลดสถิติไฟล์รูปใน Storage (ไม่ block ถ้า RPC ยังไม่รัน)
+      // แถบสรุปบนสุด: สถิติราย bucket (ไม่ block ถ้า RPC ยังไม่รัน)
       const fs = await supabase.rpc('get_storage_file_stats');
       if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
+      // ตารางรายโมดูล: นับรูปจากตารางจริงของแต่ละโมดูล (แยกอิสระ)
+      const mi = await supabase.rpc('get_module_image_stats');
+      if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
       setLoading(false);
     })();
   }, []);
@@ -120,12 +131,12 @@ export function StorageCleanupPage() {
     return [...groups.values()].sort((a, b) => b.bytes - a.bytes);
   }, [rows]);
 
-  /** bucket → { count, bytes } */
-  const fileStatsMap = useMemo(() => {
+  /** module_key → { count, bytes } — นับจากตารางจริงของแต่ละโมดูล ไม่แชร์ bucket */
+  const modImgMap = useMemo(() => {
     const m = new Map<string, { count: number; bytes: number }>();
-    for (const f of fileStats) m.set(f.bucket_id, { count: f.file_count, bytes: f.total_bytes });
+    for (const f of modImgStats) m.set(f.module_key, { count: f.img_count, bytes: f.img_bytes });
     return m;
-  }, [fileStats]);
+  }, [modImgStats]);
 
   const totalUsed = rows.reduce((s, r) => s + r.total_bytes, 0);
   /** Postgres default จำกัด 100 MB ต่อ database (Free tier) — ใช้เป็น scale */
@@ -259,6 +270,8 @@ export function StorageCleanupPage() {
       setRows((data ?? []) as StorageRow[]);
       const fs = await supabase.rpc('get_storage_file_stats');
       if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
+      const mi = await supabase.rpc('get_module_image_stats');
+      if (!mi.error && mi.data) setModImgStats(mi.data as ModuleImageStats[]);
     } else {
       setResult({ ok: false, msg: errors.join('; ') });
     }
@@ -366,17 +379,23 @@ export function StorageCleanupPage() {
             <tbody>
               {moduleStats.map((g) => {
                 const pct = totalUsed > 0 ? (g.bytes / totalUsed) * 100 : 0;
-                const fs = g.def.bucket ? fileStatsMap.get(g.def.bucket) : undefined;
+                // นับรูปจากรายการจริงของโมดูลนี้เท่านั้น — ไม่แชร์ bucket กับโมดูลอื่น
+                const mi = modImgMap.get(g.def.key);
+                const hasImgCol = (g.def.imageColumns ?? []).length > 0 || g.def.key === 'manual';
                 return (
                   <tr key={g.def.key} className="border-b border-gray-800/50 hover:bg-navy-900/30">
                     <td className="px-2 py-2 text-white font-medium">{g.def.label}</td>
                     <td className="px-2 py-2 text-right font-mono text-gray-400">{g.rows.toLocaleString()}</td>
                     <td className="px-2 py-2 text-right font-mono text-gray-300">{fmtBytes(g.bytes)}</td>
                     <td className="px-2 py-2 text-center font-mono text-blue-300">
-                      {fs ? `${fs.count} รูป` : <span className="text-gray-700">—</span>}
+                      {!hasImgCol ? <span className="text-gray-700">—</span>
+                        : mi ? `${mi.count} รูป`
+                        : <span className="text-gray-700">—</span>}
                     </td>
                     <td className="px-2 py-2 text-right font-mono text-blue-300">
-                      {fs && fs.bytes > 0 ? fmtBytes(fs.bytes) : <span className="text-gray-700">—</span>}
+                      {!hasImgCol ? <span className="text-gray-700">—</span>
+                        : mi && mi.bytes > 0 ? fmtBytes(mi.bytes)
+                        : <span className="text-gray-700">—</span>}
                     </td>
                     <td className="px-2 py-2 text-right font-mono text-amber-400">{pct.toFixed(1)}%</td>
                     <td className="px-2 py-2 w-40">
@@ -396,12 +415,14 @@ export function StorageCleanupPage() {
                 </td>
                 <td className="px-2 py-2 text-right font-mono text-white">{fmtBytes(totalUsed)}</td>
                 <td className="px-2 py-2 text-center font-mono text-blue-300">
-                  {fileStats.reduce((s, f) => s + f.file_count, 0)} รูป
+                  {moduleStats.reduce((s, g) => s + (modImgMap.get(g.def.key)?.count ?? 0), 0)} รูป
                 </td>
                 <td className="px-2 py-2 text-right font-mono text-blue-300">
-                  {fmtBytes(fileStats.reduce((s, f) => s + f.total_bytes, 0))}
+                  {fmtBytes(moduleStats.reduce((s, g) => s + (modImgMap.get(g.def.key)?.bytes ?? 0), 0))}
                 </td>
-                <td className="px-2 py-2 text-right font-mono text-amber-400">100%</td>
+                <td className="px-2 py-2 text-right font-mono text-amber-400">
+                  {moduleStats.reduce((s, g) => s + (totalUsed > 0 ? (g.bytes / totalUsed) * 100 : 0), 0).toFixed(1)}%
+                </td>
                 <td />
               </tr>
             </tfoot>
