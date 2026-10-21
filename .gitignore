@@ -32,3 +32,6 @@ Thumbs.db
 
 # Supabase CLI local state (ไม่ควร commit)
 supabase/.temp/
+
+# recovery backups (data) 
+.recovery/
