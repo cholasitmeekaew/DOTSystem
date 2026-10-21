@@ -108,7 +108,15 @@ export function StorageCleanupPage() {
 
   const totalUsed = rows.reduce((s, r) => s + r.total_bytes, 0);
   /** Postgres default จำกัด 100 MB ต่อ database (Free tier) — ใช้เป็น scale */
-  const totalCapacity = 100 * 1_048_576;
+  /**
+   * โควตา Database Storage ของ Supabase Free Tier = 500 MB
+   *
+   * เดิม hardcode 100 MB ทำให้กราฟแสดงสัดส่วนผิด
+   * (ใช้ 200 MB → แสดง 200% ทั้งที่จริงแค่ 40%)
+   *
+   * ถ้าใช้แพ็กเกจ Pro (8 GB) เปลี่ยนค่านี้ที่เดียว
+   */
+  const totalCapacity = 500 * 1_048_576;
   const totalFree = Math.max(0, totalCapacity - totalUsed);
   const usedPct = Math.min(100, (totalUsed / totalCapacity) * 100);
 
