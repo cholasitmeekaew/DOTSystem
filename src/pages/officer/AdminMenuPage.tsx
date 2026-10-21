@@ -8,7 +8,7 @@
 import {
   MessageSquare, Megaphone, Tag, Users, UserCog, Award, Wallet,
   Siren, Car, ShieldAlert, Settings, FileCheck2, CalendarCheck, CalendarRange,
-  BookOpen, Clock, FileText, UserCheck,
+  BookOpen, Clock, FileText, UserCheck, HardDrive,
 } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { DepartmentStatsPanel } from '../../components/DepartmentStatsPanel';
@@ -80,6 +80,9 @@ const GROUPS: Array<{ title: string; note: string; items: AdminCard[] }> = [
       { id: 'admin-settings', label: 'ตั้งค่าระบบ',
         desc: 'สวิตช์ PPS Engine, ระบบเข้าเวร และสถานะระบบ',
         icon: Settings, tint: 'bg-gray-500/15 text-gray-300', ring: 'hover:border-gray-500/50' },
+      { id: 'storage-system', label: 'พื้นที่จัดเก็บระบบ',
+        desc: 'กราฟพื้นที่จาก Quota, กักกันไฟล์กำพร้า และป้องกันข้อมูลรวน',
+        icon: HardDrive, tint: 'bg-cyan-500/15 text-cyan-300', ring: 'hover:border-cyan-500/50' },
       { id: 'report-approvals', label: 'อนุมัติรายงานปฏิบัติงาน',
         desc: 'ตรวจ อนุมัติ หรือไม่อนุมัติรายงานของเจ้าหน้าที่',
         icon: FileCheck2, tint: 'bg-lime-500/15 text-lime-300', ring: 'hover:border-lime-500/50' },

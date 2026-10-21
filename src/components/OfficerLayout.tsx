@@ -34,7 +34,8 @@ export type OfficerPage =
   | 'manual'
   | 'my-points'
   | 'points-management'
-  | 'department-balance';
+  | 'department-balance'
+  | 'storage-system';
 
 interface Props {
   children: ReactNode;

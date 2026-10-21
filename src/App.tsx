@@ -42,6 +42,7 @@ const AdminSettingsPage = lazy(() => import('./pages/officer/AdminSettingsPage')
 const PointsManagementPage = lazy(() => import('./pages/officer/PointsManagementPage').then((m) => ({ default: m.PointsManagementPage })));
 const DepartmentBalancePage = lazy(() => import('./pages/officer/DepartmentBalancePage').then((m) => ({ default: m.DepartmentBalancePage })));
 const CaseOfficersPage = lazy(() => import('./pages/officer/CaseOfficersPage').then((m) => ({ default: m.CaseOfficersPage })));
+const StorageGuardPage = lazy(() => import('./pages/officer/StorageGuardPage').then((m) => ({ default: m.StorageGuardPage })));
 
 // Access Denied
 import { ShieldOff } from 'lucide-react';
@@ -174,6 +175,7 @@ function OfficerApp() {
     'complaints', 'announcements', 'vehicles',
     'admin-settings', 'report-approvals', 'leave-approvals', 'roster-admin',
     'manual-edit', 'duty-logs-admin', 'work-reports-admin',
+    'storage-system',
   ];
   const isDenied = commissionerOnlyPages.includes(currentPage) && !isCommissioner;
 
@@ -255,6 +257,7 @@ function OfficerApp() {
             {currentPage === 'points-management' && isCommissioner && <PointsManagementPage />}
             {currentPage === 'department-balance' && isCommissioner && <DepartmentBalancePage />}
             {currentPage === 'case-officers' && <CaseOfficersPage />}
+            {currentPage === 'storage-system' && isCommissioner && <StorageGuardPage />}
           </>
         )}
         </Suspense>
