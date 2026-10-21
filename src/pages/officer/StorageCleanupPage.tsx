@@ -21,6 +21,7 @@ import {
   AlertTriangle, FileCode2, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { deleteImage } from '../../lib/storage';
 import { useAuth } from '../../lib/AuthContext';
 
 /* ─── โมดูล ─── */
@@ -30,24 +31,33 @@ interface ModuleDef {
   tables: string[];
   /** ล็อก: ลบได้เฉพาะรูปภาพ ห้ามลบ Row (สถิติ/คะแนน) */
   imageOnly?: boolean;
-  /** คอลัมน์ที่เก็บรูป URL (ใช้ลบเฉพาะไฟล์) */
+  /** คอลัมน์ที่เก็บรูป URL ใน DB (ใช้ลบเฉพาะไฟล์) */
   imageColumns?: string[];
+  /** Supabase Storage bucket ที่โมดูลนี้ใช้ */
+  bucket?: string;
 }
 
 const MODULES: ModuleDef[] = [
-  { key: 'officers',     label: 'เจ้าหน้าที่',       tables: ['officers','officer_generations','officer_leaves','officer_login_logs','service_record_officers'], imageColumns: ['photo_url'] },
+  { key: 'officers',     label: 'เจ้าหน้าที่',       tables: ['officers','officer_generations','officer_leaves','officer_login_logs','service_record_officers'], imageColumns: ['photo_url'], bucket: 'officer-photos' },
   { key: 'duty',         label: 'เข้าเวร / ตารางเวร', tables: ['duty_logs','duty_schedules','schedule_overrides','leave_quotas'], imageOnly: false },
-  { key: 'services',     label: 'เคส / บริการ',       tables: ['citizens','service_records','service_payments','service_record_revenue_overrides','claim_records'], imageOnly: false },
+  { key: 'services',     label: 'เคส / บริการ',       tables: ['citizens','service_records','service_payments','service_record_revenue_overrides','claim_records'], imageOnly: false, imageColumns: ['evidence_url'], bucket: 'evidence' },
   { key: 'points',       label: 'คะแนน / งบประมาณ',    tables: ['points_award_marks','department_balances','manual_budget_injections'], imageOnly: true },
-  { key: 'work_reports', label: 'รายงานปฏิบัติงาน',    tables: ['work_reports','work_report_cases'], imageOnly: true },
-  { key: 'announcements',label: 'ประกาศ / ข่าวสาร',    tables: ['announcements'], imageColumns: ['image_url'] },
-  { key: 'complaints',   label: 'ร้องเรียน',           tables: ['complaints'], imageOnly: false },
-  { key: 'vehicles',     label: 'ยานพาหนะ / ใบอนุญาต', tables: ['vehicles','licenses'], imageColumns: ['image_url','photo_url'] },
-  { key: 'emergency',    label: 'แจ้งเหตุฉุกเฉิน',      tables: ['emergency_reports'], imageOnly: false },
-  { key: 'manual',       label: 'คู่มือ',               tables: ['manual_chapters','manual_items','manual_sections','manual_blocks'], imageOnly: true },
+  { key: 'work_reports', label: 'รายงานปฏิบัติงาน',    tables: ['work_reports','work_report_cases'], imageOnly: true, imageColumns: ['evidence_url'], bucket: 'evidence' },
+  { key: 'announcements',label: 'ประกาศ / ข่าวสาร',    tables: ['announcements'], imageColumns: ['image_url'], bucket: 'announcements' },
+  { key: 'complaints',   label: 'ร้องเรียน',           tables: ['complaints'], imageOnly: false, imageColumns: ['evidence_url'] },
+  { key: 'vehicles',     label: 'ยานพาหนะ / ใบอนุญาต', tables: ['vehicles','licenses'], imageColumns: ['image_url'], bucket: 'vehicles' },
+  { key: 'emergency',    label: 'แจ้งเหตุฉุกเฉิน',      tables: ['emergency_reports'], imageOnly: false, imageColumns: ['image_url'], bucket: 'evidence' },
+  { key: 'manual',       label: 'คู่มือ',               tables: ['manual_chapters','manual_items','manual_sections','manual_blocks'], imageOnly: true, bucket: 'manual' },
   { key: 'system',       label: 'ระบบ / ตั้งค่า',        tables: ['system_settings','audit_logs','officer_ranks','pps_penalty_config','server_status_daily','server_status_daily_log'], imageOnly: true },
-  { key: 'other',        label: 'อื่น ๆ',              tables: [] }, // fallback
+  { key: 'other',        label: 'อื่น ๆ',              tables: [] },
 ];
+
+/* ─── สถิติไฟล์รูปใน Storage ─── */
+interface StorageFileStats {
+  bucket_id: string;
+  file_count: number;
+  total_bytes: number;
+}
 
 /* ─── ข้อมูลพื้นที่จาก RPC ─── */
 interface StorageRow {
@@ -67,6 +77,7 @@ function fmtBytes(b: number): string {
 export function StorageCleanupPage() {
   const { officer } = useAuth();
   const [rows, setRows] = useState<StorageRow[]>([]);
+  const [fileStats, setFileStats] = useState<StorageFileStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
@@ -86,6 +97,9 @@ export function StorageCleanupPage() {
       const { data, error } = await supabase.rpc('get_storage_usage');
       if (error) { setErr(error.message); setLoading(false); return; }
       setRows((data ?? []) as StorageRow[]);
+      // โหลดสถิติไฟล์รูปใน Storage (ไม่ block ถ้า RPC ยังไม่รัน)
+      const fs = await supabase.rpc('get_storage_file_stats');
+      if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
       setLoading(false);
     })();
   }, []);
@@ -105,6 +119,13 @@ export function StorageCleanupPage() {
     }
     return [...groups.values()].sort((a, b) => b.bytes - a.bytes);
   }, [rows]);
+
+  /** bucket → { count, bytes } */
+  const fileStatsMap = useMemo(() => {
+    const m = new Map<string, { count: number; bytes: number }>();
+    for (const f of fileStats) m.set(f.bucket_id, { count: f.file_count, bytes: f.total_bytes });
+    return m;
+  }, [fileStats]);
 
   const totalUsed = rows.reduce((s, r) => s + r.total_bytes, 0);
   /** Postgres default จำกัด 100 MB ต่อ database (Free tier) — ใช้เป็น scale */
@@ -135,14 +156,22 @@ export function StorageCleanupPage() {
     if (deleteMode === 'image') {
       for (const col of mod.imageColumns ?? []) {
         for (const t of mod.tables) {
-          lines.push(`-- ลบรูปภาพจาก ${t}.${col}`);
+          lines.push(`-- ลบรูปภาพจาก ${t}.${col} + ลบไฟล์ออกจาก Supabase Storage`);
           lines.push(`update public.${t} set ${col} = null where ${col} is not null`);
         }
       }
       if (!mod.imageColumns?.length) {
         lines.push('-- โมดูลนี้ไม่มีคอลัมน์รูปภาพโดยตรง');
       }
+      if (mod.bucket) lines.push(`-- แล้วลบไฟล์จริงใน bucket '${mod.bucket}'`);
     } else {
+      lines.push('-- 1) เก็บ URL รูปทั้งหมดก่อนลบ');
+      for (const col of mod.imageColumns ?? []) {
+        for (const t of mod.tables) {
+          lines.push(`select ${col} from public.${t} where ${col} is not null;`);
+        }
+      }
+      lines.push('-- 2) ลบ rows');
       for (const t of mod.tables) {
         const where: string[] = [];
         if (dateFrom) where.push(`created_at >= '${dateFrom}'`);
@@ -150,8 +179,28 @@ export function StorageCleanupPage() {
         const cond = where.length ? ` where ${where.join(' and ')}` : '';
         lines.push(`delete from public.${t}${cond};`);
       }
+      lines.push('-- 3) ลบไฟล์รูปออกจาก Supabase Storage (ทีละ URL)');
     }
     return lines.join('\n');
+  }
+
+  /** เก็บ URL รูปทั้งหมดจากคอลัมน์ที่ระบุ (เพื่อลบไฟล์ออกจาก Storage) */
+  async function collectImageUrls(tables: string[], cols: string[]): Promise<string[]> {
+    const urls: string[] = [];
+    for (const t of tables) {
+      for (const col of cols) {
+        let q = supabase.from(t).select(col).not(col, 'is', null);
+        if (deleteMode !== 'image' && dateFrom) q = q.gte('created_at', dateFrom);
+        if (deleteMode !== 'image' && dateTo) q = q.lte('created_at', `${dateTo}T23:59:59`);
+        const { data, error } = await q;
+        if (error || !data) continue;
+        for (const row of data) {
+          const v = (row as Record<string, unknown>)[col];
+          if (typeof v === 'string' && v) urls.push(v);
+        }
+      }
+    }
+    return [...new Set(urls)];
   }
 
   async function runCleanup() {
@@ -164,9 +213,17 @@ export function StorageCleanupPage() {
     if (!mod) { setRunning(false); return; }
 
     const errors: string[] = [];
+    const cols = mod.imageColumns ?? [];
 
+    // ── ขั้นที่ 1: เก็บ URL รูปไว้ก่อนลบ DB ──
+    let urls: string[] = [];
+    if (cols.length) {
+      urls = await collectImageUrls(mod.tables, cols);
+    }
+
+    // ── ขั้นที่ 2: ลบ/อัปเดต DB ──
     if (deleteMode === 'image') {
-      for (const col of mod.imageColumns ?? []) {
+      for (const col of cols) {
         for (const t of mod.tables) {
           const { error } = await supabase.from(t).update({ [col]: null }).neq(col, '');
           if (error) errors.push(`${t}: ${error.message}`);
@@ -182,12 +239,28 @@ export function StorageCleanupPage() {
       }
     }
 
-    if (errors.length) {
-      setResult({ ok: false, msg: errors.join('; ') });
-    } else {
-      setResult({ ok: true, msg: `ลบ${deleteMode === 'image' ? 'รูปภาพ' : 'ข้อมูล'}จาก "${mod.label}" สำเร็จ` });
+    // ── ขั้นที่ 3: ลบไฟล์จริงออกจาก Supabase Storage ──
+    let filesDeleted = 0;
+    if (urls.length) {
+      for (const u of urls) {
+        deleteImage(u);   // fire-and-forget ใน storage.ts
+        filesDeleted++;
+      }
+      // รอให้ request ยิงเสร็จ (deleteImage ไม่ await)
+      await new Promise((r) => setTimeout(r, 800));
+    }
+
+    // ── รีเฟรชข้อมูล ──
+    if (!errors.length) {
+      const what = deleteMode === 'image' ? 'รูปภาพ' : 'ข้อมูล';
+      const fileNote = filesDeleted ? ` + ลบไฟล์รูป ${filesDeleted} ไฟล์ออกจาก Storage` : '';
+      setResult({ ok: true, msg: `ลบ${what}จาก "${mod.label}" สำเร็จ${fileNote}` });
       const { data } = await supabase.rpc('get_storage_usage');
       setRows((data ?? []) as StorageRow[]);
+      const fs = await supabase.rpc('get_storage_file_stats');
+      if (!fs.error && fs.data) setFileStats(fs.data as StorageFileStats[]);
+    } else {
+      setResult({ ok: false, msg: errors.join('; ') });
     }
     setRunning(false);
     setShowConfirm(false);
@@ -245,6 +318,29 @@ export function StorageCleanupPage() {
           </div>
         </div>
 
+        {/* แถบสรุปภาพรวมรูปภาพ */}
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          <div className="bg-blue-950/30 border border-blue-900/50 rounded-lg p-3 text-center">
+            <ImageIcon size={16} className="mx-auto mb-1 text-blue-400" />
+            <div className="text-xl font-bold text-white font-mono">
+              {fileStats.reduce((s, f) => s + f.file_count, 0)}
+            </div>
+            <div className="text-[10px] text-gray-400">รูปภาพทั้งหมดใน Storage</div>
+          </div>
+          <div className="bg-cyan-950/30 border border-cyan-900/50 rounded-lg p-3 text-center">
+            <Database size={16} className="mx-auto mb-1 text-cyan-400" />
+            <div className="text-xl font-bold text-white font-mono">
+              {fmtBytes(fileStats.reduce((s, f) => s + f.total_bytes, 0))}
+            </div>
+            <div className="text-[10px] text-gray-400">พื้นที่ไฟล์รูปที่ใช้</div>
+          </div>
+          <div className="bg-purple-950/30 border border-purple-900/50 rounded-lg p-3 text-center">
+            <HardDrive size={16} className="mx-auto mb-1 text-purple-400" />
+            <div className="text-xl font-bold text-white font-mono">{fileStats.length}</div>
+            <div className="text-[10px] text-gray-400">Bucket ที่มีไฟล์</div>
+          </div>
+        </div>
+
         {/* Progress bar */}
         <div className="w-full h-3 bg-navy-800 rounded-full overflow-hidden mb-6">
           <div
@@ -260,7 +356,9 @@ export function StorageCleanupPage() {
               <tr className="border-b border-gray-800">
                 <th className="text-left px-2 py-2 text-gray-500 font-medium">โมดูล</th>
                 <th className="text-right px-2 py-2 text-gray-500 font-medium">จำนวนแถว</th>
-                <th className="text-right px-2 py-2 text-gray-500 font-medium">พื้นที่</th>
+                <th className="text-right px-2 py-2 text-gray-500 font-medium">พื้นที่ DB</th>
+                <th className="text-center px-2 py-2 text-gray-500 font-medium">🖼 รูปภาพ</th>
+                <th className="text-right px-2 py-2 text-gray-500 font-medium">ขนาดรูป</th>
                 <th className="text-right px-2 py-2 text-gray-500 font-medium">สัดส่วน</th>
                 <th className="text-left px-2 py-2 text-gray-500 font-medium">📊</th>
               </tr>
@@ -268,11 +366,18 @@ export function StorageCleanupPage() {
             <tbody>
               {moduleStats.map((g) => {
                 const pct = totalUsed > 0 ? (g.bytes / totalUsed) * 100 : 0;
+                const fs = g.def.bucket ? fileStatsMap.get(g.def.bucket) : undefined;
                 return (
                   <tr key={g.def.key} className="border-b border-gray-800/50 hover:bg-navy-900/30">
                     <td className="px-2 py-2 text-white font-medium">{g.def.label}</td>
                     <td className="px-2 py-2 text-right font-mono text-gray-400">{g.rows.toLocaleString()}</td>
                     <td className="px-2 py-2 text-right font-mono text-gray-300">{fmtBytes(g.bytes)}</td>
+                    <td className="px-2 py-2 text-center font-mono text-blue-300">
+                      {fs ? `${fs.count} รูป` : <span className="text-gray-700">—</span>}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-blue-300">
+                      {fs && fs.bytes > 0 ? fmtBytes(fs.bytes) : <span className="text-gray-700">—</span>}
+                    </td>
                     <td className="px-2 py-2 text-right font-mono text-amber-400">{pct.toFixed(1)}%</td>
                     <td className="px-2 py-2 w-40">
                       <div className="h-2 bg-navy-800 rounded-full overflow-hidden">
@@ -283,6 +388,23 @@ export function StorageCleanupPage() {
                 );
               })}
             </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-gray-700 font-bold">
+                <td className="px-2 py-2 text-white">รวมทั้งหมด</td>
+                <td className="px-2 py-2 text-right font-mono text-gray-300">
+                  {rows.reduce((s, r) => s + r.row_count, 0).toLocaleString()}
+                </td>
+                <td className="px-2 py-2 text-right font-mono text-white">{fmtBytes(totalUsed)}</td>
+                <td className="px-2 py-2 text-center font-mono text-blue-300">
+                  {fileStats.reduce((s, f) => s + f.file_count, 0)} รูป
+                </td>
+                <td className="px-2 py-2 text-right font-mono text-blue-300">
+                  {fmtBytes(fileStats.reduce((s, f) => s + f.total_bytes, 0))}
+                </td>
+                <td className="px-2 py-2 text-right font-mono text-amber-400">100%</td>
+                <td />
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
