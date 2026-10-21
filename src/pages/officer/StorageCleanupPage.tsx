@@ -31,26 +31,37 @@ interface ModuleDef {
   tables: string[];
   /** ล็อก: ลบได้เฉพาะรูปภาพ ห้ามลบ Row (สถิติ/คะแนน) */
   imageOnly?: boolean;
-  /** คอลัมน์ที่เก็บรูป URL ใน DB (ใช้ลบเฉพาะไฟล์) */
-  imageColumns?: string[];
+  /**
+   * คอลัมน์รูป URL "รายตาราง" — เฉพาะตารางที่มีคอลัมน์จริงเท่านั้น
+   *
+   * เดิมใช้ imageColumns[] ระดับโมดูล แล้วไล่ยิงทุกตารางในโมดูล
+   * → PostgREST error "Could not find the 'evidence_url' column"
+   *   เพราะตารางอย่าง citizens / service_payments ไม่มีคอลัมน์นี้
+   */
+  imageByTable?: Record<string, string>;
   /** Supabase Storage bucket ที่โมดูลนี้ใช้ */
   bucket?: string;
 }
 
 const MODULES: ModuleDef[] = [
-  { key: 'officers',     label: 'เจ้าหน้าที่',       tables: ['officers','officer_generations','officer_leaves','officer_login_logs','service_record_officers'], imageColumns: ['photo_url'], bucket: 'officer-photos' },
+  { key: 'officers',     label: 'เจ้าหน้าที่',       tables: ['officers','officer_generations','officer_leaves','officer_login_logs','service_record_officers'], imageByTable: { officers: 'photo_url' }, bucket: 'officer-photos' },
   { key: 'duty',         label: 'เข้าเวร / ตารางเวร', tables: ['duty_logs','duty_schedules','schedule_overrides','leave_quotas'], imageOnly: false },
-  { key: 'services',     label: 'เคส / บริการ',       tables: ['citizens','service_records','service_payments','service_record_revenue_overrides','claim_records'], imageOnly: false, imageColumns: ['evidence_url'], bucket: 'evidence' },
+  { key: 'services',     label: 'เคส / บริการ',       tables: ['citizens','service_records','service_payments','service_record_revenue_overrides','claim_records'], imageOnly: false, imageByTable: { service_records: 'evidence_url' }, bucket: 'evidence' },
   { key: 'points',       label: 'คะแนน / งบประมาณ',    tables: ['points_award_marks','department_balances','manual_budget_injections'], imageOnly: true },
-  { key: 'work_reports', label: 'รายงานปฏิบัติงาน',    tables: ['work_reports','work_report_cases'], imageOnly: true, imageColumns: ['evidence_url'], bucket: 'evidence' },
-  { key: 'announcements',label: 'ประกาศ / ข่าวสาร',    tables: ['announcements'], imageColumns: ['image_url'], bucket: 'announcements' },
-  { key: 'complaints',   label: 'ร้องเรียน',           tables: ['complaints'], imageOnly: false, imageColumns: ['evidence_url'] },
-  { key: 'vehicles',     label: 'ยานพาหนะ / ใบอนุญาต', tables: ['vehicles','licenses'], imageColumns: ['image_url'], bucket: 'vehicles' },
-  { key: 'emergency',    label: 'แจ้งเหตุฉุกเฉิน',      tables: ['emergency_reports'], imageOnly: false, imageColumns: ['image_url'], bucket: 'evidence' },
+  { key: 'work_reports', label: 'รายงานปฏิบัติงาน',    tables: ['work_reports','work_report_cases'], imageOnly: true, imageByTable: { work_report_cases: 'evidence_url' }, bucket: 'evidence' },
+  { key: 'announcements',label: 'ประกาศ / ข่าวสาร',    tables: ['announcements'], imageByTable: { announcements: 'image_url' }, bucket: 'announcements' },
+  { key: 'complaints',   label: 'ร้องเรียน',           tables: ['complaints'], imageOnly: false, imageByTable: { complaints: 'evidence_url' } },
+  { key: 'vehicles',     label: 'ยานพาหนะ / ใบอนุญาต', tables: ['vehicles','licenses'], imageByTable: { vehicles: 'image_url' }, bucket: 'vehicles' },
+  { key: 'emergency',    label: 'แจ้งเหตุฉุกเฉิน',      tables: ['emergency_reports'], imageOnly: false, imageByTable: { emergency_reports: 'image_url' }, bucket: 'evidence' },
   { key: 'manual',       label: 'คู่มือ',               tables: ['manual_chapters','manual_items','manual_sections','manual_blocks'], imageOnly: true, bucket: 'manual' },
   { key: 'system',       label: 'ระบบ / ตั้งค่า',        tables: ['system_settings','audit_logs','officer_ranks','pps_penalty_config','server_status_daily','server_status_daily_log'], imageOnly: true },
   { key: 'other',        label: 'อื่น ๆ',              tables: [] },
 ];
+
+/** คู่ (ตาราง, คอลัมน์รูป) ที่มีจริงในโมดูล — ใช้ตอน cleanup ไม่ยิงตารางมั่ว */
+function imagePairs(mod: ModuleDef): Array<{ table: string; col: string }> {
+  return Object.entries(mod.imageByTable ?? {}).map(([table, col]) => ({ table, col }));
+}
 
 /* ─── สถิติไฟล์รูปใน Storage (ราย bucket — ใช้เฉพาะแถบสรุปบนสุด) ─── */
 interface StorageFileStats {
@@ -164,23 +175,21 @@ export function StorageCleanupPage() {
       '-- =============================================================',
     ];
 
+    const pairs = imagePairs(mod);
+
     if (deleteMode === 'image') {
-      for (const col of mod.imageColumns ?? []) {
-        for (const t of mod.tables) {
-          lines.push(`-- ลบรูปภาพจาก ${t}.${col} + ลบไฟล์ออกจาก Supabase Storage`);
-          lines.push(`update public.${t} set ${col} = null where ${col} is not null`);
-        }
-      }
-      if (!mod.imageColumns?.length) {
+      if (!pairs.length) {
         lines.push('-- โมดูลนี้ไม่มีคอลัมน์รูปภาพโดยตรง');
+      }
+      for (const { table: t, col } of pairs) {
+        lines.push(`-- ลบรูปภาพจาก ${t}.${col} + ลบไฟล์ออกจาก Supabase Storage`);
+        lines.push(`update public.${t} set ${col} = null where ${col} is not null`);
       }
       if (mod.bucket) lines.push(`-- แล้วลบไฟล์จริงใน bucket '${mod.bucket}'`);
     } else {
       lines.push('-- 1) เก็บ URL รูปทั้งหมดก่อนลบ');
-      for (const col of mod.imageColumns ?? []) {
-        for (const t of mod.tables) {
-          lines.push(`select ${col} from public.${t} where ${col} is not null;`);
-        }
+      for (const { table: t, col } of pairs) {
+        lines.push(`select ${col} from public.${t} where ${col} is not null;`);
       }
       lines.push('-- 2) ลบ rows');
       for (const t of mod.tables) {
@@ -195,20 +204,18 @@ export function StorageCleanupPage() {
     return lines.join('\n');
   }
 
-  /** เก็บ URL รูปทั้งหมดจากคอลัมน์ที่ระบุ (เพื่อลบไฟล์ออกจาก Storage) */
-  async function collectImageUrls(tables: string[], cols: string[]): Promise<string[]> {
+  /** เก็บ URL รูปทั้งหมดจาก (ตาราง, คอลัมน์) ที่มีจริง — ไม่ยิงตารางที่ไม่มีคอลัมน์ */
+  async function collectImageUrls(pairs: Array<{ table: string; col: string }>): Promise<string[]> {
     const urls: string[] = [];
-    for (const t of tables) {
-      for (const col of cols) {
-        let q = supabase.from(t).select(col).not(col, 'is', null);
-        if (deleteMode !== 'image' && dateFrom) q = q.gte('created_at', dateFrom);
-        if (deleteMode !== 'image' && dateTo) q = q.lte('created_at', `${dateTo}T23:59:59`);
-        const { data, error } = await q;
-        if (error || !data) continue;
-        for (const row of data) {
-          const v = (row as Record<string, unknown>)[col];
-          if (typeof v === 'string' && v) urls.push(v);
-        }
+    for (const { table: t, col } of pairs) {
+      let q = supabase.from(t).select(col).not(col, 'is', null);
+      if (deleteMode !== 'image' && dateFrom) q = q.gte('created_at', dateFrom);
+      if (deleteMode !== 'image' && dateTo) q = q.lte('created_at', `${dateTo}T23:59:59`);
+      const { data, error } = await q;
+      if (error || !data) continue;
+      for (const row of data) {
+        const v = (row as Record<string, unknown>)[col];
+        if (typeof v === 'string' && v) urls.push(v);
       }
     }
     return [...new Set(urls)];
@@ -224,21 +231,19 @@ export function StorageCleanupPage() {
     if (!mod) { setRunning(false); return; }
 
     const errors: string[] = [];
-    const cols = mod.imageColumns ?? [];
+    const pairs = imagePairs(mod);
 
     // ── ขั้นที่ 1: เก็บ URL รูปไว้ก่อนลบ DB ──
     let urls: string[] = [];
-    if (cols.length) {
-      urls = await collectImageUrls(mod.tables, cols);
+    if (pairs.length) {
+      urls = await collectImageUrls(pairs);
     }
 
-    // ── ขั้นที่ 2: ลบ/อัปเดต DB ──
+    // ── ขั้นที่ 2: ลบ/อัปเดต DB (เฉพาะตารางที่มีคอลัมน์จริง) ──
     if (deleteMode === 'image') {
-      for (const col of cols) {
-        for (const t of mod.tables) {
-          const { error } = await supabase.from(t).update({ [col]: null }).neq(col, '');
-          if (error) errors.push(`${t}: ${error.message}`);
-        }
+      for (const { table: t, col } of pairs) {
+        const { error } = await supabase.from(t).update({ [col]: null }).neq(col, '');
+        if (error) errors.push(`${t}: ${error.message}`);
       }
     } else {
       for (const t of mod.tables) {
@@ -381,7 +386,7 @@ export function StorageCleanupPage() {
                 const pct = totalUsed > 0 ? (g.bytes / totalUsed) * 100 : 0;
                 // นับรูปจากรายการจริงของโมดูลนี้เท่านั้น — ไม่แชร์ bucket กับโมดูลอื่น
                 const mi = modImgMap.get(g.def.key);
-                const hasImgCol = (g.def.imageColumns ?? []).length > 0 || g.def.key === 'manual';
+                const hasImgCol = imagePairs(g.def).length > 0 || g.def.key === 'manual';
                 return (
                   <tr key={g.def.key} className="border-b border-gray-800/50 hover:bg-navy-900/30">
                     <td className="px-2 py-2 text-white font-medium">{g.def.label}</td>
