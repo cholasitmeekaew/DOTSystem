@@ -2,7 +2,7 @@
 -- 0063: Module-based Storage Mapping (โครงสร้างความสัมพันธ์แยก)
 -- =============================================================
 -- แนวคิด: ไม่กวาด Storage กลางแบบสุ่มอีกต่อไป
---   แต่ละโมดูล déclare ชัดเจนว่า
+--   แต่ละโมดูลประกาศชัดเจนว่า
 --     1) เก็บ URL รูปในตาราง/คอลัมน์ไหนของ DB
 --     2) เก็บไฟล์ใน bucket + path pattern ไหนของ Storage
 --
@@ -63,7 +63,7 @@ values
   -- เจ้าหน้าที่ (ปัจจุบัน + bucket เก่า)
   ('officers',      'officer-photos', '^officers/[^/]+$'),
   ('officers',      'dot-uploads',    '^officers/[^/]+$'),
-  -- เคส/บริการ (ไฟล์เก่าอยู่ที่ evidence/ ตรง ๆ + ไฟล์ใหม่ยู่ evidence/services/)
+  -- เคส/บริการ (ไฟล์เก่าอยู่ที่ evidence/ ตรง ๆ + ไฟล์ใหม่อยู่ evidence/services/)
   ('services',      'evidence',       '^evidence/[^/]+$'),
   ('services',      'dot-uploads',    '^evidence/[^/]+$'),
   ('services',      'evidence',       '^evidence/services/.*'),
@@ -143,4 +143,4 @@ $$;
 grant execute on function public.get_module_storage_stats() to anon, authenticated;
 
 -- ── ตรวจสอบ ──
-select * from public.get_module_storage_stats() order by sort_order;
+select * from public.get_module_storage_stats();
