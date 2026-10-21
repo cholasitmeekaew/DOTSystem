@@ -8,7 +8,7 @@
 --   กรองตามช่วงวันที่ (created_at ของไฟล์) ได้
 --   ให้ฝั่งเว็บเรียก storage.remove() ต่อ
 --
--- คืน: bucket_id, name, file_size, uploaded_at
+-- คืน: bucket_id, file_name, file_size, uploaded_at
 -- =============================================================
 
 create or replace function public.list_module_files(
@@ -18,19 +18,24 @@ create or replace function public.list_module_files(
 )
 returns table (
   bucket_id   text,
-  name        text,
+  file_name   text,
   file_size   bigint,
   uploaded_at timestamptz
 )
-language sql
+language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_from timestamptz := case when p_from is null then null else p_from::timestamp end;
+  v_to   timestamptz := case when p_to   is null then null else (p_to::timestamp + interval '1 day') end;
+begin
+  return query
   select
     o.bucket_id,
     o.name,
-    coalesce((o.metadata->>'size')::bigint, 0) as file_size,
-    o.created_at as uploaded_at
+    coalesce((o.metadata->>'size')::bigint, 0),
+    o.created_at
   from storage.objects o
   where exists (
     select 1
@@ -39,12 +44,10 @@ as $$
       and l.bucket_id  = o.bucket_id
       and o.name ~ l.path_pattern
   )
-    and (p_from is null or o.created_at >= p_from)
-    and (p_to   is null or o.created_at <  (p_to + interval '1 day'))
+    and (v_from is null or o.created_at >= v_from)
+    and (v_to   is null or o.created_at <  v_to)
   order by o.created_at;
+end;
 $$;
 
 grant execute on function public.list_module_files(text, date, date) to anon, authenticated;
-
--- ── ตรวจสอบ ──
-select * from public.list_module_files('work_reports');

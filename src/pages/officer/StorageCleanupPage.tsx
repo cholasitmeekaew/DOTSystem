@@ -266,7 +266,8 @@ export function StorageCleanupPage() {
       p_to: to || null,
     });
     if (error) return [];
-    return (data ?? []) as Array<{ bucket_id: string; name: string; file_size: number }>;
+    const rows = (data ?? []) as Array<{ bucket_id: string; file_name: string; file_size: number }>;
+    return rows.map((r) => ({ bucket_id: r.bucket_id, name: r.file_name, file_size: r.file_size }));
   }
 
   async function runCleanup() {
