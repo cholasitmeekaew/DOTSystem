@@ -251,6 +251,24 @@ export function StorageCleanupPage() {
     return [...new Set(urls)];
   }
 
+  /**
+   * คืนรายชื่อไฟล์จริงใน Storage ของโมดูล (ตาม mapping 0063) กรองตามช่วงวันที่
+   * ใช้กับโหมด "ลบเฉพาะรูปภาพ" เพื่อลบไฟล์ที่หลุดการผูกใน DB ด้วย
+   */
+  async function listModuleFiles(
+    moduleKey: string,
+    from: string,
+    to: string,
+  ): Promise<Array<{ bucket_id: string; name: string; file_size: number }>> {
+    const { data, error } = await supabase.rpc('list_module_files', {
+      p_module_key: moduleKey,
+      p_from: from || null,
+      p_to: to || null,
+    });
+    if (error) return [];
+    return (data ?? []) as Array<{ bucket_id: string; name: string; file_size: number }>;
+  }
+
   async function runCleanup() {
     if (!officer || !selectedModule || confirmText !== 'CONFIRM') return;
     setRunning(true);
@@ -276,10 +294,15 @@ export function StorageCleanupPage() {
       validPairs.push(p);
     }
 
-    // ── ขั้นที่ 1: เก็บ URL รูปไว้ก่อนลบ DB ──
+    // ── ขั้นที่ 1: เก็บ URL รูปใน DB + ไฟล์จริงใน Storage (ก่อนลบ) ──
     let urls: string[] = [];
     if (validPairs.length) {
       urls = await collectImageUrls(validPairs);
+    }
+    // โหมดลบรูป: ต้องรู้ไฟล์จริงใน Storage ของโมดูลด้วย (รวมไฟล์ที่หลุดการผูกใน DB)
+    let storageFiles: Array<{ bucket_id: string; name: string; file_size: number }> = [];
+    if (deleteMode === 'image') {
+      storageFiles = await listModuleFiles(mod.key, dateFrom, dateTo);
     }
 
     // ── ขั้นที่ 2: ลบ/อัปเดต DB (เฉพาะตารางที่คอลัมน์มีจริง) ──
@@ -308,20 +331,35 @@ export function StorageCleanupPage() {
     // ── ขั้นที่ 3: ลบไฟล์จริงออกจาก Supabase Storage (await จริง) ──
     let filesDeleted = 0;
     let filesFailed = 0;
-    if (urls.length) {
+    if (deleteMode === 'image') {
+      // ลบไฟล์จริงทั้งหมดของโมดูลในช่วงวันที่ (ไม่ใช่แค่ที่ผูกใน DB)
+      if (storageFiles.length) {
+        const res = await deleteOrphanFiles(storageFiles);
+        filesDeleted = res.deleted;
+        filesFailed = res.failed;
+      }
+    } else if (urls.length) {
       const res = await deleteImages(urls);
       filesDeleted = res.deleted;
       filesFailed = res.failed;
-      if (filesFailed) errors.push(`ลบไฟล์ใน Storage ไม่สำเร็จ ${filesFailed} ไฟล์`);
     }
+    if (filesFailed) errors.push(`ลบไฟล์ใน Storage ไม่สำเร็จ ${filesFailed} ไฟล์`);
 
     // ── รีเฟรชข้อมูล ──
     if (!errors.length) {
-      const what = deleteMode === 'image' ? 'รูปภาพ' : 'ข้อมูล';
       const rangeNote = (dateFrom || dateTo) ? ` (ช่วง ${dateFrom || '*'} → ${dateTo || '*'})` : ' (ทั้งช่วงเวลา)';
-      const fileNote = filesDeleted ? ` + ลบไฟล์รูป ${filesDeleted} ไฟล์ออกจาก Storage` : '';
       const skipNote = skipped.length ? ` (ข้าม ${skipped.length} ตารางที่ไม่มีคอลัมน์: ${skipped.join(', ')})` : '';
-      setResult({ ok: true, msg: `ลบ${what}จาก "${mod.label}"${rangeNote} สำเร็จ ${rowsAffected} แถว${fileNote}${skipNote}` });
+      let msg: string;
+      if (deleteMode === 'image') {
+        msg = (rowsAffected === 0 && filesDeleted === 0)
+          ? `ไม่พบรูปให้ลบของ "${mod.label}"${rangeNote} — ไม่มีทั้ง URL ที่ผูกในฐานข้อมูล และไฟล์ใน Storage${skipNote}`
+          : `ลบรูปภาพของ "${mod.label}"${rangeNote} สำเร็จ · อัปเดต DB ${rowsAffected} แถว · ลบไฟล์ใน Storage ${filesDeleted} ไฟล์${skipNote}`;
+      } else {
+        msg = (rowsAffected === 0)
+          ? `ไม่พบข้อมูลให้ลบของ "${mod.label}"${rangeNote} (0 แถว)${skipNote}`
+          : `ลบข้อมูลจาก "${mod.label}"${rangeNote} สำเร็จ ${rowsAffected} แถว${filesDeleted ? ` + ลบไฟล์รูป ${filesDeleted} ไฟล์` : ''}${skipNote}`;
+      }
+      setResult({ ok: true, msg });
       const { data } = await supabase.rpc('get_storage_usage');
       setRows((data ?? []) as StorageRow[]);
       const fs = await supabase.rpc('get_storage_file_stats');
