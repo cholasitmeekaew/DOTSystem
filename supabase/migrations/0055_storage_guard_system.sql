@@ -134,14 +134,24 @@ as $$
 $$;
 
 -- รายชื่อโมดูล (ให้เว็บยิงสถิติแยกทีละโมดูล)
-create or replace function public.storage_modules()
-returns table (module_key text, module_label text)
+-- หมายเหตุ: คอลัมน์ stats_linked/date_column มาจาก migration 0056 — ถ้ายังไม่รัน 0056
+-- ให้ใช้เวอร์ชัน 2 คอลัมน์ (module_key, module_label) ในไฟล์นี้แทน
+drop function if exists public.storage_modules();
+create function public.storage_modules()
+returns table (
+  module_key   text,
+  module_label text,
+  stats_linked boolean,
+  date_column  text
+)
 language sql
 security definer
 set search_path = public
 as $$
-  select module_key, module_label
-  from public.storage_module_registry
+  select module_key, module_label,
+         coalesce(to_jsonb(r)->>'stats_linked', 'false')::boolean,
+         to_jsonb(r)->>'date_column'
+  from public.storage_module_registry r
   order by sort_order, module_key;
 $$;
 
@@ -178,21 +188,22 @@ begin
   end if;
 
   if rec.db_table is not null then
+    -- จำนวนแถวทั้งหมดของตาราง (ตาม filter เท่านั้น ไม่นับเงื่อนไขรูป)
     cond := 'true';
+    if rec.db_filter is not null and btrim(rec.db_filter) <> '' then
+      cond := '(' || rec.db_filter || ')';
+    end if;
+    execute format('select count(*) from public.%I where %s', rec.db_table, cond)
+      into rc;
+
+    -- จำนวนแถวที่ "ผูกภาพ" (คอลัมน์รูปไม่ว่าง)
     if rec.db_column is not null then
       cond := format('%I is not null and %I <> ''''', rec.db_column, rec.db_column);
       if rec.db_filter is not null and btrim(rec.db_filter) <> '' then
         cond := cond || ' and (' || rec.db_filter || ')';
       end if;
-    elsif rec.db_filter is not null and btrim(rec.db_filter) <> '' then
-      cond := '(' || rec.db_filter || ')';
-    end if;
-
-    execute format('select count(*) from public.%I where %s', rec.db_table, cond)
-      into rc;
-
-    if rec.db_column is not null then
-      dref := rc;
+      execute format('select count(*) from public.%I where %s', rec.db_table, cond)
+        into dref;
     end if;
 
     execute format('select pg_total_relation_size(%L::regclass)', 'public.' || rec.db_table)
