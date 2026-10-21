@@ -71,6 +71,7 @@ function useMaintenanceMode() {
   const [subtitle, setSubtitle] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [eta, setEta] = useState<string | null>(null);
+  const [etaLabel, setEtaLabel] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,7 +87,7 @@ function useMaintenanceMode() {
 
     void (async () => {
       const { data } = await supabase
-        .from('system_settings').select('maintenance_mode, maintenance_title, maintenance_subtitle, maintenance_message, maintenance_eta')
+        .from('system_settings').select('maintenance_mode, maintenance_title, maintenance_subtitle, maintenance_message, maintenance_eta, maintenance_eta_label')
         .eq('id', 1).maybeSingle();
       if (!cancelled && data) {
         const d = data as Record<string, unknown>;
@@ -95,6 +96,7 @@ function useMaintenanceMode() {
         setSubtitle(d.maintenance_subtitle as string | null);
         setMessage(d.maintenance_message as string | null);
         setEta(d.maintenance_eta as string | null);
+        setEtaLabel(d.maintenance_eta_label as string | null);
       }
     })();
 
@@ -110,6 +112,7 @@ function useMaintenanceMode() {
           setSubtitle(d.maintenance_subtitle as string | null);
           setMessage(d.maintenance_message as string | null);
           setEta(d.maintenance_eta as string | null);
+          setEtaLabel(d.maintenance_eta_label as string | null);
         },
       )
       .subscribe();
@@ -117,7 +120,7 @@ function useMaintenanceMode() {
     return () => { cancelled = true; void supabase.removeChannel(ch); };
   }, []);
 
-  return { mode, title, subtitle, message, eta };
+  return { mode, title, subtitle, message, eta, etaLabel };
 }
 
 function AccessDenied({ onBack }: { onBack: () => void }) {
@@ -140,7 +143,7 @@ function OfficerApp() {
   const [currentPage, setCurrentPage] = useState<OfficerPage>('dashboard');
   /** แท็บที่จะเปิดเมื่อเข้าหน้าปฏิบัติการ — ใช้ตอนกดการ์ดทางลัดที่ระบุแท็บ */
   const [opsTab, setOpsTab] = useState<'duty' | 'roster' | 'approvals'>('duty');
-  const { mode: maintMode, title: maintTitle, subtitle: maintSub, message: maintMsg, eta: maintEta } = useMaintenanceMode();
+  const { mode: maintMode, title: maintTitle, subtitle: maintSub, message: maintMsg, eta: maintEta, etaLabel: maintEtaLabel } = useMaintenanceMode();
 
   if (!officer) return null;
 
@@ -154,6 +157,7 @@ function OfficerApp() {
         subtitle={maintSub}
         message={maintMsg}
         eta={maintEta}
+        etaLabel={maintEtaLabel}
         officerName={officer.name}
         onLogout={() => logout()}
         onBypass={(o) => setAuth(o)}
@@ -262,7 +266,7 @@ function OfficerApp() {
 function PublicApp() {
   const { setAuth } = useAuth();
   const [route, setRoute] = useState<PublicPage>('home');
-  const { mode: maintMode, title: maintTitle, subtitle: maintSub, message: maintMsg, eta: maintEta } = useMaintenanceMode();
+  const { mode: maintMode, title: maintTitle, subtitle: maintSub, message: maintMsg, eta: maintEta, etaLabel: maintEtaLabel } = useMaintenanceMode();
 
   function handleLogin(officer: Officer) {
     setAuth(officer);
@@ -277,6 +281,7 @@ function PublicApp() {
         subtitle={maintSub}
         message={maintMsg}
         eta={maintEta}
+        etaLabel={maintEtaLabel}
         onBypass={handleLogin}
       />
     );

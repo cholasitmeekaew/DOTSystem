@@ -479,6 +479,7 @@ export interface SystemSettings {
   maintenance_message?: string | null;
   /** ข้อความรองใต้หัวข้อ (migration 0054) */
   maintenance_subtitle?: string | null;
+  maintenance_eta_label?: string | null;
   /** เวลาคาดว่าจะเสร็จ — นับถอยหลัง (migration 0054) */
   maintenance_eta?: string | null;
   updated_at: string;

@@ -126,6 +126,7 @@ export function AdminSettingsPage() {
   const [maintSubtitleDraft, setMaintSubtitleDraft] = useState('');
   const [maintMsgDraft, setMaintMsgDraft] = useState('');
   const [maintEtaDraft, setMaintEtaDraft] = useState('');
+  const [maintEtaLabelDraft, setMaintEtaLabelDraft] = useState('');
 
   async function load() {
     setLoading(true);
@@ -142,6 +143,7 @@ export function AdminSettingsPage() {
     // timestamptz → datetime-local format (YYYY-MM-DDTHH:MM)
     const eta = r?.maintenance_eta as string | null;
     setMaintEtaDraft(eta ? eta.slice(0, 16) : '');
+    setMaintEtaLabelDraft((r?.maintenance_eta_label as string) ?? '');
     setLoading(false);
   }
 
@@ -615,6 +617,7 @@ const SWEEP_BUTTONS: Array<{
       maintenance_subtitle: maintSubtitleDraft.trim() || null,
       maintenance_message: maintMsgDraft.trim() || null,
       maintenance_eta: etaIso,
+      maintenance_eta_label: maintEtaLabelDraft.trim() || null,
       updated_at: new Date().toISOString(),
       updated_by: officer.id,
       updated_by_name: officer.name,
@@ -631,6 +634,7 @@ const SWEEP_BUTTONS: Array<{
       maintenance_subtitle: maintSubtitleDraft.trim() || null,
       maintenance_message: maintMsgDraft.trim() || null,
       maintenance_eta: etaIso,
+      maintenance_eta_label: maintEtaLabelDraft.trim() || null,
     });
     setNotice({ kind: 'ok', text: 'บันทึกข้อมูล maintenance แล้ว' });
   }
@@ -1129,7 +1133,19 @@ const SWEEP_BUTTONS: Array<{
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1">เวลารอบ่ำปรุงเสร็จ (นับถอยหลัง)</label>
+                  <label className="block text-xs text-gray-400 mb-1">ข้อความเหนือนับถอยหลัง (พิมพ์เองได้)</label>
+                  <input
+                    className="input-field w-full"
+                    placeholder="เช่น คาดว่าจะเสร็จภายใน"
+                    value={maintEtaLabelDraft}
+                    onChange={(e) => setMaintEtaLabelDraft(e.target.value)}
+                  />
+                  <div className="text-[10px] text-gray-600 mt-1">
+                    ปล่อยว่าง = ใช้ข้อความเริ่มต้น "คาดว่าจะเสร็จภายใน"
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">วัน-เวลาที่คาดว่าจะเสร็จ (นับถอยหลัง)</label>
                   <input
                     type="datetime-local"
                     className="input-field w-full"
@@ -1137,7 +1153,7 @@ const SWEEP_BUTTONS: Array<{
                     onChange={(e) => setMaintEtaDraft(e.target.value)}
                   />
                   <div className="text-[10px] text-gray-600 mt-1">
-                    ปล่อยว่าง = ไม่นับถอยหลัง
+                    ระบบจะแสดงวันที่ + จำนวนวันที่เหลืออัตโนมัติ · ปล่อยว่าง = ไม่นับถอยหลัง
                   </div>
                 </div>
                 <button
@@ -1174,6 +1190,37 @@ const SWEEP_BUTTONS: Array<{
                   {settings.maintenance_message && (
                     <div className="text-[10px] text-amber-400/80 mt-2 whitespace-pre-wrap">
                       {settings.maintenance_message}
+                    </div>
+                  )}
+                  {settings.maintenance_eta && (
+                    <div className="mt-2 pt-2 border-t border-gray-800 text-left">
+                      <div className="text-[9px] text-gray-500">
+                        {(settings.maintenance_eta_label as string) || 'คาดว่าจะเสร็จภายใน'}
+                      </div>
+                      <div className="text-lg font-mono font-bold text-amber-400">
+                        {(() => {
+                          const diff = new Date(settings.maintenance_eta!).getTime() - Date.now();
+                          if (diff <= 0) return 'ครบกำหนดแล้ว';
+                          const d = Math.floor(diff / 86_400_000);
+                          const h = Math.floor((diff % 86_400_000) / 3_600_000);
+                          const m = Math.floor((diff % 3_600_000) / 60_000);
+                          const s = Math.floor((diff % 60_000) / 1000);
+                          const p = (n: number) => String(n).padStart(2, '0');
+                          return `${p(h)}:${p(m)}:${p(s)}`;
+                        })()}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <span className="text-[10px] text-gray-400">
+                          📅 {(() => {
+                            const d = new Date(settings.maintenance_eta!);
+                            const TH = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+                            return `${d.getDate()} ${TH[d.getMonth()]} ${d.getFullYear() + 543}`;
+                          })()}
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-950/50 border border-blue-800 text-blue-300">
+                          เหลือ {Math.max(0, Math.ceil((new Date(settings.maintenance_eta!).getTime() - Date.now()) / 86_400_000))} วัน
+                        </span>
+                      </div>
                     </div>
                   )}
                 </div>

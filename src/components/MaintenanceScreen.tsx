@@ -24,6 +24,8 @@ interface MaintenanceScreenProps {
   subtitle?: string | null;
   message?: string | null;
   eta?: string | null;
+  /** ข้อความหัวข้อเหนือนับถอยหลัง (Admin พิมพ์เองได้) */
+  etaLabel?: string | null;
   onLogout?: () => void;
   officerName?: string;
   /** เรียกเมื่อหัวหน้ากรม login สำเร็จ → เข้าสู่ระบบหลังบ้าน */
@@ -60,12 +62,27 @@ const MODE_CONFIG: Record<MaintMode, {
   },
 };
 
+interface CountResult {
+  /** "hh:mm:ss" หรือ "ครบกำหนดแล้ว" */
+  countdown: string | null;
+  /** วันที่ ETA เป็นภาษาไทย เช่น "25 ต.ค. 2569" */
+  dateStr: string | null;
+  /** จำนวนวันที่เหลือ (ceil) */
+  days: number | null;
+  /** true เมื่อเลยเวลาแล้ว */
+  expired: boolean;
+}
+
+const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+function formatThaiDate(d: Date): string {
+  return `${d.getDate()} ${THAI_MONTHS[d.getMonth()]} ${d.getFullYear() + 543}`;
+}
+
 /**
- * นับถอยหลังจาก ETA → แสดง "hh:mm:ss"
- *
- * ถ้าหมดเวลาแล้ว แสดง "ครบกำหนดแล้ว"
+ * นับถอยหลังจาก ETA → คืน countdown + วันที่ + จำนวนวัน
  */
-function useCountdown(eta: string | null | undefined): string | null {
+function useCountdown(eta: string | null | undefined): CountResult {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -74,18 +91,21 @@ function useCountdown(eta: string | null | undefined): string | null {
     return () => clearInterval(t);
   }, [eta]);
 
-  if (!eta) return null;
+  if (!eta) return { countdown: null, dateStr: null, days: null, expired: false };
   const target = new Date(eta).getTime();
-  if (Number.isNaN(target)) return null;
+  if (Number.isNaN(target)) return { countdown: null, dateStr: null, days: null, expired: false };
 
+  const dateStr = formatThaiDate(new Date(target));
   const diff = target - now;
-  if (diff <= 0) return 'ครบกำหนดแล้ว';
+  const days = Math.max(0, Math.ceil(diff / 86_400_000));
+
+  if (diff <= 0) return { countdown: 'ครบกำหนดแล้ว', dateStr, days: 0, expired: true };
 
   const h = Math.floor(diff / 3_600_000);
   const m = Math.floor((diff % 3_600_000) / 60_000);
   const sec = Math.floor((diff % 60_000) / 1000);
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+  return { countdown: `${pad(h)}:${pad(m)}:${pad(sec)}`, dateStr, days, expired: false };
 }
 
 /**
@@ -186,12 +206,13 @@ function QuickBypassLogin({ onBypass }: { onBypass?: (o: Officer) => void }) {
 }
 
 export function MaintenanceScreen({
-  mode = 'standard', title, subtitle, message, eta, onLogout, officerName, onBypass,
+  mode = 'standard', title, subtitle, message, eta, etaLabel, onLogout, officerName, onBypass,
 }: MaintenanceScreenProps) {
   const cfg = MODE_CONFIG[mode];
   const heading = title?.trim() || 'ปิดปรับปรุงระบบชั่วคราว';
   const sub = subtitle?.trim() || cfg.defaultSubtitle;
-  const countdown = useCountdown(eta);
+  const { countdown, dateStr, days, expired } = useCountdown(eta);
+  const label = etaLabel?.trim() || 'คาดว่าจะเสร็จภายใน';
 
   return (
     <div className="min-h-screen bg-navy-950 flex items-center justify-center p-4">
@@ -207,15 +228,38 @@ export function MaintenanceScreen({
           </div>
         )}
 
-        {/* ── นับถอยหลัง ── */}
+        {/* ── นับถอยหลัง + วันที่ + จำนวนวัน ── */}
         {countdown && (
           <div className={`card p-4 border-2 text-left mb-5 ${cfg.border}`}>
-            <div className="flex items-center gap-3">
-              <Timer size={24} className={cfg.color} />
-              <div>
-                <div className="text-[10px] text-gray-500">คาดว่าจะเสร็จภายใน</div>
-                <div className={`text-2xl font-mono font-bold tabular-nums ${cfg.color}`}>
+            <div className="flex items-start gap-3">
+              <Timer size={24} className={`${cfg.color} mt-0.5 flex-shrink-0`} />
+              <div className="flex-1 min-w-0">
+                {/* ข้อความที่ Admin พิมพ์เอง */}
+                <div className="text-[10px] text-gray-500 mb-1">{label}</div>
+
+                {/* นับถอยหลัง */}
+                <div className={`text-2xl font-mono font-bold tabular-nums ${expired ? 'text-gray-500' : cfg.color}`}>
                   {countdown}
+                </div>
+
+                {/* วันที่ + จำนวนวัน */}
+                <div className="flex items-center gap-3 mt-2 flex-wrap">
+                  {dateStr && (
+                    <span className="text-xs text-gray-400 inline-flex items-center gap-1">
+                      📅 {dateStr}
+                    </span>
+                  )}
+                  {days !== null && (
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
+                      expired
+                        ? 'bg-gray-800 border-gray-700 text-gray-500'
+                        : days <= 1
+                        ? 'bg-red-950/50 border-red-800 text-red-300'
+                        : 'bg-blue-950/50 border-blue-800 text-blue-300'
+                    }`}>
+                      {expired ? 'ครบกำหนดแล้ว' : `เหลือ ${days} วัน`}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
